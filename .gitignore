@@ -205,12 +205,6 @@ $RECYCLE.BIN/
 # .nfs files are created when an open file is removed but is still being accessed
 .nfs*
 
-# Project specific
-# Audio files (for testing)
-audio/*.wav
-audio/*.mp3
-audio/*.flac
-audio/*.ogg
 
 # Configuration files with sensitive data
 config/local.yaml
