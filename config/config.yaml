@@ -1,0 +1,89 @@
+# Webex Contact Center BYOVA Gateway Configuration
+# This file defines the connectors and their configurations for the VirtualAgentRouter
+
+# Global gateway configuration
+gateway:
+  name: "BYOVA Gateway"
+  version: "1.0.0"
+  log_level: "INFO"
+  host: "0.0.0.0"
+  port: 50051
+
+# Connector configurations
+connectors:
+  - name: "my_local_test_agent"
+    type: "local_audio_connector"
+    class: "LocalAudioConnector"
+    module: "connectors.local_audio_connector"
+    config:
+      agent_id: "Local Playback"
+      audio_base_path: "audio"
+      # Audio file mappings (matching your actual files)
+      audio_files:
+        welcome: "test-welcome.wav"
+        transfer: "test-response.wav"
+        goodbye: "test-goodbye.wav"
+        error: "test-response.wav"
+        default: "test-response.wav"
+    agents:
+      - "Local Playback"
+
+# Example configuration for future vendor connectors
+# Uncomment and modify as needed when adding new connectors
+#  - name: "vendor_x_connector"
+#    type: "vendor_x_connector"
+#    class: "VendorXConnector"
+#    module: "connectors.vendor_x_connector"
+#    config:
+#      api_key: "${VENDOR_X_API_KEY}"
+#      endpoint: "https://api.vendorx.com"
+#      timeout: 30
+#      retry_attempts: 3
+#    agents:
+#      - "Vendor X Agent 1"
+#      - "Vendor X Agent 2"
+
+#  - name: "openai_connector"
+#    type: "openai_connector"
+#    class: "OpenAIConnector"
+#    module: "connectors.openai_connector"
+#    config:
+#      api_key: "${OPENAI_API_KEY}"
+#      model: "gpt-4"
+#      max_tokens: 150
+#      temperature: 0.7
+#    agents:
+#      - "OpenAI Assistant"
+
+# Monitoring configuration
+monitoring:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  metrics_enabled: true
+  health_check_interval: 30
+
+# Logging configuration
+logging:
+  level: "DEBUG"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/gateway.log"
+  max_size: "10MB"
+  backup_count: 5
+
+# Session management
+session:
+  timeout: 300  # 5 minutes
+  max_sessions: 1000
+  cleanup_interval: 60  # seconds
+
+# Audio processing configuration
+audio:
+  supported_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "ogg"
+  default_sample_rate: 16000
+  default_channels: 1
+  max_audio_size: "10MB" 

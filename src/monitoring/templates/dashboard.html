@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BYOVA Gateway - Dashboard</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <style>
+        :root {
+            --primary-color: #007bff;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --danger-color: #dc3545;
+            --dark-color: #343a40;
+        }
+        
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .navbar-brand {
+            font-weight: bold;
+            font-size: 1.5rem;
+        }
+        
+        .status-card {
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s;
+        }
+        
+        .status-card:hover {
+            transform: translateY(-2px);
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .status-running { background-color: var(--success-color); }
+        .status-error { background-color: var(--danger-color); }
+        .status-warning { background-color: var(--warning-color); }
+        
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 15px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+        
+        .metric-label {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+        
+        .table-responsive {
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        
+        .connection-item {
+            border-left: 4px solid var(--primary-color);
+            padding-left: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .connection-active {
+            border-left-color: var(--success-color);
+        }
+        
+        .connection-history {
+            border-left-color: var(--warning-color);
+        }
+        
+        .badge-custom {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        
+        .loading {
+            display: none;
+        }
+        
+        .spinner-border-sm {
+            width: 1rem;
+            height: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-satellite-dish me-2"></i>
+                BYOVA Gateway
+            </a>
+            <div class="navbar-nav ms-auto">
+                <span class="navbar-text">
+                    <span class="status-indicator status-running" id="status-indicator"></span>
+                    <span id="status-text">Running</span>
+                </span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <!-- Status Overview -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card status-card">
+                    <div class="card-header bg-white">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-chart-line me-2"></i>
+                            Gateway Status
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <div class="metric-card text-center">
+                                    <div class="metric-value" id="total-agents">-</div>
+                                    <div class="metric-label">Available Agents</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card text-center">
+                                    <div class="metric-value" id="active-sessions">-</div>
+                                    <div class="metric-label">Active Sessions</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card text-center">
+                                    <div class="metric-value" id="total-connectors">-</div>
+                                    <div class="metric-label">Connectors</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="metric-card text-center">
+                                    <div class="metric-value" id="uptime">-</div>
+                                    <div class="metric-label">Uptime</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="row">
+            <!-- Configuration Panel -->
+            <div class="col-lg-4 mb-4">
+                <div class="card status-card h-100">
+                    <div class="card-header bg-white">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-cog me-2"></i>
+                            Configuration
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="config-content">
+                            <div class="loading text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Connections -->
+            <div class="col-lg-4 mb-4">
+                <div class="card status-card h-100">
+                    <div class="card-header bg-white">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-plug me-2"></i>
+                            Active Connections
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="active-connections-content">
+                            <div class="loading text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Connection History -->
+            <div class="col-lg-4 mb-4">
+                <div class="card status-card h-100">
+                    <div class="card-header bg-white">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-history me-2"></i>
+                            Connection History
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="history-content">
+                            <div class="loading text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Available Agents -->
+        <div class="row">
+            <div class="col-12">
+                <div class="card status-card">
+                    <div class="card-header bg-white">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-robot me-2"></i>
+                            Available Virtual Agents
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="agents-content">
+                            <div class="loading text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Refresh Button -->
+    <button class="btn btn-primary refresh-btn" onclick="refreshData()" title="Refresh Data">
+        <i class="fas fa-sync-alt"></i>
+    </button>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Custom JavaScript -->
+    <script>
+        // Global variables
+        let refreshInterval;
+        
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            loadDashboard();
+            // Refresh every 5 seconds
+            refreshInterval = setInterval(loadDashboard, 5000);
+        });
+        
+        function loadDashboard() {
+            loadStatus();
+            loadConfig();
+            loadConnections();
+        }
+        
+        function loadStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    updateStatusDisplay(data);
+                })
+                .catch(error => {
+                    console.error('Error loading status:', error);
+                    updateStatusDisplay({status: 'error', message: 'Failed to load status'});
+                });
+        }
+        
+        function loadConfig() {
+            fetch('/api/config')
+                .then(response => response.json())
+                .then(data => {
+                    updateConfigDisplay(data);
+                })
+                .catch(error => {
+                    console.error('Error loading config:', error);
+                    updateConfigDisplay({error: 'Failed to load configuration'});
+                });
+        }
+        
+        function loadConnections() {
+            fetch('/api/connections')
+                .then(response => response.json())
+                .then(data => {
+                    updateConnectionsDisplay(data);
+                })
+                .catch(error => {
+                    console.error('Error loading connections:', error);
+                    updateConnectionsDisplay({error: 'Failed to load connections'});
+                });
+        }
+        
+        function updateStatusDisplay(data) {
+            // Update status indicator
+            const indicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('status-text');
+            
+            if (data.status === 'running') {
+                indicator.className = 'status-indicator status-running';
+                statusText.textContent = 'Running';
+            } else {
+                indicator.className = 'status-indicator status-error';
+                statusText.textContent = 'Error';
+            }
+            
+            // Update metrics
+            document.getElementById('total-agents').textContent = data.total_agents || 0;
+            document.getElementById('active-sessions').textContent = data.total_sessions || 0;
+            document.getElementById('uptime').textContent = data.uptime || 'Running';
+            
+            // Update agents list
+            updateAgentsList(data.available_agents || []);
+        }
+        
+        function updateConfigDisplay(data) {
+            const container = document.getElementById('config-content');
+            
+            if (data.error) {
+                container.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                return;
+            }
+            
+            let html = `
+                <div class="mb-3">
+                    <strong>Gateway:</strong> ${data.gateway?.name || 'Unknown'}
+                </div>
+                <div class="mb-3">
+                    <strong>Version:</strong> ${data.gateway?.version || 'Unknown'}
+                </div>
+                <div class="mb-3">
+                    <strong>gRPC Port:</strong> ${data.gateway?.grpc_port || 'Unknown'}
+                </div>
+                <div class="mb-3">
+                    <strong>Web Port:</strong> ${data.gateway?.web_port || 'Unknown'}
+                </div>
+            `;
+            
+            if (data.connectors && data.connectors.length > 0) {
+                html += '<div class="mb-3"><strong>Connectors:</strong></div>';
+                data.connectors.forEach(connector => {
+                    html += `
+                        <div class="mb-2">
+                            <span class="badge bg-primary badge-custom">${connector.name}</span>
+                            <small class="text-muted">${connector.agents?.length || 0} agents</small>
+                        </div>
+                    `;
+                });
+            }
+            
+            container.innerHTML = html;
+        }
+        
+        function updateConnectionsDisplay(data) {
+            // Update active connections
+            const activeContainer = document.getElementById('active-connections-content');
+            if (data.active_sessions && data.active_sessions.length > 0) {
+                let html = '';
+                data.active_sessions.forEach(session => {
+                    html += `
+                        <div class="connection-item connection-active">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <strong>${session.session_id}</strong>
+                                    <br>
+                                    <small class="text-muted">Agent: ${session.agent_id}</small>
+                                    <br>
+                                    <small class="text-muted">Customer: ${session.customer_org_id}</small>
+                                </div>
+                                <span class="badge bg-success badge-custom">Active</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                activeContainer.innerHTML = html;
+            } else {
+                activeContainer.innerHTML = '<p class="text-muted text-center">No active connections</p>';
+            }
+            
+            // Update history with connection events
+            const historyContainer = document.getElementById('history-content');
+            if (data.connection_events && data.connection_events.length > 0) {
+                let html = '';
+                data.connection_events.slice(-5).forEach(event => {
+                    const eventType = event.event_type || 'unknown';
+                    const badgeClass = eventType === 'start' ? 'bg-success' : 
+                                     eventType === 'end' ? 'bg-danger' : 'bg-info';
+                    const eventText = eventType === 'start' ? 'Started' :
+                                    eventType === 'end' ? 'Ended' : 'Message';
+                    
+                    html += `
+                        <div class="connection-item connection-history">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <strong>${event.session_id || 'Unknown'}</strong>
+                                    <br>
+                                    <small class="text-muted">Agent: ${event.agent_id}</small>
+                                    <br>
+                                    <small class="text-muted">${new Date(event.timestamp * 1000).toLocaleTimeString()}</small>
+                                </div>
+                                <span class="badge ${badgeClass} badge-custom">${eventText}</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                historyContainer.innerHTML = html;
+            } else {
+                historyContainer.innerHTML = '<p class="text-muted text-center">No connection events</p>';
+            }
+        }
+        
+        function updateAgentsList(agents) {
+            const container = document.getElementById('agents-content');
+            
+            if (agents.length > 0) {
+                let html = '<div class="row">';
+                agents.forEach(agent => {
+                    html += `
+                        <div class="col-md-4 mb-3">
+                            <div class="card border-success">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-robot fa-2x text-success mb-2"></i>
+                                    <h6 class="card-title">${agent}</h6>
+                                    <span class="badge bg-success">Available</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                container.innerHTML = html;
+            } else {
+                container.innerHTML = '<p class="text-muted text-center">No agents available</p>';
+            }
+        }
+        
+        function refreshData() {
+            const btn = document.querySelector('.refresh-btn');
+            const icon = btn.querySelector('i');
+            
+            // Add spinning animation
+            icon.classList.add('fa-spin');
+            
+            loadDashboard();
+            
+            // Stop spinning after 1 second
+            setTimeout(() => {
+                icon.classList.remove('fa-spin');
+            }, 1000);
+        }
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+    </script>
+</body>
+</html> 
