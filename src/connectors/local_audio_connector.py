@@ -62,18 +62,18 @@ class LocalAudioConnector(IVendorConnector):
     
     def start_session(self, session_id: str, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Start a virtual agent session with a welcome message.
+        Start a virtual agent session.
         
         Args:
             session_id: Unique identifier for the session
-            request_data: Initial request data (unused for local connector)
+            request_data: Initial request data
             
         Returns:
             Dictionary containing welcome message and audio file
         """
-        print(f"🔍 DEBUG: LocalAudioConnector.start_session called with session_id={session_id}")
-        self.logger.info(f"Starting session {session_id} with local audio connector")
+        self.logger.info(f"Starting session {session_id}")
         
+        # Get welcome audio file
         welcome_audio = self.audio_files.get('welcome', 'welcome.wav')
         audio_path = self.audio_base_path / welcome_audio
         
@@ -87,7 +87,7 @@ class LocalAudioConnector(IVendorConnector):
         
         return {
             'audio_content': audio_bytes,
-            'text': 'Welcome to the local test agent. How can I help you today?',
+            'text': 'Hello, welcome to the webex contact center voice virtual agent gateway. How can I help you today?',
             'session_id': session_id,
             'agent_id': self.agent_id,
             'message_type': 'welcome'
@@ -111,8 +111,8 @@ class LocalAudioConnector(IVendorConnector):
         
         # Determine response based on input
         if 'transfer' in text or 'agent' in text:
-            audio_file = self.audio_files.get('transfer', 'transferring.wav')
-            response_text = "Transferring you to a human agent. Please wait."
+            audio_file = self.audio_files.get('transfer', 'test-agent-transfer.wav')
+            response_text = "Transferring you to an agent."
             message_type = 'transfer'
         elif 'error' in text or 'problem' in text:
             audio_file = self.audio_files.get('error', 'error.wav')
@@ -120,11 +120,13 @@ class LocalAudioConnector(IVendorConnector):
             message_type = 'error'
         elif 'goodbye' in text or 'bye' in text or 'end' in text:
             audio_file = self.audio_files.get('goodbye', 'goodbye.wav')
-            response_text = "Thank you for using our service. Goodbye!"
+            response_text = "Thank you for calling, have a great day."
             message_type = 'goodbye'
         else:
-            audio_file = self.audio_files.get('default', 'default_response.wav')
-            response_text = "I understand. How else can I assist you?"
+            # For the default case, use the default audio file (test-response.wav)
+            # with the specific text message requested
+            audio_file = self.audio_files.get('default', 'test-response.wav')
+            response_text = "I understand, let me help you with that."
             message_type = 'default'
         
         audio_path = self.audio_base_path / audio_file

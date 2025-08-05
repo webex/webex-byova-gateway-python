@@ -21,7 +21,7 @@ connectors:
       # Audio file mappings (matching your actual files)
       audio_files:
         welcome: "test-welcome.wav"
-        transfer: "test-response.wav"
+        transfer: "test-agent-transfer.wav"
         goodbye: "test-goodbye.wav"
         error: "test-response.wav"
         default: "test-response.wav"
@@ -71,11 +71,13 @@ logging:
   max_size: "10MB"
   backup_count: 5
 
-# Session management
-session:
-  timeout: 300  # 5 minutes
+# Session management configuration
+sessions:
+  timeout: 600  # 10 minutes - increased for better call handling
   max_sessions: 1000
   cleanup_interval: 60  # seconds
+  enable_auto_cleanup: true
+  max_session_duration: 3600  # 1 hour maximum session duration
 
 # Audio processing configuration
 audio:

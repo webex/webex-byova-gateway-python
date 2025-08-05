@@ -130,6 +130,7 @@ def main():
     5. Starts the gRPC server
     """
     logger = None
+    server = None
     try:
         # Load configuration
         config_path = "config/config.yaml"
@@ -150,9 +151,13 @@ def main():
         router.load_connectors(router_config)
         logger.info("Connectors loaded successfully")
         
-        # Create WxCCGatewayServer
-        server = WxCCGatewayServer(router)
-        logger.info("WxCCGatewayServer created")
+        # Get session timeout configuration
+        session_config = config.get('sessions', {})
+        session_timeout = session_config.get('timeout', 300)  # 5 minutes default
+        
+        # Create WxCCGatewayServer with session timeout
+        server = WxCCGatewayServer(router, session_timeout=session_timeout)
+        logger.info(f"WxCCGatewayServer created with session timeout: {session_timeout}s")
         
         # Get server configuration
         gateway_config = config.get('gateway', {})
@@ -210,6 +215,7 @@ def main():
         print(f"📁 Configuration: {config_path}")
         print(f"📝 Log Level: {gateway_config.get('log_level', 'INFO')}")
         print(f"🔧 Gateway Version: {gateway_config.get('version', '1.0.0')}")
+        print(f"⏱️  Session Timeout: {session_timeout}s")
         print()
         
         # Print connector information
@@ -217,56 +223,45 @@ def main():
         router_info = router.get_connector_info()
         for connector_name in router_info['loaded_connectors']:
             print(f"   • {connector_name}")
-        print()
         
-        # Print available agents
+        print()
+        print("🎯 Available Agents:")
         available_agents = router.get_all_available_agents()
-        print("🤖 Available Virtual Agents:")
-        for agent_id in available_agents:
-            print(f"   • {agent_id}")
-        print()
+        for agent in available_agents:
+            print(f"   • {agent}")
         
-        # Print monitoring information
+        print()
+        print("📊 Monitoring Interface:")
         if monitoring_config.get('enabled', True):
-            print("📊 Monitoring Interface:")
             print(f"   • Web UI: http://{monitoring_host}:{monitoring_port}")
             print(f"   • Status: http://{monitoring_host}:{monitoring_port}/status")
             print(f"   • Health: http://{monitoring_host}:{monitoring_port}/health")
-            print()
+        else:
+            print("   • Disabled")
         
-        print("✅ Server is running successfully!")
-        print("⏹️  Press Ctrl+C to stop the server")
-        print("="*60)
         print()
-        
-        # Log the same information for log files
-        logger.info(f"gRPC server started on {server_address}")
-        logger.info(f"Available virtual agents: {available_agents}")
-        logger.info(f"Router info: {router_info}")
-        logger.info("Server is running. Press Ctrl+C to stop.")
+        print("✅ Gateway is running! Press Ctrl+C to stop.")
+        print("="*60)
         
         # Keep the server running
-        grpc_server.wait_for_termination()
-        
-    except KeyboardInterrupt:
-        if logger:
-            logger.info("Received interrupt signal, shutting down...")
-        else:
-            print("Received interrupt signal, shutting down...")
+        try:
+            grpc_server.wait_for_termination()
+        except KeyboardInterrupt:
+            logger.info("Received shutdown signal")
+        finally:
+            # Graceful shutdown
+            logger.info("Shutting down gateway...")
+            if server:
+                server.shutdown()
+            grpc_server.stop(grace=5)
+            logger.info("Gateway shutdown complete")
+            
     except Exception as e:
         if logger:
-            logger.error(f"Error starting server: {e}")
+            logger.error(f"Failed to start gateway: {e}")
         else:
-            print(f"Error starting server: {e}")
+            print(f"Failed to start gateway: {e}")
         sys.exit(1)
-    finally:
-        # Clean shutdown
-        if 'grpc_server' in locals():
-            grpc_server.stop(0)
-            if logger:
-                logger.info("Server stopped")
-            else:
-                print("Server stopped")
 
 
 if __name__ == "__main__":
