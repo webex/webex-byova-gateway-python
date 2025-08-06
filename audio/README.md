@@ -43,15 +43,15 @@ The gateway supports the following audio formats:
 ```
 audio/
 ├── welcome/
-│   ├── test-welcome.wav
+│   ├── welcome.wav
 │   ├── welcome-message.mp3
 │   └── greeting.flac
 ├── responses/
-│   ├── test-response.wav
-│   ├── transfer-message.mp3
+│   ├── default_response.wav
+│   ├── transferring.wav
 │   └── help-response.ogg
 ├── goodbye/
-│   ├── test-goodbye.wav
+│   ├── goodbye.wav
 │   ├── farewell.mp3
 │   └── thank-you.flac
 └── samples/
@@ -81,11 +81,11 @@ connectors:
       agent_id: "Local Playback"
       audio_base_path: "audio"
       audio_files:
-        welcome: "test-welcome.wav"
-        transfer: "test-response.wav"
-        goodbye: "test-goodbye.wav"
-        error: "error-message.wav"
-        help: "help-message.wav"
+        welcome: "welcome.wav"
+        transfer: "transferring.wav"
+        goodbye: "goodbye.wav"
+        error: "error.wav"
+        default: "default_response.wav"
 ```
 
 ## Usage Examples
@@ -97,9 +97,11 @@ The `LocalAudioConnector` uses audio files to simulate virtual agent responses:
 ```python
 # Audio file mapping in connector
 audio_files = {
-    "welcome": "test-welcome.wav",
-    "transfer": "test-response.wav", 
-    "goodbye": "test-goodbye.wav"
+    "welcome": "welcome.wav",
+    "transfer": "transferring.wav", 
+    "goodbye": "goodbye.wav",
+    "error": "error.wav",
+    "default": "default_response.wav"
 }
 
 # Usage in connector
@@ -122,7 +124,7 @@ def start_session(self, session_id: str, request_data: dict) -> dict:
 # Test audio file playback
 python -c "
 import wave
-with wave.open('audio/test-welcome.wav', 'rb') as wav:
+with wave.open('audio/welcome.wav', 'rb') as wav:
     print(f'Channels: {wav.getnchannels()}')
     print(f'Sample width: {wav.getsampwidth()}')
     print(f'Frame rate: {wav.getframerate()}')
@@ -182,7 +184,7 @@ file audio/*.wav
 
 ```bash
 # Check audio file properties
-ffprobe audio/test-welcome.wav
+ffprobe audio/welcome.wav
 
 # Convert audio format
 ffmpeg -i input.wav -acodec mp3 output.mp3
@@ -194,7 +196,7 @@ ffmpeg -i input.wav -af "loudnorm" output.wav
 python -c "
 import wave
 try:
-    with wave.open('audio/test-welcome.wav', 'rb') as wav:
+    with wave.open('audio/welcome.wav', 'rb') as wav:
         print('File is valid WAV')
 except Exception as e:
     print(f'Error: {e}')

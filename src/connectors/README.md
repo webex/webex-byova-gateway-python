@@ -70,9 +70,11 @@ connectors:
       agent_id: "Local Playback"
       audio_base_path: "audio"
       audio_files:
-        welcome: "test-welcome.wav"
-        transfer: "test-response.wav"
-        goodbye: "test-goodbye.wav"
+        welcome: "welcome.wav"
+        transfer: "transferring.wav"
+        goodbye: "goodbye.wav"
+        error: "error.wav"
+        default: "default_response.wav"
 ```
 
 ## Adding New Connectors

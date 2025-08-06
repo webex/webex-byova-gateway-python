@@ -151,7 +151,7 @@ class LocalAudioConnector(IVendorConnector):
 
         # Determine response based on input
         if "transfer" in text or "agent" in text:
-            audio_file = self.audio_files.get("transfer", "test-agent-transfer.wav")
+            audio_file = self.audio_files.get("transfer", "transferring.wav")
             response_text = "Transferring you to an agent."
             message_type = "transfer"
         elif "error" in text or "problem" in text:
@@ -163,9 +163,9 @@ class LocalAudioConnector(IVendorConnector):
             response_text = "Thank you for calling, have a great day."
             message_type = "goodbye"
         else:
-            # For the default case, use the default audio file (test-response.wav)
+            # For the default case, use the default audio file (default_response.wav)
             # with the specific text message requested
-            audio_file = self.audio_files.get("default", "test-response.wav")
+            audio_file = self.audio_files.get("default", "default_response.wav")
             response_text = "I understand, let me help you with that."
             message_type = "default"
 

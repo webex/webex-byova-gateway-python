@@ -48,16 +48,20 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
 
 4. **Generate gRPC Stubs**
    ```bash
-   # Generate Python gRPC client and server stubs
-   python -m grpc_tools.protoc -Iproto --python_out=src/core --grpc_python_out=src/core proto/byova_common.proto proto/voicevirtualagent.proto
+   # Generate Python gRPC client and server stubs in the generated directory
+   python -m grpc_tools.protoc -Iproto --python_out=src/generated --grpc_python_out=src/generated proto/byova_common.proto proto/voicevirtualagent.proto
    ```
+   
+   Generated protobuf files are stored in the `src/generated` directory to separate auto-generated code from hand-written code.
 
 5. **Prepare Audio Files**
    
    Place your audio files in the `audio/` directory. The default configuration expects:
-   - `test-welcome.wav` - Welcome message
-   - `test-response.wav` - Response messages
-   - `test-goodbye.wav` - Goodbye message
+   - `welcome.wav` - Welcome message
+   - `default_response.wav` - Response messages
+   - `goodbye.wav` - Goodbye message
+   - `transferring.wav` - Transfer message
+   - `error.wav` - Error message
 
 ## Usage
 
@@ -87,9 +91,11 @@ connectors:
       agent_id: "Local Playback"
       audio_base_path: "audio"
       audio_files:
-        welcome: "test-welcome.wav"
-        transfer: "test-agent-transfer.wav"
-        goodbye: "test-goodbye.wav"
+        welcome: "welcome.wav"
+        transfer: "transferring.wav"
+        goodbye: "goodbye.wav"
+        error: "error.wav"
+        default: "default_response.wav"
 ```
 
 ### Running the Server

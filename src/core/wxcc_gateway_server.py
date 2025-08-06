@@ -10,10 +10,10 @@ import threading
 import time
 from typing import Any, Dict, Iterator
 
-import byova_common_pb2 as byova__common__pb2
 import grpc
-import voicevirtualagent_pb2 as voicevirtualagent__pb2
-import voicevirtualagent_pb2_grpc as voicevirtualagent__pb2_grpc
+from src.generated import byova_common_pb2 as byova__common__pb2
+from src.generated import voicevirtualagent_pb2 as voicevirtualagent__pb2
+from src.generated import voicevirtualagent_pb2_grpc as voicevirtualagent__pb2_grpc
 from virtual_agent_router import VirtualAgentRouter
 
 

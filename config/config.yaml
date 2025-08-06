@@ -20,11 +20,11 @@ connectors:
       audio_base_path: "audio"
       # Audio file mappings (matching your actual files)
       audio_files:
-        welcome: "test-welcome.wav"
-        transfer: "test-agent-transfer.wav"
-        goodbye: "test-goodbye.wav"
-        error: "test-error.wav"
-        default: "test-response.wav"
+        welcome: "welcome.wav"
+        transfer: "transferring.wav"
+        goodbye: "goodbye.wav"
+        error: "error.wav"
+        default: "default_response.wav"
     agents:
       - "Local Playback"
 

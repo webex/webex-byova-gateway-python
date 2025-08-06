@@ -19,10 +19,10 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent / "src" / "core"))
 
-from core import voicevirtualagent_pb2_grpc
 from core.virtual_agent_router import VirtualAgentRouter
 from core.wxcc_gateway_server import WxCCGatewayServer
 from monitoring.app import run_web_app
+from src.generated import voicevirtualagent_pb2_grpc
 
 
 def setup_logging(config: dict) -> None:
