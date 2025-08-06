@@ -88,7 +88,7 @@ connectors:
       audio_base_path: "audio"
       audio_files:
         welcome: "test-welcome.wav"
-        transfer: "test-response.wav"
+        transfer: "test-agent-transfer.wav"
         goodbye: "test-goodbye.wav"
 ```
 

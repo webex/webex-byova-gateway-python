@@ -104,10 +104,38 @@ class LocalAudioConnector(IVendorConnector):
         Returns:
             Dictionary containing response message and audio file
         """
-        self.logger.info(f"Processing message for session {session_id}: {message_data}")
+        self.logger.info(f"Processing message for session {session_id}")
+        
+        # Log relevant parts of message_data without audio bytes
+        log_data = {
+            'conversation_id': message_data.get('conversation_id'),
+            'customer_org_id': message_data.get('customer_org_id'),
+            'virtual_agent_id': message_data.get('virtual_agent_id'),
+            'input_type': message_data.get('input_type'),
+            'text': message_data.get('text', ''),
+            'has_audio_data': 'audio_data' in message_data
+        }
+        self.logger.debug(f"Message data for session {session_id}: {log_data}")
         
         # Extract text from message data (could be from speech-to-text)
         text = message_data.get('text', '').lower()
+        
+        # Check if this is actual speech content or just silence/background noise
+        # If there's no text content and it's just audio data, don't respond
+        if not text and 'audio_data' in message_data:
+            audio_data = message_data.get('audio_data', {})
+            caller_audio = audio_data.get('caller_audio', b'')
+            
+            # Check if the audio is mostly silence (all 0x7f bytes or similar)
+            if caller_audio and all(b == 0x7f for b in caller_audio[:100]):  # Check first 100 bytes
+                self.logger.debug(f"Detected silence/background noise for session {session_id}, not responding")
+                return {
+                    'audio_content': b'',  # No audio response
+                    'text': '',  # No text response
+                    'session_id': session_id,
+                    'agent_id': self.agent_id,
+                    'message_type': 'silence'
+                }
         
         # Determine response based on input
         if 'transfer' in text or 'agent' in text:

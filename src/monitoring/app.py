@@ -22,8 +22,7 @@ gateway_server_instance: Optional['WxCCGatewayServer'] = None
 # Initialize Flask app
 app = Flask(__name__)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging - web logging is configured in main.py
 logger = logging.getLogger(__name__)
 
 # In-memory storage for connection history

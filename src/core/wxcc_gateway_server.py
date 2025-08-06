@@ -334,7 +334,11 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
                     # Convert connector response to gRPC format
                     grpc_response = self._convert_connector_response_to_grpc(connector_response)
                     
-                    yield grpc_response
+                    # Only yield a response if there's actual content (prompts or output events)
+                    if grpc_response.prompts or grpc_response.output_events:
+                        yield grpc_response
+                    else:
+                        self.logger.debug(f"No response content for session {session_id}, skipping response")
                     
                 except Exception as e:
                     self.logger.error(f"Error processing request for session {session_id}: {e}")
@@ -409,45 +413,72 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
         Returns:
             VoiceVAResponse in gRPC format
         """
-        # Create prompts
-        prompts = []
-        if 'text' in connector_response:
-            # Disable barge-in for welcome messages to prevent interruption
-            is_welcome = 'welcome' in connector_response.get('text', '').lower()
-            prompt = voicevirtualagent__pb2.Prompt(
-                text=connector_response['text'],
-                audio_content=connector_response.get('audio_content', b''),
-                is_barge_in_enabled=not is_welcome  # Disable barge-in for welcome messages
+        try:
+            self.logger.debug(f"Converting connector response: {connector_response}")
+            
+            # Handle empty or silence responses
+            if not connector_response or connector_response.get('message_type') == 'silence':
+                self.logger.debug("Returning empty response for silence")
+                # Return empty response for silence
+                return voicevirtualagent__pb2.VoiceVAResponse(
+                    prompts=[],
+                    output_events=[],
+                    input_sensitive=False,
+                    input_mode=voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE,
+                    response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL
+                )
+            
+            # Create prompts
+            prompts = []
+            if connector_response.get('text'):
+                # Disable barge-in for welcome messages to prevent interruption
+                is_welcome = 'welcome' in connector_response.get('text', '').lower()
+                audio_content = connector_response.get('audio_content', b'')
+                self.logger.debug(f"Creating prompt with text: {connector_response.get('text')}, audio_content length: {len(audio_content)}")
+                
+                prompt = voicevirtualagent__pb2.Prompt(
+                    text=connector_response['text'],
+                    audio_content=audio_content,
+                    is_barge_in_enabled=not is_welcome  # Disable barge-in for welcome messages
+                )
+                prompts.append(prompt)
+            
+            # Create output events
+            output_events = []
+            message_type = connector_response.get('message_type', '')
+            
+            if message_type == 'goodbye':
+                event = byova__common__pb2.OutputEvent(
+                    event_type=byova__common__pb2.OutputEvent.EventType.SESSION_END,
+                    name="session_ended",
+                    metadata={}
+                )
+                output_events.append(event)
+            elif message_type == 'transfer':
+                event = byova__common__pb2.OutputEvent(
+                    event_type=byova__common__pb2.OutputEvent.EventType.TRANSFER_TO_AGENT,
+                    name="transfer_requested",
+                    metadata={}
+                )
+                output_events.append(event)
+            
+            # Create response
+            response = voicevirtualagent__pb2.VoiceVAResponse(
+                prompts=prompts,
+                output_events=output_events,
+                input_sensitive=False,
+                input_mode=voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE,
+                response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL
             )
-            prompts.append(prompt)
-        
-        # Create output events
-        output_events = []
-        if connector_response.get('message_type') == 'goodbye':
-            event = byova__common__pb2.OutputEvent(
-                event_type=byova__common__pb2.OutputEvent.EventType.SESSION_END,
-                name="session_ended",
-                metadata={}
-            )
-            output_events.append(event)
-        elif connector_response.get('message_type') == 'transfer':
-            event = byova__common__pb2.OutputEvent(
-                event_type=byova__common__pb2.OutputEvent.EventType.TRANSFER_TO_AGENT,
-                name="transfer_requested",
-                metadata={}
-            )
-            output_events.append(event)
-        
-        # Create response
-        response = voicevirtualagent__pb2.VoiceVAResponse(
-            prompts=prompts,
-            output_events=output_events,
-            input_sensitive=False,
-            input_mode=voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE,
-            response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL
-        )
-        
-        return response
+            
+            self.logger.debug(f"Created gRPC response with {len(prompts)} prompts and {len(output_events)} events")
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error converting connector response to gRPC: {e}")
+            self.logger.error(f"Connector response was: {connector_response}")
+            # Return an error response
+            return self._create_error_response(f"Failed to convert response: {str(e)}")
     
     def _create_error_response(self, error_message: str) -> voicevirtualagent__pb2.VoiceVAResponse:
         """

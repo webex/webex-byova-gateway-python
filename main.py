@@ -35,34 +35,78 @@ def setup_logging(config: dict) -> None:
     """
     logging_config = config.get('logging', {})
     
-    # Configure logging level
-    log_level = getattr(logging, logging_config.get('level', 'INFO').upper())
-    
-    # Configure logging format
-    log_format = logging_config.get('format', 
-                                   '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Configure gateway logging
+    gateway_config = logging_config.get('gateway', {})
+    gateway_log_level = getattr(logging, gateway_config.get('level', 'INFO').upper())
+    gateway_log_format = gateway_config.get('format', 
+                                          '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    gateway_log_file = gateway_config.get('file', 'logs/gateway.log')
     
     # Create logs directory if it doesn't exist
-    log_file = logging_config.get('file', 'logs/gateway.log')
-    if log_file:
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+    if gateway_log_file:
+        log_path = Path(gateway_log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Gateway log file path: {log_path.absolute()}")
     
-    # Configure logging handlers
+    # Clear any existing handlers
+    logging.getLogger().handlers.clear()
+    
+    # Configure gateway logging handlers
     handlers = [logging.StreamHandler(sys.stdout)]
     
-    # Add file handler if log file is specified
-    if log_file:
+    # Add file handler for gateway logging
+    if gateway_log_file:
         try:
-            handlers.append(logging.FileHandler(log_file))
+            file_handler = logging.FileHandler(gateway_log_file)
+            file_handler.setFormatter(logging.Formatter(gateway_log_format))
+            handlers.append(file_handler)
+            print(f"Gateway logging enabled: {gateway_log_file}")
         except Exception as e:
-            print(f"Warning: Could not create log file {log_file}: {e}")
+            print(f"Warning: Could not create gateway log file {gateway_log_file}: {e}")
     
-    # Configure logging
+    # Configure gateway logging
     logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        handlers=handlers
+        level=gateway_log_level,
+        format=gateway_log_format,
+        handlers=handlers,
+        force=True  # Force reconfiguration
     )
+    
+    # Test logging
+    logging.info("Gateway logging system initialized")
+    print(f"Gateway logging level set to: {logging.getLevelName(logging.getLogger().level)}")
+    
+    # Configure web logging separately
+    web_config = logging_config.get('web', {})
+    web_log_level = getattr(logging, web_config.get('level', 'WARNING').upper())
+    web_log_format = web_config.get('format', 
+                                   '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    web_log_file = web_config.get('file', 'logs/web.log')
+    
+    # Create web log file if specified
+    if web_log_file:
+        web_log_path = Path(web_log_file)
+        web_log_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Web log file path: {web_log_path.absolute()}")
+        
+        try:
+            # Configure web-specific loggers
+            web_logger = logging.getLogger('werkzeug')
+            web_logger.setLevel(web_log_level)
+            
+            # Add file handler for web logging
+            web_file_handler = logging.FileHandler(web_log_file)
+            web_file_handler.setFormatter(logging.Formatter(web_log_format))
+            web_logger.addHandler(web_file_handler)
+            
+            # Also configure Flask logger
+            flask_logger = logging.getLogger('flask')
+            flask_logger.setLevel(web_log_level)
+            flask_logger.addHandler(web_file_handler)
+            
+            print(f"Web logging enabled: {web_log_file}")
+        except Exception as e:
+            print(f"Warning: Could not create web log file {web_log_file}: {e}")
 
 
 def load_config(config_path: str = "config/config.yaml") -> dict:

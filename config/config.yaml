@@ -23,7 +23,7 @@ connectors:
         welcome: "test-welcome.wav"
         transfer: "test-agent-transfer.wav"
         goodbye: "test-goodbye.wav"
-        error: "test-response.wav"
+        error: "test-error.wav"
         default: "test-response.wav"
     agents:
       - "Local Playback"
@@ -65,11 +65,21 @@ monitoring:
 
 # Logging configuration
 logging:
-  level: "DEBUG"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/gateway.log"
-  max_size: "10MB"
-  backup_count: 5
+  # Gateway logging (gRPC server, connectors, etc.)
+  gateway:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/gateway.log"
+    max_size: "10MB"
+    backup_count: 5
+  
+  # Web interface logging (Flask, werkzeug, etc.)
+  web:
+    level: "WARNING"  # Reduce web interface verbosity
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/web.log"
+    max_size: "5MB"
+    backup_count: 3
 
 # Session management configuration
 sessions:
