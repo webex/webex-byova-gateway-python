@@ -1,1 +1,1 @@
-# Vendor connector implementations 
+# Vendor connector implementations
