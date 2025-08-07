@@ -68,16 +68,19 @@ class LocalAudioConnector(IVendorConnector):
         self, session_id: str, request_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Start a virtual agent session.
+        Start a virtual agent conversation.
+
+        Note: This method uses 'session' terminology for vendor compatibility,
+        but it actually manages conversations (calls into WxCC).
 
         Args:
-            session_id: Unique identifier for the session
+            session_id: Unique identifier for the conversation (maps to conversation_id)
             request_data: Initial request data
 
         Returns:
             Dictionary containing welcome message and audio file
         """
-        self.logger.info(f"Starting session {session_id}")
+        self.logger.info(f"Starting conversation {session_id}")
 
         # Get welcome audio file
         welcome_audio = self.audio_files.get("welcome", "welcome.wav")
@@ -105,14 +108,17 @@ class LocalAudioConnector(IVendorConnector):
         """
         Send a message to the virtual agent and get response.
 
+        Note: This method uses 'session' terminology for vendor compatibility,
+        but it actually manages conversations (calls into WxCC).
+
         Args:
-            session_id: Unique identifier for the session
+            session_id: Unique identifier for the conversation (maps to conversation_id)
             message_data: Message data containing text or audio input
 
         Returns:
             Dictionary containing response message and audio file
         """
-        self.logger.info(f"Processing message for session {session_id}")
+        self.logger.info(f"Processing message for conversation {session_id}")
 
         # Log relevant parts of message_data without audio bytes
         log_data = {
@@ -123,7 +129,7 @@ class LocalAudioConnector(IVendorConnector):
             "text": message_data.get("text", ""),
             "has_audio_data": "audio_data" in message_data,
         }
-        self.logger.debug(f"Message data for session {session_id}: {log_data}")
+        self.logger.debug(f"Message data for conversation {session_id}: {log_data}")
 
         # Extract text from message data (could be from speech-to-text)
         text = message_data.get("text", "").lower()
@@ -139,7 +145,7 @@ class LocalAudioConnector(IVendorConnector):
                 b == 0x7F for b in caller_audio[:100]
             ):  # Check first 100 bytes
                 self.logger.debug(
-                    f"Detected silence/background noise for session {session_id}, not responding"
+                    f"Detected silence/background noise for conversation {session_id}, not responding"
                 )
                 return {
                     "audio_content": b"",  # No audio response
@@ -179,7 +185,7 @@ class LocalAudioConnector(IVendorConnector):
             self.logger.error(f"Audio file not found: {audio_path}")
             audio_bytes = b""
 
-        self.logger.info(f"Session {session_id} response: {response_text}")
+        self.logger.info(f"Conversation {session_id} response: {response_text}")
 
         return {
             "audio_content": audio_bytes,
@@ -191,12 +197,15 @@ class LocalAudioConnector(IVendorConnector):
 
     def end_session(self, session_id: str) -> None:
         """
-        End a virtual agent session.
+        End a virtual agent conversation.
+
+        Note: This method uses 'session' terminology for vendor compatibility,
+        but it actually manages conversations (calls into WxCC).
 
         Args:
-            session_id: Unique identifier for the session to end
+            session_id: Unique identifier for the conversation to end (maps to conversation_id)
         """
-        self.logger.info(f"Ending session {session_id}")
+        self.logger.info(f"Ending conversation {session_id}")
 
         # Simulate playing goodbye message
         goodbye_audio = self.audio_files.get("goodbye", "goodbye.wav")

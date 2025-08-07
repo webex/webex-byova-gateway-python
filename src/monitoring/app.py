@@ -216,48 +216,50 @@ def api_debug_sessions():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/test/create-session")
-def api_test_create_session():
+@app.route("/api/test/create-conversation")
+def api_test_create_conversation():
     """
-    Test endpoint to create a mock active session.
+    Test endpoint to create a mock active conversation.
 
     Returns:
-        JSON response with test session information
+        JSON response with test conversation information
     """
     try:
         if gateway_server_instance:
-            # Create a test session
-            test_session_id = "test-session-123"
+            # Create a test conversation
+            test_conversation_id = "test-conversation-123"
             test_agent_id = "Local Playback"
 
-            gateway_server_instance.active_sessions[test_session_id] = {
+            gateway_server_instance.active_conversations[test_conversation_id] = {
                 "agent_id": test_agent_id,
-                "conversation_id": test_session_id,
+                "conversation_id": test_conversation_id,
                 "customer_org_id": "test-customer-org",
                 "welcome_sent": True,
+                "rpc_sessions": ["test-rpc-session-123"],
             }
 
             # Add a connection event
             gateway_server_instance.add_connection_event(
                 "start",
-                test_session_id,
+                test_conversation_id,
                 test_agent_id,
                 customer_org_id="test-customer-org",
+                rpc_session_id="test-rpc-session-123",
             )
 
-            logger.info(f"Created test session: {test_session_id}")
+            logger.info(f"Created test conversation: {test_conversation_id}")
             return jsonify(
                 {
                     "status": "success",
-                    "message": f"Created test session {test_session_id}",
-                    "session_id": test_session_id,
+                    "message": f"Created test conversation {test_conversation_id}",
+                    "conversation_id": test_conversation_id,
                 }
             )
         else:
             return jsonify({"error": "Gateway server not available"}), 500
 
     except Exception as e:
-        logger.error(f"Error creating test session: {e}")
+        logger.error(f"Error creating test conversation: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -342,46 +344,42 @@ def get_connection_data() -> Dict[str, Any]:
     with history_lock:
         recent_history = connection_history[-20:]  # Last 20 entries
 
-    active_sessions = []
+    active_conversations = []
     connection_events = []
 
     if gateway_server_instance:
         try:
-            # Get active sessions from gateway server using the new method
-            if hasattr(gateway_server_instance, "get_active_sessions"):
-                active_sessions_data = gateway_server_instance.get_active_sessions()
-                for session_id, session_data in active_sessions_data.items():
-                    active_sessions.append(
+            # Get active conversations from gateway server using the new method
+            if hasattr(gateway_server_instance, "get_active_conversations"):
+                active_conversations_data = gateway_server_instance.get_active_conversations()
+                for conversation_id, conversation_data in active_conversations_data.items():
+                    active_conversations.append(
                         {
-                            "session_id": session_id,
-                            "agent_id": session_data.get("agent_id", "Unknown"),
-                            "customer_org_id": session_data.get(
+                            "conversation_id": conversation_id,
+                            "agent_id": conversation_data.get("agent_id", "Unknown"),
+                            "customer_org_id": conversation_data.get(
                                 "customer_org_id", "Unknown"
                             ),
-                            "conversation_id": session_data.get(
-                                "conversation_id", session_id
-                            ),
-                            "welcome_sent": session_data.get("welcome_sent", False),
+                            "rpc_sessions": conversation_data.get("rpc_sessions", []),
+                            "welcome_sent": conversation_data.get("welcome_sent", False),
                             "status": "Active",
                         }
                     )
             # Fallback to direct access if method doesn't exist
-            elif hasattr(gateway_server_instance, "active_sessions"):
+            elif hasattr(gateway_server_instance, "active_conversations"):
                 for (
-                    session_id,
-                    session_data,
-                ) in gateway_server_instance.active_sessions.items():
-                    active_sessions.append(
+                    conversation_id,
+                    conversation_data,
+                ) in gateway_server_instance.active_conversations.items():
+                    active_conversations.append(
                         {
-                            "session_id": session_id,
-                            "agent_id": session_data.get("agent_id", "Unknown"),
-                            "customer_org_id": session_data.get(
+                            "conversation_id": conversation_id,
+                            "agent_id": conversation_data.get("agent_id", "Unknown"),
+                            "customer_org_id": conversation_data.get(
                                 "customer_org_id", "Unknown"
                             ),
-                            "conversation_id": session_data.get(
-                                "conversation_id", session_id
-                            ),
-                            "welcome_sent": session_data.get("welcome_sent", False),
+                            "rpc_sessions": conversation_data.get("rpc_sessions", []),
+                            "welcome_sent": conversation_data.get("welcome_sent", False),
                             "status": "Active",
                         }
                     )
@@ -394,10 +392,10 @@ def get_connection_data() -> Dict[str, Any]:
             logger.error(f"Error getting connection data: {e}")
 
     return {
-        "active_sessions": active_sessions,
+        "active_conversations": active_conversations,
         "history": recent_history,
         "connection_events": connection_events,
-        "total_active": len(active_sessions),
+        "total_active": len(active_conversations),
         "total_history": len(connection_history),
     }
 

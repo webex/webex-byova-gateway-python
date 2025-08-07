@@ -153,8 +153,8 @@
                             </div>
                             <div class="col-md-3">
                                 <div class="metric-card text-center">
-                                    <div class="metric-value" id="active-sessions">-</div>
-                                    <div class="metric-label">Active Sessions</div>
+                                    <div class="metric-value" id="active-conversations">-</div>
+                                    <div class="metric-label">Active Conversations</div>
                                 </div>
                             </div>
                             <div class="col-md-3">
@@ -342,7 +342,7 @@
             
             // Update metrics
             document.getElementById('total-agents').textContent = data.total_agents || 0;
-            document.getElementById('active-sessions').textContent = data.total_sessions || 0;
+            document.getElementById('active-conversations').textContent = data.total_conversations || 0;
             document.getElementById('uptime').textContent = data.uptime || 'Running';
             
             // Update agents list
@@ -390,18 +390,22 @@
         function updateConnectionsDisplay(data) {
             // Update active connections
             const activeContainer = document.getElementById('active-connections-content');
-            if (data.active_sessions && data.active_sessions.length > 0) {
+            if (data.active_conversations && data.active_conversations.length > 0) {
                 let html = '';
-                data.active_sessions.forEach(session => {
+                data.active_conversations.forEach(conversation => {
+                    const rpcSessions = conversation.rpc_sessions || [];
+                    const rpcCount = rpcSessions.length;
                     html += `
                         <div class="connection-item connection-active">
                             <div class="d-flex justify-content-between align-items-start">
                                 <div>
-                                    <strong>${session.session_id}</strong>
+                                    <strong>${conversation.conversation_id}</strong>
                                     <br>
-                                    <small class="text-muted">Agent: ${session.agent_id}</small>
+                                    <small class="text-muted">Agent: ${conversation.agent_id}</small>
                                     <br>
-                                    <small class="text-muted">Customer: ${session.customer_org_id}</small>
+                                    <small class="text-muted">Customer: ${conversation.customer_org_id}</small>
+                                    <br>
+                                    <small class="text-muted">RPC Sessions: ${rpcCount}</small>
                                 </div>
                                 <span class="badge bg-success badge-custom">Active</span>
                             </div>
@@ -428,11 +432,12 @@
                         <div class="connection-item connection-history">
                             <div class="d-flex justify-content-between align-items-start">
                                 <div>
-                                    <strong>${event.session_id || 'Unknown'}</strong>
+                                    <strong>${event.conversation_id || 'Unknown'}</strong>
                                     <br>
                                     <small class="text-muted">Agent: ${event.agent_id}</small>
                                     <br>
                                     <small class="text-muted">${new Date(event.timestamp * 1000).toLocaleTimeString()}</small>
+                                    ${event.rpc_session_id ? `<br><small class="text-muted">RPC: ${event.rpc_session_id.substring(0, 8)}...</small>` : ''}
                                 </div>
                                 <span class="badge ${badgeClass} badge-custom">${eventText}</span>
                             </div>

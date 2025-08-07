@@ -3,8 +3,8 @@
 import grpc
 import warnings
 
-import byova_common_pb2 as byova__common__pb2
-import voicevirtualagent_pb2 as voicevirtualagent__pb2
+from . import byova_common_pb2 as byova__common__pb2
+from . import voicevirtualagent_pb2 as voicevirtualagent__pb2
 
 GRPC_GENERATED_VERSION = '1.74.0'
 GRPC_VERSION = grpc.__version__

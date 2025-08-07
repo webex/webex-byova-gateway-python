@@ -12,7 +12,7 @@ Connectors handle communication with different vendor systems and platforms, pro
 
 All connectors must implement `IVendorConnector` which defines:
 
-- **Session Management**: `start_session()`, `end_session()`
+- **Conversation Management**: `start_session()`, `end_session()` (note: these methods use session terminology for vendor compatibility)
 - **Message Handling**: `send_message()`
 - **Agent Discovery**: `get_available_agents()`
 - **Data Conversion**: `convert_wxcc_to_vendor()`, `convert_vendor_to_wxcc()`

@@ -198,14 +198,14 @@ def main():
         router.load_connectors(router_config)
         logger.info("Connectors loaded successfully")
 
-        # Get session timeout configuration
+        # Get conversation timeout configuration
         session_config = config.get("sessions", {})
-        session_timeout = session_config.get("timeout", 300)  # 5 minutes default
+        conversation_timeout = session_config.get("timeout", 300)  # 5 minutes default
 
-        # Create WxCCGatewayServer with session timeout
-        server = WxCCGatewayServer(router, session_timeout=session_timeout)
+        # Create WxCCGatewayServer with conversation timeout
+        server = WxCCGatewayServer(router, conversation_timeout=conversation_timeout)
         logger.info(
-            f"WxCCGatewayServer created with session timeout: {session_timeout}s"
+            f"WxCCGatewayServer created with conversation timeout: {conversation_timeout}s"
         )
 
         # Get server configuration
@@ -266,7 +266,7 @@ def main():
         print(f"📁 Configuration: {config_path}")
         print(f"📝 Log Level: {gateway_config.get('log_level', 'INFO')}")
         print(f"🔧 Gateway Version: {gateway_config.get('version', '1.0.0')}")
-        print(f"⏱️  Session Timeout: {session_timeout}s")
+        print(f"⏱️  Conversation Timeout: {conversation_timeout}s")
         print()
 
         # Print connector information

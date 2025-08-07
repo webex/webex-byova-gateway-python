@@ -8,13 +8,14 @@ Webex Contact Center and the virtual agent connectors.
 import logging
 import threading
 import time
+import uuid
 from typing import Any, Dict, Iterator
 
 import grpc
 from src.generated import byova_common_pb2 as byova__common__pb2
 from src.generated import voicevirtualagent_pb2 as voicevirtualagent__pb2
 from src.generated import voicevirtualagent_pb2_grpc as voicevirtualagent__pb2_grpc
-from virtual_agent_router import VirtualAgentRouter
+from .virtual_agent_router import VirtualAgentRouter
 
 
 class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
@@ -26,30 +27,31 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
     virtual agent connectors.
     """
 
-    def __init__(self, router: VirtualAgentRouter, session_timeout: int = 300) -> None:
+    def __init__(self, router: VirtualAgentRouter, conversation_timeout: int = 300) -> None:
         """
         Initialize the WxCC Gateway Server.
 
         Args:
             router: VirtualAgentRouter instance for routing requests to connectors
+            conversation_timeout: Timeout for conversations in seconds
         """
         self.router = router
         self.logger = logging.getLogger(__name__)
 
-        # Session management - simple dictionary mapping session IDs to context
-        self.active_sessions: Dict[str, Dict[str, Any]] = {}
+        # Conversation management - track active conversations by conversation_id
+        self.active_conversations: Dict[str, Dict[str, Any]] = {}
 
         # Connection tracking for monitoring
         self.connection_events = []
-        self.session_timeout = session_timeout  # 5 minutes default timeout
-        self.session_cleanup_thread = None
+        self.conversation_timeout = conversation_timeout  # 5 minutes default timeout
+        self.conversation_cleanup_thread = None
         self.stop_cleanup = False
 
-        # Start session cleanup thread
-        self._start_session_cleanup_thread()
+        # Start conversation cleanup thread
+        self._start_conversation_cleanup_thread()
 
         self.logger.info(
-            f"WxCCGatewayServer initialized with session timeout: {session_timeout}s"
+            f"WxCCGatewayServer initialized with conversation timeout: {conversation_timeout}s"
         )
 
     def shutdown(self):
@@ -58,79 +60,79 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
         self.stop_cleanup = True
 
         # Wait for cleanup thread to finish
-        if self.session_cleanup_thread and self.session_cleanup_thread.is_alive():
-            self.session_cleanup_thread.join(timeout=5)
+        if self.conversation_cleanup_thread and self.conversation_cleanup_thread.is_alive():
+            self.conversation_cleanup_thread.join(timeout=5)
 
-        # Clean up all active sessions
-        for session_id in list(self.active_sessions.keys()):
-            self._cleanup_session(session_id)
+        # Clean up all active conversations
+        for conversation_id in list(self.active_conversations.keys()):
+            self._cleanup_conversation(conversation_id)
 
         self.logger.info("WxCCGatewayServer shutdown complete")
 
-    def _start_session_cleanup_thread(self):
-        """Start background thread for session cleanup."""
-        self.session_cleanup_thread = threading.Thread(
-            target=self._session_cleanup_worker, daemon=True
+    def _start_conversation_cleanup_thread(self):
+        """Start background thread for conversation cleanup."""
+        self.conversation_cleanup_thread = threading.Thread(
+            target=self._conversation_cleanup_worker, daemon=True
         )
-        self.session_cleanup_thread.start()
-        self.logger.info("Session cleanup thread started")
+        self.conversation_cleanup_thread.start()
+        self.logger.info("Conversation cleanup thread started")
 
-    def _session_cleanup_worker(self):
-        """Background worker to clean up expired sessions."""
+    def _conversation_cleanup_worker(self):
+        """Background worker to clean up expired conversations."""
         while not self.stop_cleanup:
             try:
                 current_time = time.time()
-                expired_sessions = []
+                expired_conversations = []
 
-                for session_id, session_data in self.active_sessions.items():
-                    last_activity = session_data.get("last_activity", 0)
-                    if current_time - last_activity > self.session_timeout:
-                        expired_sessions.append(session_id)
+                for conversation_id, conversation_data in self.active_conversations.items():
+                    last_activity = conversation_data.get("last_activity", 0)
+                    if current_time - last_activity > self.conversation_timeout:
+                        expired_conversations.append(conversation_id)
 
-                for session_id in expired_sessions:
-                    self.logger.info(f"Cleaning up expired session {session_id}")
-                    self._cleanup_session(session_id)
+                for conversation_id in expired_conversations:
+                    self.logger.info(f"Cleaning up expired conversation {conversation_id}")
+                    self._cleanup_conversation(conversation_id)
 
                 time.sleep(60)  # Check every minute
             except Exception as e:
-                self.logger.error(f"Error in session cleanup worker: {e}")
+                self.logger.error(f"Error in conversation cleanup worker: {e}")
                 time.sleep(60)
 
-    def _cleanup_session(self, session_id: str):
-        """Clean up a specific session."""
-        if session_id in self.active_sessions:
-            session_data = self.active_sessions[session_id]
-            agent_id = session_data.get("agent_id")
+    def _cleanup_conversation(self, conversation_id: str):
+        """Clean up a specific conversation."""
+        if conversation_id in self.active_conversations:
+            conversation_data = self.active_conversations[conversation_id]
+            agent_id = conversation_data.get("agent_id")
 
             try:
-                self.router.route_request(agent_id, "end_session", session_id)
-                self.add_connection_event("end", session_id, agent_id, reason="timeout")
-                self.logger.info(f"Cleaned up session {session_id}")
+                self.router.route_request(agent_id, "end_session", conversation_id)
+                self.add_connection_event("end", conversation_id, agent_id, reason="timeout")
+                self.logger.info(f"Cleaned up conversation {conversation_id}")
             except Exception as e:
-                self.logger.warning(f"Error cleaning up session {session_id}: {e}")
+                self.logger.warning(f"Error cleaning up conversation {conversation_id}: {e}")
             finally:
-                del self.active_sessions[session_id]
+                del self.active_conversations[conversation_id]
 
-    def _update_session_activity(self, session_id: str):
-        """Update the last activity time for a session."""
-        if session_id in self.active_sessions:
-            self.active_sessions[session_id]["last_activity"] = time.time()
+    def _update_conversation_activity(self, conversation_id: str):
+        """Update the last activity time for a conversation."""
+        if conversation_id in self.active_conversations:
+            self.active_conversations[conversation_id]["last_activity"] = time.time()
 
     def add_connection_event(
-        self, event_type: str, session_id: str, agent_id: str, **kwargs
+        self, event_type: str, conversation_id: str, agent_id: str, **kwargs
     ) -> None:
         """
         Add a connection event for monitoring.
 
         Args:
             event_type: Type of event (start, message, end)
-            session_id: Session identifier
+            conversation_id: Conversation identifier
             agent_id: Agent identifier
             **kwargs: Additional event data
         """
         event = {
             "event_type": event_type,
-            "session_id": session_id,
+            "conversation_id": conversation_id,
             "agent_id": agent_id,
             "timestamp": time.time(),
             **kwargs,
@@ -142,7 +144,7 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
             self.connection_events.pop(0)
 
         self.logger.debug(
-            f"Added connection event: {event_type} for session {session_id}"
+            f"Added connection event: {event_type} for conversation {conversation_id}"
         )
 
     def get_connection_events(self) -> list:
@@ -154,34 +156,34 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
         """
         return self.connection_events.copy()
 
-    def get_active_sessions(self) -> Dict[str, Dict[str, Any]]:
+    def get_active_conversations(self) -> Dict[str, Dict[str, Any]]:
         """
-        Get current active sessions for monitoring.
+        Get current active conversations for monitoring.
 
         Returns:
-            Dictionary of active sessions
+            Dictionary of active conversations
         """
-        return self.active_sessions.copy()
+        return self.active_conversations.copy()
 
-    def end_session(self, session_id: str) -> None:
+    def end_conversation(self, conversation_id: str) -> None:
         """
-        Manually end a session.
+        Manually end a conversation.
 
         Args:
-            session_id: Session identifier to end
+            conversation_id: Conversation identifier to end
         """
-        if session_id in self.active_sessions:
-            session_data = self.active_sessions[session_id]
-            agent_id = session_data.get("agent_id")
+        if conversation_id in self.active_conversations:
+            conversation_data = self.active_conversations[conversation_id]
+            agent_id = conversation_data.get("agent_id")
 
             try:
-                self.router.route_request(agent_id, "end_session", session_id)
-                self.add_connection_event("end", session_id, agent_id, reason="manual")
-                self.logger.info(f"Manually ended session {session_id}")
+                self.router.route_request(agent_id, "end_session", conversation_id)
+                self.add_connection_event("end", conversation_id, agent_id, reason="manual")
+                self.logger.info(f"Manually ended conversation {conversation_id}")
             except Exception as e:
-                self.logger.warning(f"Error ending session {session_id}: {e}")
+                self.logger.warning(f"Error ending conversation {conversation_id}: {e}")
             finally:
-                del self.active_sessions[session_id]
+                del self.active_conversations[conversation_id]
 
     def ListVirtualAgents(
         self, request: byova__common__pb2.ListVARequest, context: grpc.ServicerContext
@@ -251,8 +253,9 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
         Yields:
             VoiceVAResponse messages containing agent responses
         """
-        session_id = None
+        conversation_id = None
         agent_id = None
+        rpc_session_id = str(uuid.uuid4())  # Unique identifier for this RPC session
 
         try:
             request_count = 0
@@ -260,12 +263,12 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
                 request_count += 1
                 # Debug: Print request information
                 self.logger.info(
-                    f"Received request #{request_count}: conversation_id={request.conversation_id}, agent_id={request.virtual_agent_id}"
+                    f"Received request #{request_count}: conversation_id={request.conversation_id}, agent_id={request.virtual_agent_id}, rpc_session_id={rpc_session_id}"
                 )
 
-                # Extract session and agent information from the first request
-                if session_id is None:
-                    session_id = request.conversation_id
+                # Extract conversation and agent information from the first request
+                if conversation_id is None:
+                    conversation_id = request.conversation_id
                     agent_id = request.virtual_agent_id
 
                     # Use default agent if none specified
@@ -292,76 +295,85 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
                         return
 
                     self.logger.info(
-                        f"Initializing session {session_id} with agent {agent_id}"
+                        f"Initializing conversation {conversation_id} with agent {agent_id} (RPC session: {rpc_session_id})"
                     )
 
-                # Update session activity
-                self._update_session_activity(session_id)
+                # Update conversation activity
+                self._update_conversation_activity(conversation_id)
 
                 # Convert gRPC request to connector format
                 message_data = self._convert_grpc_request_to_connector_format(request)
 
                 # Route the request to the appropriate connector
                 try:
-                    # For the first request in a session, call start_session
+                    # For the first request in a conversation, call start_session
                     # Check if this is the first request by looking at the agent_id
                     is_first_request = bool(request.virtual_agent_id)
                     self.logger.debug(
-                        f"Session {session_id}, agent_id: '{request.virtual_agent_id}', is_first_request: {is_first_request}"
+                        f"Conversation {conversation_id}, agent_id: '{request.virtual_agent_id}', is_first_request: {is_first_request}, rpc_session: {rpc_session_id}"
                     )
 
-                    # Check if this session has already sent the welcome message
-                    session_sent_welcome = (
-                        session_id in self.active_sessions
-                        and self.active_sessions[session_id].get("welcome_sent", False)
+                    # Check if this conversation has already sent the welcome message
+                    conversation_sent_welcome = (
+                        conversation_id in self.active_conversations
+                        and self.active_conversations[conversation_id].get("welcome_sent", False)
                     )
 
-                    if is_first_request and not session_sent_welcome:
-                        # This is the first request - start the session
+                    if is_first_request and not conversation_sent_welcome:
+                        # This is the first request - start the conversation
                         self.logger.debug(
-                            f"Calling start_session for session {session_id}"
+                            f"Calling start_session for conversation {conversation_id} (RPC session: {rpc_session_id})"
                         )
                         connector_response = self.router.route_request(
-                            agent_id, "start_session", session_id, message_data
+                            agent_id, "start_session", conversation_id, message_data
                         )
                         self.logger.info(
-                            f"Started session {session_id} with welcome message"
+                            f"Started conversation {conversation_id} with welcome message (RPC session: {rpc_session_id})"
                         )
                         self.logger.debug(
                             f"Start session response: {connector_response}"
                         )
 
-                        # Add session to active sessions after successful start
-                        self.active_sessions[session_id] = {
+                        # Add conversation to active conversations after successful start
+                        self.active_conversations[conversation_id] = {
                             "agent_id": agent_id,
-                            "conversation_id": session_id,
+                            "conversation_id": conversation_id,
                             "customer_org_id": request.customer_org_id,
                             "welcome_sent": True,
                             "last_activity": time.time(),
                             "created_at": time.time(),
+                            "rpc_sessions": [rpc_session_id],  # Track RPC sessions for this conversation
                         }
 
                         # Track connection event
                         self.add_connection_event(
                             "start",
-                            session_id,
+                            conversation_id,
                             agent_id,
                             customer_org_id=request.customer_org_id,
+                            rpc_session_id=rpc_session_id,
                         )
                     else:
                         # This is a subsequent request - send message
+                        # Add this RPC session to the conversation's tracked sessions
+                        if conversation_id in self.active_conversations:
+                            rpc_sessions = self.active_conversations[conversation_id].get("rpc_sessions", [])
+                            if rpc_session_id not in rpc_sessions:
+                                rpc_sessions.append(rpc_session_id)
+                                self.active_conversations[conversation_id]["rpc_sessions"] = rpc_sessions
+
                         self.logger.debug(
-                            f"Calling send_message for session {session_id}"
+                            f"Calling send_message for conversation {conversation_id} (RPC session: {rpc_session_id})"
                         )
                         connector_response = self.router.route_request(
-                            agent_id, "send_message", session_id, message_data
+                            agent_id, "send_message", conversation_id, message_data
                         )
                         self.logger.debug(
                             f"Send message response: {connector_response}"
                         )
 
                         # Track message event
-                        self.add_connection_event("message", session_id, agent_id)
+                        self.add_connection_event("message", conversation_id, agent_id, rpc_session_id=rpc_session_id)
 
                     # Convert connector response to gRPC format
                     grpc_response = self._convert_connector_response_to_grpc(
@@ -373,32 +385,32 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
                         yield grpc_response
                     else:
                         self.logger.debug(
-                            f"No response content for session {session_id}, skipping response"
+                            f"No response content for conversation {conversation_id}, skipping response"
                         )
 
                 except Exception as e:
                     self.logger.error(
-                        f"Error processing request for session {session_id}: {e}"
+                        f"Error processing request for conversation {conversation_id} (RPC session: {rpc_session_id}): {e}"
                     )
                     # Send error response
                     error_response = self._create_error_response(str(e))
                     yield error_response
 
         except Exception as e:
-            self.logger.error(f"Error in ProcessCallerInput stream: {e}")
+            self.logger.error(f"Error in ProcessCallerInput stream (RPC session: {rpc_session_id}): {e}")
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Stream error: {str(e)}")
         finally:
-            # Don't immediately clean up the session when the stream ends
-            # Let the background cleanup thread handle session expiration
-            if session_id:
+            # Don't immediately clean up the conversation when the stream ends
+            # Let the background cleanup thread handle conversation expiration
+            if conversation_id:
                 self.logger.info(
-                    f"Stream ended for session {session_id} (total requests: {request_count})"
+                    f"RPC session {rpc_session_id} ended for conversation {conversation_id} (total requests: {request_count})"
                 )
-                # Update last activity to give the session some time to reconnect
-                self._update_session_activity(session_id)
+                # Update last activity to give the conversation some time to reconnect
+                self._update_conversation_activity(conversation_id)
                 self.logger.info(
-                    f"Session {session_id} kept active for potential reconnection"
+                    f"Conversation {conversation_id} kept active for potential reconnection"
                 )
 
     def _convert_grpc_request_to_connector_format(

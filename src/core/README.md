@@ -68,16 +68,17 @@ python -m grpc_tools.protoc -Iproto --python_out=src/core --grpc_python_out=src/
 4. **Response Conversion**: Response converted back to WxCC format
 5. **Stream Response**: Response streamed back to WxCC
 
-### Session Management
+### Conversation Management
 
 ```python
-# Session tracking in WxCCGatewayServer
-self.active_sessions: Dict[str, Dict[str, Any]] = {
-    "session_id": {
+# Conversation tracking in WxCCGatewayServer
+self.active_conversations: Dict[str, Dict[str, Any]] = {
+    "conversation_id": {
         "agent_id": "agent_name",
         "conversation_id": "conv_id",
         "customer_org_id": "org_id",
-        "welcome_sent": True
+        "welcome_sent": True,
+        "rpc_sessions": ["rpc_session_1", "rpc_session_2"]
     }
 }
 
@@ -85,9 +86,10 @@ self.active_sessions: Dict[str, Dict[str, Any]] = {
 self.connection_events = [
     {
         "event_type": "start|message|end",
-        "session_id": "session_id",
+        "conversation_id": "conversation_id",
         "agent_id": "agent_id",
         "timestamp": time.time(),
+        "rpc_session_id": "rpc_session_id",
         **kwargs
     }
 ]

@@ -34,14 +34,17 @@ class IVendorConnector(ABC):
         self, session_id: str, request_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Start a virtual agent session.
+        Start a virtual agent conversation.
+
+        Note: This method uses 'session' terminology for vendor compatibility,
+        but it actually manages conversations (calls into WxCC).
 
         Args:
-            session_id: Unique identifier for the session
+            session_id: Unique identifier for the conversation (maps to conversation_id)
             request_data: Initial request data including agent ID, user info, etc.
 
         Returns:
-            Dictionary containing session initialization response from the vendor
+            Dictionary containing conversation initialization response from the vendor
         """
         pass
 
@@ -52,8 +55,11 @@ class IVendorConnector(ABC):
         """
         Send a message or audio to the virtual agent.
 
+        Note: This method uses 'session' terminology for vendor compatibility,
+        but it actually manages conversations (calls into WxCC).
+
         Args:
-            session_id: Unique identifier for the session
+            session_id: Unique identifier for the conversation (maps to conversation_id)
             message_data: Message data including audio bytes, text, or events
 
         Returns:
@@ -64,10 +70,13 @@ class IVendorConnector(ABC):
     @abstractmethod
     def end_session(self, session_id: str) -> None:
         """
-        End a virtual agent session.
+        End a virtual agent conversation.
+
+        Note: This method uses 'session' terminology for vendor compatibility,
+        but it actually manages conversations (calls into WxCC).
 
         Args:
-            session_id: Unique identifier for the session to end
+            session_id: Unique identifier for the conversation to end (maps to conversation_id)
         """
         pass
 
