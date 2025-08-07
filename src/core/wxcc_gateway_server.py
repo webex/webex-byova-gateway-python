@@ -26,6 +26,16 @@ class ConversationProcessor:
     similar to the AudioProcessor in the Webex example.
     """
     
+    # Event type mapping for readable logging
+    EVENT_TYPE_NAMES = {
+        0: "UNSPECIFIED_INPUT",
+        1: "SESSION_START", 
+        2: "SESSION_END",
+        3: "NO_INPUT",
+        4: "START_OF_DTMF",
+        5: "CUSTOM_EVENT"
+    }
+    
     def __init__(self, conversation_id: str, virtual_agent_id: str, router: VirtualAgentRouter):
         self.conversation_id = conversation_id
         self.virtual_agent_id = virtual_agent_id
@@ -147,6 +157,15 @@ class ConversationProcessor:
     def _process_event_input(self, event_input) -> Iterator[voicevirtualagent__pb2.VoiceVAResponse]:
         """Process event input."""
         try:
+            # Log the event input details with readable event type name
+            event_type_name = self.EVENT_TYPE_NAMES.get(event_input.event_type, f"UNKNOWN({event_input.event_type})")
+            self.logger.info(
+                f"Received event input for conversation {self.conversation_id}: "
+                f"event_type={event_type_name}, "
+                f"name='{event_input.name}', "
+                f"parameters={dict(event_input.parameters)}"
+            )
+            
             # Convert request to connector format
             message_data = {
                 "conversation_id": self.conversation_id,
@@ -523,6 +542,17 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
                         processor = self.conversations[conversation_id]
                         self.logger.info(f"Using existing conversation processor for {conversation_id}")
 
+                # Log the input type being processed
+                if request.HasField("audio_input"):
+                    self.logger.debug(f"Processing audio input for conversation {conversation_id}")
+                elif request.HasField("dtmf_input"):
+                    self.logger.debug(f"Processing DTMF input for conversation {conversation_id}")
+                elif request.HasField("event_input"):
+                    event_type_name = ConversationProcessor.EVENT_TYPE_NAMES.get(request.event_input.event_type, f"UNKNOWN({request.event_input.event_type})")
+                    self.logger.info(f"Processing event input for conversation {conversation_id}: {event_type_name}")
+                else:
+                    self.logger.warning(f"Unknown input type for conversation {conversation_id}")
+                
                 # Process the request through the conversation processor
                 yield from processor.process_request(request)
                 
