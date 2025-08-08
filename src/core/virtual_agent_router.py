@@ -173,7 +173,7 @@ class VirtualAgentRouter:
 
         Args:
             agent_id: The virtual agent ID to route the request to
-            method: The method to call on the connector (e.g., "start_session", "send_message")
+            method: The method to call on the connector (e.g., "start_conversation", "send_message", "end_conversation")
             *args: Positional arguments to pass to the method
             **kwargs: Keyword arguments to pass to the method
 

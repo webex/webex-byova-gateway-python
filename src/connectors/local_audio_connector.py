@@ -64,23 +64,20 @@ class LocalAudioConnector(IVendorConnector):
         """
         return [self.agent_id]
 
-    def start_session(
-        self, session_id: str, request_data: Dict[str, Any]
+    def start_conversation(
+        self, conversation_id: str, request_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Start a virtual agent conversation.
 
-        Note: This method uses 'session' terminology for vendor compatibility,
-        but it actually manages conversations (calls into WxCC).
-
         Args:
-            session_id: Unique identifier for the conversation (maps to conversation_id)
+            conversation_id: Unique identifier for the conversation
             request_data: Initial request data
 
         Returns:
             Dictionary containing welcome message and audio file
         """
-        self.logger.info(f"Starting conversation {session_id}")
+        self.logger.info(f"Starting conversation {conversation_id}")
 
         # Get welcome audio file
         welcome_audio = self.audio_files.get("welcome", "welcome.wav")
@@ -97,29 +94,26 @@ class LocalAudioConnector(IVendorConnector):
         return {
             "audio_content": audio_bytes,
             "text": "Hello, welcome to the webex contact center voice virtual agent gateway. How can I help you today?",
-            "session_id": session_id,
+            "conversation_id": conversation_id,
             "agent_id": self.agent_id,
             "message_type": "welcome",
             "barge_in_enabled": False,  # Disable barge-in for welcome message
         }
 
     def send_message(
-        self, session_id: str, message_data: Dict[str, Any]
+        self, conversation_id: str, message_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Send a message to the virtual agent and get response.
 
-        Note: This method uses 'session' terminology for vendor compatibility,
-        but it actually manages conversations (calls into WxCC).
-
         Args:
-            session_id: Unique identifier for the conversation (maps to conversation_id)
+            conversation_id: Unique identifier for the conversation
             message_data: Message data containing text or audio input
 
         Returns:
             Dictionary containing response message and audio file
         """
-        self.logger.info(f"Processing message for conversation {session_id}")
+        self.logger.info(f"Processing message for conversation {conversation_id}")
 
         # Log relevant parts of message_data without audio bytes
         log_data = {
@@ -127,15 +121,15 @@ class LocalAudioConnector(IVendorConnector):
             "virtual_agent_id": message_data.get("virtual_agent_id"),
             "input_type": message_data.get("input_type"),
         }
-        self.logger.debug(f"Message data for conversation {session_id}: {log_data}")
+        self.logger.debug(f"Message data for conversation {conversation_id}: {log_data}")
 
-        # Ignore session start events - these should be handled by start_session method
-        if message_data.get("input_type") == "session_start":
-            self.logger.info(f"Ignoring session start event in send_message for conversation {session_id}")
+        # Ignore conversation start events - these should be handled by start_conversation method
+        if message_data.get("input_type") == "conversation_start":
+            self.logger.info(f"Ignoring conversation start event in send_message for conversation {conversation_id}")
             return {
                 "audio_content": b"",
                 "text": "",
-                "session_id": session_id,
+                "conversation_id": conversation_id,
                 "agent_id": self.agent_id,
                 "message_type": "silence",
                 "barge_in_enabled": False,
@@ -146,14 +140,14 @@ class LocalAudioConnector(IVendorConnector):
             dtmf_data = message_data.get("dtmf_data", {})
             dtmf_events = dtmf_data.get("dtmf_events", [])
             if dtmf_events:
-                self.logger.info(f"Received DTMF input for conversation {session_id}: {dtmf_events}")
+                self.logger.info(f"Received DTMF input for conversation {conversation_id}: {dtmf_events}")
                 # Convert DTMF events to a string for easier processing
                 dtmf_string = "".join([str(digit) for digit in dtmf_events])
                 self.logger.info(f"DTMF digits entered: {dtmf_string}")
                 
                 # Check if user entered '5' for transfer
                 if len(dtmf_events) == 1 and dtmf_events[0] == 5:  # DTMF_DIGIT_FIVE = 5
-                    self.logger.info(f"Transfer requested by user for conversation {session_id}")
+                    self.logger.info(f"Transfer requested by user for conversation {conversation_id}")
                     
                     # Get transfer audio file
                     transfer_audio = self.audio_files.get("transfer", "transferring.wav")
@@ -171,7 +165,7 @@ class LocalAudioConnector(IVendorConnector):
                     return {
                         "audio_content": audio_bytes,
                         "text": "Transferring you to an agent. Please wait.",
-                        "session_id": session_id,
+                        "conversation_id": conversation_id,
                         "agent_id": self.agent_id,
                         "message_type": "transfer",
                         "barge_in_enabled": False,
@@ -179,7 +173,7 @@ class LocalAudioConnector(IVendorConnector):
                 
                 # Check if user entered '6' for goodbye
                 elif len(dtmf_events) == 1 and dtmf_events[0] == 6:  # DTMF_DIGIT_SIX = 6
-                    self.logger.info(f"Goodbye requested by user for conversation {session_id}")
+                    self.logger.info(f"Goodbye requested by user for conversation {conversation_id}")
                     
                     # Get goodbye audio file
                     goodbye_audio = self.audio_files.get("goodbye", "goodbye.wav")
@@ -197,7 +191,7 @@ class LocalAudioConnector(IVendorConnector):
                     return {
                         "audio_content": audio_bytes,
                         "text": "Thank you for calling. Goodbye!",
-                        "session_id": session_id,
+                        "conversation_id": conversation_id,
                         "agent_id": self.agent_id,
                         "message_type": "goodbye",
                         "barge_in_enabled": False,
@@ -207,7 +201,7 @@ class LocalAudioConnector(IVendorConnector):
             return {
                 "audio_content": b"",
                 "text": "",
-                "session_id": session_id,
+                "conversation_id": conversation_id,
                 "agent_id": self.agent_id,
                 "message_type": "silence",
                 "barge_in_enabled": False,
@@ -218,13 +212,13 @@ class LocalAudioConnector(IVendorConnector):
             event_data = message_data.get("event_data", {})
             event_name = event_data.get("name", "")
             
-            self.logger.info(f"Event for conversation {session_id}: {event_name}")
+            self.logger.info(f"Event for conversation {conversation_id}: {event_name}")
             
             # Return silence response for events (no audio response)
             return {
                 "audio_content": b"",
                 "text": "",
-                "session_id": session_id,
+                "conversation_id": conversation_id,
                 "agent_id": self.agent_id,
                 "message_type": "silence",
                 "barge_in_enabled": False,
@@ -232,38 +226,40 @@ class LocalAudioConnector(IVendorConnector):
 
         # Handle audio input - return silence (no processing)
         if message_data.get("input_type") == "audio":
-            self.logger.debug(f"Received audio input for conversation {session_id}")
+            self.logger.debug(f"Received audio input for conversation {conversation_id}")
             return {
                 "audio_content": b"",
                 "text": "",
-                "session_id": session_id,
+                "conversation_id": conversation_id,
                 "agent_id": self.agent_id,
                 "message_type": "silence",
                 "barge_in_enabled": False,
             }
 
         # Default: return silence for any other input type
-        self.logger.debug(f"Unhandled input type for conversation {session_id}: {message_data.get('input_type')}")
+        self.logger.debug(f"Unhandled input type for conversation {conversation_id}: {message_data.get('input_type')}")
         return {
             "audio_content": b"",
             "text": "",
-            "session_id": session_id,
+            "conversation_id": conversation_id,
             "agent_id": self.agent_id,
             "message_type": "silence",
             "barge_in_enabled": False,
         }
 
-    def end_session(self, session_id: str) -> None:
+    def end_conversation(self, conversation_id: str, message_data: Dict[str, Any] = None) -> None:
         """
         End a virtual agent conversation.
 
-        Note: This method uses 'session' terminology for vendor compatibility,
-        but it actually manages conversations (calls into WxCC).
-
         Args:
-            session_id: Unique identifier for the conversation to end (maps to conversation_id)
+            conversation_id: Unique identifier for the conversation to end
+            message_data: Optional message data for the conversation end (default: None)
         """
-        self.logger.info(f"Ending conversation {session_id}")
+        self.logger.info(f"Ending conversation {conversation_id}")
+
+        # Log message data if provided
+        if message_data:
+            self.logger.debug(f"End conversation message data: {message_data}")
 
         # Simulate playing goodbye message
         goodbye_audio = self.audio_files.get("goodbye", "goodbye.wav")
@@ -307,7 +303,7 @@ class LocalAudioConnector(IVendorConnector):
         """
         Convert vendor data to WxCC gRPC format.
 
-        Converts the dictionary returned by start_session/send_message
+        Converts the dictionary returned by start_conversation/send_message
         into a format that can be used to construct WxCC gRPC responses.
 
         Args:
@@ -323,7 +319,7 @@ class LocalAudioConnector(IVendorConnector):
         response = {
             "text": vendor_data.get("text", ""),
             "audio_file": vendor_data.get("audio_file", ""),
-            "session_id": vendor_data.get("session_id", ""),
+            "conversation_id": vendor_data.get("conversation_id", ""),
             "agent_id": vendor_data.get("agent_id", ""),
             "message_type": vendor_data.get("message_type", "default"),
             "input_sensitive": False,
@@ -346,10 +342,10 @@ class LocalAudioConnector(IVendorConnector):
         if response["message_type"] == "goodbye":
             response["output_events"].append(
                 {
-                    "event_type": "SESSION_END",
+                    "event_type": "CONVERSATION_END",
                     "event_data": {
                         "reason": "user_requested_end",
-                        "session_id": response["session_id"],
+                        "conversation_id": response["conversation_id"],
                     },
                 }
             )
@@ -359,7 +355,7 @@ class LocalAudioConnector(IVendorConnector):
                     "event_type": "TRANSFER_TO_HUMAN",
                     "event_data": {
                         "reason": "user_requested_transfer",
-                        "session_id": response["session_id"],
+                        "conversation_id": response["conversation_id"],
                     },
                 }
             )

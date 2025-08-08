@@ -30,17 +30,14 @@ class IVendorConnector(ABC):
         pass
 
     @abstractmethod
-    def start_session(
-        self, session_id: str, request_data: Dict[str, Any]
+    def start_conversation(
+        self, conversation_id: str, request_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Start a virtual agent conversation.
 
-        Note: This method uses 'session' terminology for vendor compatibility,
-        but it actually manages conversations (calls into WxCC).
-
         Args:
-            session_id: Unique identifier for the conversation (maps to conversation_id)
+            conversation_id: Unique identifier for the conversation
             request_data: Initial request data including agent ID, user info, etc.
 
         Returns:
@@ -50,16 +47,13 @@ class IVendorConnector(ABC):
 
     @abstractmethod
     def send_message(
-        self, session_id: str, message_data: Dict[str, Any]
+        self, conversation_id: str, message_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Send a message or audio to the virtual agent.
 
-        Note: This method uses 'session' terminology for vendor compatibility,
-        but it actually manages conversations (calls into WxCC).
-
         Args:
-            session_id: Unique identifier for the conversation (maps to conversation_id)
+            conversation_id: Unique identifier for the conversation
             message_data: Message data including audio bytes, text, or events
 
         Returns:
@@ -68,15 +62,13 @@ class IVendorConnector(ABC):
         pass
 
     @abstractmethod
-    def end_session(self, session_id: str) -> None:
+    def end_conversation(self, conversation_id: str, message_data: Dict[str, Any] = None) -> None:
         """
         End a virtual agent conversation.
 
-        Note: This method uses 'session' terminology for vendor compatibility,
-        but it actually manages conversations (calls into WxCC).
-
         Args:
-            session_id: Unique identifier for the conversation to end (maps to conversation_id)
+            conversation_id: Unique identifier for the conversation to end
+            message_data: Optional message data for the conversation end (default: None)
         """
         pass
 

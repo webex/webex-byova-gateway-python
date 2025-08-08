@@ -12,7 +12,7 @@ Connectors handle communication with different vendor systems and platforms, pro
 
 All connectors must implement `IVendorConnector` which defines:
 
-- **Conversation Management**: `start_session()`, `end_session()` (note: these methods use session terminology for vendor compatibility)
+- **Conversation Management**: `start_conversation()`, `end_conversation()`
 - **Message Handling**: `send_message()`
 - **Agent Discovery**: `get_available_agents()`
 - **Data Conversion**: `convert_wxcc_to_vendor()`, `convert_vendor_to_wxcc()`
@@ -27,18 +27,18 @@ class IVendorConnector(ABC):
         pass
     
     @abstractmethod
-    def start_session(self, session_id: str, request_data: dict) -> dict:
-        """Start a virtual agent session"""
+    def start_conversation(self, conversation_id: str, request_data: dict) -> dict:
+        """Start a virtual agent conversation"""
         pass
     
     @abstractmethod
-    def send_message(self, session_id: str, message_data: dict) -> dict:
+    def send_message(self, conversation_id: str, message_data: dict) -> dict:
         """Send a message/audio to the virtual agent"""
         pass
     
     @abstractmethod
-    def end_session(self, session_id: str) -> None:
-        """End a virtual agent session"""
+    def end_conversation(self, conversation_id: str, message_data: dict = None) -> None:
+        """End a virtual agent conversation"""
         pass
     
     @abstractmethod
@@ -90,16 +90,16 @@ class MyVendorConnector(IVendorConnector):
         self.config = config
         self.logger = logging.getLogger(__name__)
     
-    def start_session(self, session_id: str, request_data: dict) -> dict:
-        # Implement session start logic
+    def start_conversation(self, conversation_id: str, request_data: dict) -> dict:
+        # Implement conversation start logic
         return {"status": "started", "message": "Welcome"}
     
-    def send_message(self, session_id: str, message_data: dict) -> dict:
+    def send_message(self, conversation_id: str, message_data: dict) -> dict:
         # Implement message handling
         return {"status": "processed", "response": "Hello"}
     
-    def end_session(self, session_id: str) -> None:
-        # Implement session cleanup
+    def end_conversation(self, conversation_id: str, message_data: dict = None) -> None:
+        # Implement conversation cleanup
         pass
     
     def get_available_agents(self) -> list[str]:

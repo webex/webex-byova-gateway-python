@@ -72,31 +72,31 @@ class ConversationProcessor:
             self.logger.error(f"Error processing request for conversation {self.conversation_id}: {e}")
             yield self._create_error_response(f"Processing error: {str(e)}")
     
-    def _start_session(self) -> Iterator[voicevirtualagent__pb2.VoiceVAResponse]:
-        """Start the conversation session."""
+    def _start_conversation(self) -> Iterator[voicevirtualagent__pb2.VoiceVAResponse]:
+        """Start the conversation."""
         try:
             # Convert request to connector format
             message_data = {
                 "conversation_id": self.conversation_id,
                 "virtual_agent_id": self.virtual_agent_id,
-                "input_type": "session_start"
+                "input_type": "conversation_start"
             }
             
             # Route to connector
             connector_response = self.router.route_request(
-                self.virtual_agent_id, "start_session", self.conversation_id, message_data
+                self.virtual_agent_id, "start_conversation", self.conversation_id, message_data
             )
             
-            # Convert response to gRPC format with FINAL response type and disabled barge-in for session start
+            # Convert response to gRPC format with FINAL response type and disabled barge-in for conversation start
             yield self._convert_connector_response_to_grpc(
                 connector_response, 
                 response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.FINAL,
-                barge_in_enabled=True # Enable barge-in for session start (until server bug is resolved)
+                barge_in_enabled=True # Enable barge-in for conversation start (until server bug is resolved)
             )
             
         except Exception as e:
-            self.logger.error(f"Error starting session for conversation {self.conversation_id}: {e}")
-            yield self._create_error_response(f"Session start error: {str(e)}")
+            self.logger.error(f"Error starting conversation for conversation {self.conversation_id}: {e}")
+            yield self._create_error_response(f"Conversation start error: {str(e)}")
     
     def _process_audio_input(self, audio_input) -> Iterator[voicevirtualagent__pb2.VoiceVAResponse]:
         """Process audio input."""
@@ -173,7 +173,7 @@ class ConversationProcessor:
             if event_input.event_type == byova__common__pb2.EventInput.EventType.SESSION_START:
                 if not self.session_started:
                     self.logger.info(f"Processing SESSION_START event for conversation {self.conversation_id}")
-                    yield from self._start_session()
+                    yield from self._start_conversation()
                     self.session_started = True
                 else:
                     self.logger.warning(f"SESSION_START event received but session already started for conversation {self.conversation_id}")
@@ -331,18 +331,17 @@ class ConversationProcessor:
         return va_response
     
     def cleanup(self):
-        """Clean up the conversation processor."""
+        """Clean up conversation resources."""
         try:
-            if self.session_started and not self.can_be_deleted:
-                # End the session
-                message_data = {
-                    "conversation_id": self.conversation_id,
-                    "virtual_agent_id": self.virtual_agent_id,
-                    "input_type": "session_end"
-                }
-                self.router.route_request(
-                    self.virtual_agent_id, "end_session", self.conversation_id, message_data
-                )
+            # End the conversation with the connector
+            message_data = {
+                "conversation_id": self.conversation_id,
+                "virtual_agent_id": self.virtual_agent_id,
+                "input_type": "conversation_end"
+            }
+            self.router.route_request(
+                self.virtual_agent_id, "end_conversation", self.conversation_id, message_data
+            )
         except Exception as e:
             self.logger.error(f"Error cleaning up conversation {self.conversation_id}: {e}")
         

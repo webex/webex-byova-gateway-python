@@ -105,7 +105,7 @@ audio_files = {
 }
 
 # Usage in connector
-def start_session(self, session_id: str, request_data: dict) -> dict:
+def start_conversation(self, conversation_id: str, request_data: dict) -> dict:
     audio_file = self.audio_files.get("welcome")
     audio_path = os.path.join(self.audio_base_path, audio_file)
     
@@ -117,101 +117,3 @@ def start_session(self, session_id: str, request_data: dict) -> dict:
         "text": "Welcome to our virtual agent"
     }
 ```
-
-### Testing Audio Files
-
-```bash
-# Test audio file playback
-python -c "
-import wave
-with wave.open('audio/welcome.wav', 'rb') as wav:
-    print(f'Channels: {wav.getnchannels()}')
-    print(f'Sample width: {wav.getsampwidth()}')
-    print(f'Frame rate: {wav.getframerate()}')
-    print(f'Frames: {wav.getnframes()}')
-    print(f'Duration: {wav.getnframes() / wav.getframerate():.2f}s')
-"
-
-# Check file size and format
-ls -la audio/
-file audio/*.wav
-```
-
-## Audio Quality Guidelines
-
-### For Testing
-- **Duration**: 5-30 seconds for test messages
-- **Quality**: 16-bit, 44.1kHz for WAV files
-- **Content**: Clear, professional speech
-- **Format**: WAV for best compatibility
-
-### For Production
-- **Compression**: Use MP3 or FLAC for efficiency
-- **Quality**: 128kbps+ for MP3, lossless for FLAC
-- **Normalization**: Ensure consistent volume levels
-- **Metadata**: Include proper audio metadata
-
-## Best Practices
-
-### File Management
-- **Version Control**: Keep audio files in version control
-- **Backup**: Maintain backups of important audio files
-- **Organization**: Use subdirectories for different audio types
-- **Documentation**: Document audio file purposes and usage
-
-### Performance
-- **File Sizes**: Keep files reasonably sized for quick loading
-- **Caching**: Consider caching frequently used audio files
-- **Compression**: Use appropriate compression for your use case
-- **Streaming**: Implement streaming for large audio files
-
-### Quality Assurance
-- **Testing**: Test audio playback across different scenarios
-- **Validation**: Verify audio files are properly formatted
-- **Monitoring**: Monitor audio playback success rates
-- **Feedback**: Collect feedback on audio quality and clarity
-
-## Troubleshooting
-
-### Common Issues
-
-1. **File Not Found**: Check file paths and permissions
-2. **Format Errors**: Verify audio file format compatibility
-3. **Playback Issues**: Test audio files independently
-4. **Size Problems**: Monitor file sizes and loading times
-
-### Debug Commands
-
-```bash
-# Check audio file properties
-ffprobe audio/welcome.wav
-
-# Convert audio format
-ffmpeg -i input.wav -acodec mp3 output.mp3
-
-# Normalize audio levels
-ffmpeg -i input.wav -af "loudnorm" output.wav
-
-# Check file integrity
-python -c "
-import wave
-try:
-    with wave.open('audio/welcome.wav', 'rb') as wav:
-        print('File is valid WAV')
-except Exception as e:
-    print(f'Error: {e}')
-"
-```
-
-## Security Considerations
-
-- **File Validation**: Validate audio files before processing
-- **Path Security**: Use secure file path handling
-- **Access Control**: Restrict access to audio file directory
-- **Malware Scanning**: Scan uploaded audio files for malware
-
-## License
-
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.
-
-**Note**: Audio files may be subject to their own licensing terms. Ensure you have proper rights to use any audio content. 
