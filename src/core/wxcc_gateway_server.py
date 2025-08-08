@@ -91,7 +91,7 @@ class ConversationProcessor:
             yield self._convert_connector_response_to_grpc(
                 connector_response, 
                 response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.FINAL,
-                barge_in_enabled=False
+                barge_in_enabled=True # Enable barge-in for session start (until server bug is resolved)
             )
             
         except Exception as e:
@@ -121,7 +121,9 @@ class ConversationProcessor:
             )
             
             # Convert response to gRPC format
-            yield self._convert_connector_response_to_grpc(connector_response)
+            grpc_response = self._convert_connector_response_to_grpc(connector_response)
+            if grpc_response is not None:
+                yield grpc_response
             
         except Exception as e:
             self.logger.error(f"Error processing audio input for conversation {self.conversation_id}: {e}")
@@ -136,7 +138,7 @@ class ConversationProcessor:
                 "virtual_agent_id": self.virtual_agent_id,
                 "input_type": "dtmf",
                 "dtmf_data": {
-                    "dtmf_events": list(dtmf_input.dtmf_events)
+                    "dtmf_events": list(dtmf_input.dtmf_events),
                 }
             }
             
@@ -146,7 +148,10 @@ class ConversationProcessor:
             )
             
             # Convert response to gRPC format
-            yield self._convert_connector_response_to_grpc(connector_response)
+            grpc_response = self._convert_connector_response_to_grpc(connector_response,
+                                                                      response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.FINAL)
+            if grpc_response is not None:
+                yield grpc_response
             
         except Exception as e:
             self.logger.error(f"Error processing DTMF input for conversation {self.conversation_id}: {e}")
@@ -193,7 +198,9 @@ class ConversationProcessor:
             )
             
             # Convert response to gRPC format
-            yield self._convert_connector_response_to_grpc(connector_response)
+            grpc_response = self._convert_connector_response_to_grpc(connector_response)
+            if grpc_response is not None:
+                yield grpc_response
             
         except Exception as e:
             self.logger.error(f"Error processing event input for conversation {self.conversation_id}: {e}")
@@ -206,20 +213,26 @@ class ConversationProcessor:
             
             # Handle empty or silence responses
             if not connector_response or connector_response.get("message_type") == "silence":
-                final_response_type = response_type if response_type is not None else voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL
-                va_response.response_type = final_response_type
-                va_response.input_mode = voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF
-                va_response.input_handling_config.CopyFrom(byova__common__pb2.InputHandlingConfig(
-                    dtmf_config=byova__common__pb2.DTMFInputConfig(
-                        dtmf_input_length=1,
-                        inter_digit_timeout_msec=300,
-                        termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND
-                    ),
-                    speech_timers=byova__common__pb2.InputSpeechTimers(
-                        complete_timeout_msec=5000
-                    )
-                ))
-                return va_response
+                # For silence responses, only send a response if explicitly requested (e.g., for session start)
+                # Otherwise, return None to indicate no response should be sent
+                if response_type is not None:
+                    final_response_type = response_type
+                    va_response.response_type = final_response_type
+                    va_response.input_mode = voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF
+                    va_response.input_handling_config.CopyFrom(byova__common__pb2.InputHandlingConfig(
+                        dtmf_config=byova__common__pb2.DTMFInputConfig(
+                            dtmf_input_length=1,
+                            inter_digit_timeout_msec=300,
+                            termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND
+                        ),
+                        speech_timers=byova__common__pb2.InputSpeechTimers(
+                            complete_timeout_msec=5000
+                        )
+                    ))
+                    return va_response
+                else:
+                    # Return None to indicate no response should be sent for silence
+                    return None
             
             # Create prompts
             if connector_response.get("text"):

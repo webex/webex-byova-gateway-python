@@ -141,7 +141,7 @@ class LocalAudioConnector(IVendorConnector):
                 "barge_in_enabled": False,
             }
 
-        # Handle DTMF input - only log the digits
+        # Handle DTMF input - check for transfer and log the digits
         if message_data.get("input_type") == "dtmf" and "dtmf_data" in message_data:
             dtmf_data = message_data.get("dtmf_data", {})
             dtmf_events = dtmf_data.get("dtmf_events", [])
@@ -150,8 +150,60 @@ class LocalAudioConnector(IVendorConnector):
                 # Convert DTMF events to a string for easier processing
                 dtmf_string = "".join([str(digit) for digit in dtmf_events])
                 self.logger.info(f"DTMF digits entered: {dtmf_string}")
+                
+                # Check if user entered '5' for transfer
+                if len(dtmf_events) == 1 and dtmf_events[0] == 5:  # DTMF_DIGIT_FIVE = 5
+                    self.logger.info(f"Transfer requested by user for conversation {session_id}")
+                    
+                    # Get transfer audio file
+                    transfer_audio = self.audio_files.get("transfer", "transferring.wav")
+                    audio_path = self.audio_base_path / transfer_audio
+                    
+                    # Read the audio file as bytes
+                    try:
+                        with open(audio_path, "rb") as f:
+                            audio_bytes = f.read()
+                    except FileNotFoundError:
+                        self.logger.error(f"Transfer audio file not found: {audio_path}")
+                        audio_bytes = b""
+                    
+                    # Return transfer response
+                    return {
+                        "audio_content": audio_bytes,
+                        "text": "Transferring you to an agent. Please wait.",
+                        "session_id": session_id,
+                        "agent_id": self.agent_id,
+                        "message_type": "transfer",
+                        "barge_in_enabled": False,
+                    }
+                
+                # Check if user entered '6' for goodbye
+                elif len(dtmf_events) == 1 and dtmf_events[0] == 6:  # DTMF_DIGIT_SIX = 6
+                    self.logger.info(f"Goodbye requested by user for conversation {session_id}")
+                    
+                    # Get goodbye audio file
+                    goodbye_audio = self.audio_files.get("goodbye", "goodbye.wav")
+                    audio_path = self.audio_base_path / goodbye_audio
+                    
+                    # Read the audio file as bytes
+                    try:
+                        with open(audio_path, "rb") as f:
+                            audio_bytes = f.read()
+                    except FileNotFoundError:
+                        self.logger.error(f"Goodbye audio file not found: {audio_path}")
+                        audio_bytes = b""
+                    
+                    # Return goodbye response
+                    return {
+                        "audio_content": audio_bytes,
+                        "text": "Thank you for calling. Goodbye!",
+                        "session_id": session_id,
+                        "agent_id": self.agent_id,
+                        "message_type": "goodbye",
+                        "barge_in_enabled": False,
+                    }
             
-            # Return silence response for DTMF (no audio response)
+            # Return silence response for other DTMF inputs (no audio response)
             return {
                 "audio_content": b"",
                 "text": "",
