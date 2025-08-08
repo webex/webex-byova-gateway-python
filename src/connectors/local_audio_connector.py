@@ -144,15 +144,15 @@ class LocalAudioConnector(IVendorConnector):
                 # Convert DTMF events to a string for easier processing
                 dtmf_string = "".join([str(digit) for digit in dtmf_events])
                 self.logger.info(f"DTMF digits entered: {dtmf_string}")
-                
+
                 # Check if user entered '5' for transfer
                 if len(dtmf_events) == 1 and dtmf_events[0] == 5:  # DTMF_DIGIT_FIVE = 5
                     self.logger.info(f"Transfer requested by user for conversation {conversation_id}")
-                    
+
                     # Get transfer audio file
                     transfer_audio = self.audio_files.get("transfer", "transferring.wav")
                     audio_path = self.audio_base_path / transfer_audio
-                    
+
                     # Read the audio file as bytes
                     try:
                         with open(audio_path, "rb") as f:
@@ -160,7 +160,7 @@ class LocalAudioConnector(IVendorConnector):
                     except FileNotFoundError:
                         self.logger.error(f"Transfer audio file not found: {audio_path}")
                         audio_bytes = b""
-                    
+
                     # Return transfer response
                     return {
                         "audio_content": audio_bytes,
@@ -170,15 +170,15 @@ class LocalAudioConnector(IVendorConnector):
                         "message_type": "transfer",
                         "barge_in_enabled": False,
                     }
-                
+
                 # Check if user entered '6' for goodbye
                 elif len(dtmf_events) == 1 and dtmf_events[0] == 6:  # DTMF_DIGIT_SIX = 6
                     self.logger.info(f"Goodbye requested by user for conversation {conversation_id}")
-                    
+
                     # Get goodbye audio file
                     goodbye_audio = self.audio_files.get("goodbye", "goodbye.wav")
                     audio_path = self.audio_base_path / goodbye_audio
-                    
+
                     # Read the audio file as bytes
                     try:
                         with open(audio_path, "rb") as f:
@@ -186,7 +186,7 @@ class LocalAudioConnector(IVendorConnector):
                     except FileNotFoundError:
                         self.logger.error(f"Goodbye audio file not found: {audio_path}")
                         audio_bytes = b""
-                    
+
                     # Return goodbye response
                     return {
                         "audio_content": audio_bytes,
@@ -196,7 +196,7 @@ class LocalAudioConnector(IVendorConnector):
                         "message_type": "goodbye",
                         "barge_in_enabled": False,
                     }
-            
+
             # Return silence response for other DTMF inputs (no audio response)
             return {
                 "audio_content": b"",
@@ -211,9 +211,9 @@ class LocalAudioConnector(IVendorConnector):
         if message_data.get("input_type") == "event" and "event_data" in message_data:
             event_data = message_data.get("event_data", {})
             event_name = event_data.get("name", "")
-            
+
             self.logger.info(f"Event for conversation {conversation_id}: {event_name}")
-            
+
             # Return silence response for events (no audio response)
             return {
                 "audio_content": b"",

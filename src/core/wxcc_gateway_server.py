@@ -6,36 +6,41 @@ Webex Contact Center and the virtual agent connectors.
 """
 
 import logging
-import threading
 import time
-import uuid
 from typing import Any, Dict, Iterator
 
 import grpc
+
 from src.generated import byova_common_pb2 as byova__common__pb2
-from src.generated.voicevirtualagent_pb2 import VoiceVARequest, VoiceVAResponse, Prompt, VoiceVAInputMode
+from src.generated.voicevirtualagent_pb2 import (
+    Prompt,
+    VoiceVAInputMode,
+    VoiceVARequest,
+    VoiceVAResponse,
+)
 from src.generated.voicevirtualagent_pb2_grpc import VoiceVirtualAgentServicer
+
 from .virtual_agent_router import VirtualAgentRouter
 
 
 class ConversationProcessor:
     """
     Handles individual conversation processing.
-    
+
     This class manages the state and processing for a single conversation,
     similar to the AudioProcessor in the Webex example.
     """
-    
+
     # Event type mapping for readable logging
     EVENT_TYPE_NAMES = {
         0: "UNSPECIFIED_INPUT",
-        1: "SESSION_START", 
+        1: "SESSION_START",
         2: "SESSION_END",
         3: "NO_INPUT",
         4: "START_OF_DTMF",
         5: "CUSTOM_EVENT"
     }
-    
+
     def __init__(self, conversation_id: str, virtual_agent_id: str, router: VirtualAgentRouter):
         self.conversation_id = conversation_id
         self.virtual_agent_id = virtual_agent_id
@@ -44,16 +49,16 @@ class ConversationProcessor:
         self.start_time = time.time()
         self.session_started = False
         self.can_be_deleted = False
-        
+
         self.logger.info(f"Created conversation processor for {conversation_id} with agent {virtual_agent_id}")
-    
+
     def process_request(self, request: VoiceVARequest) -> Iterator[VoiceVAResponse]:
         """
         Process a single request and yield responses.
-        
+
         Args:
             request: The gRPC request to process
-            
+
         Yields:
             VoiceVAResponse messages
         """
@@ -67,11 +72,11 @@ class ConversationProcessor:
                 yield from self._process_event_input(request.event_input)
             else:
                 self.logger.warning(f"Unknown input type for conversation {self.conversation_id}")
-                
+
         except Exception as e:
             self.logger.error(f"Error processing request for conversation {self.conversation_id}: {e}")
             yield self._create_error_response(f"Processing error: {str(e)}")
-    
+
     def _start_conversation(self) -> Iterator[VoiceVAResponse]:
         """Start the conversation."""
         try:
@@ -81,23 +86,23 @@ class ConversationProcessor:
                 "virtual_agent_id": self.virtual_agent_id,
                 "input_type": "conversation_start"
             }
-            
+
             # Route to connector
             connector_response = self.router.route_request(
                 self.virtual_agent_id, "start_conversation", self.conversation_id, message_data
             )
-            
+
             # Convert response to gRPC format with FINAL response type and disabled barge-in for conversation start
             yield self._convert_connector_response_to_grpc(
-                connector_response, 
+                connector_response,
                 response_type=VoiceVAResponse.ResponseType.FINAL,
                 barge_in_enabled=True # Enable barge-in for conversation start (until server bug is resolved)
             )
-            
+
         except Exception as e:
             self.logger.error(f"Error starting conversation for conversation {self.conversation_id}: {e}")
             yield self._create_error_response(f"Conversation start error: {str(e)}")
-    
+
     def _process_audio_input(self, audio_input) -> Iterator[VoiceVAResponse]:
         """Process audio input."""
         try:
@@ -114,21 +119,21 @@ class ConversationProcessor:
                     "is_single_utterance": audio_input.is_single_utterance,
                 }
             }
-            
+
             # Route to connector
             connector_response = self.router.route_request(
                 self.virtual_agent_id, "send_message", self.conversation_id, message_data
             )
-            
+
             # Convert response to gRPC format
             grpc_response = self._convert_connector_response_to_grpc(connector_response)
             if grpc_response is not None:
                 yield grpc_response
-            
+
         except Exception as e:
             self.logger.error(f"Error processing audio input for conversation {self.conversation_id}: {e}")
             yield self._create_error_response(f"Audio processing error: {str(e)}")
-    
+
     def _process_dtmf_input(self, dtmf_input) -> Iterator[VoiceVAResponse]:
         """Process DTMF input."""
         try:
@@ -141,22 +146,22 @@ class ConversationProcessor:
                     "dtmf_events": list(dtmf_input.dtmf_events),
                 }
             }
-            
+
             # Route to connector
             connector_response = self.router.route_request(
                 self.virtual_agent_id, "send_message", self.conversation_id, message_data
             )
-            
+
             # Convert response to gRPC format
             grpc_response = self._convert_connector_response_to_grpc(connector_response,
                                                                       response_type=VoiceVAResponse.ResponseType.FINAL)
             if grpc_response is not None:
                 yield grpc_response
-            
+
         except Exception as e:
             self.logger.error(f"Error processing DTMF input for conversation {self.conversation_id}: {e}")
             yield self._create_error_response(f"DTMF processing error: {str(e)}")
-    
+
     def _process_event_input(self, event_input) -> Iterator[VoiceVAResponse]:
         """Process event input."""
         try:
@@ -168,7 +173,7 @@ class ConversationProcessor:
                 f"name='{event_input.name}', "
                 f"parameters={dict(event_input.parameters)}"
             )
-            
+
             # Handle SESSION_START event explicitly
             if event_input.event_type == byova__common__pb2.EventInput.EventType.SESSION_START:
                 if not self.session_started:
@@ -178,7 +183,7 @@ class ConversationProcessor:
                 else:
                     self.logger.warning(f"SESSION_START event received but session already started for conversation {self.conversation_id}")
                 return
-            
+
             # Handle other event types
             # Convert request to connector format
             message_data = {
@@ -191,26 +196,26 @@ class ConversationProcessor:
                     "parameters": event_input.parameters,
                 }
             }
-            
+
             # Route to connector
             connector_response = self.router.route_request(
                 self.virtual_agent_id, "send_message", self.conversation_id, message_data
             )
-            
+
             # Convert response to gRPC format
             grpc_response = self._convert_connector_response_to_grpc(connector_response)
             if grpc_response is not None:
                 yield grpc_response
-            
+
         except Exception as e:
             self.logger.error(f"Error processing event input for conversation {self.conversation_id}: {e}")
             yield self._create_error_response(f"Event processing error: {str(e)}")
-    
+
     def _convert_connector_response_to_grpc(self, connector_response: Dict[str, Any], response_type: VoiceVAResponse.ResponseType = None, barge_in_enabled: bool = None) -> VoiceVAResponse:
         """Convert connector response to gRPC format with optional response type and barge-in settings."""
         try:
             va_response = VoiceVAResponse()
-            
+
             # Handle empty or silence responses
             if not connector_response or connector_response.get("message_type") == "silence":
                 # For silence responses, only send a response if explicitly requested (e.g., for session start)
@@ -233,11 +238,11 @@ class ConversationProcessor:
                 else:
                     # Return None to indicate no response should be sent for silence
                     return None
-            
+
             # Create prompts
             if connector_response.get("text"):
                 audio_content = connector_response.get("audio_content", b"")
-                
+
                 # Use specified barge-in setting, or fall back to connector response setting
                 if barge_in_enabled is not None:
                     # Use the explicitly specified barge-in setting
@@ -245,16 +250,16 @@ class ConversationProcessor:
                 else:
                     # Use the barge-in setting from the connector response
                     final_barge_in_enabled = connector_response.get("barge_in_enabled", True)
-                
+
                 prompt = Prompt()
                 prompt.text = connector_response["text"]
                 prompt.audio_content = audio_content
                 prompt.is_barge_in_enabled = final_barge_in_enabled
                 va_response.prompts.append(prompt)
-            
+
             # Create output events
             message_type = connector_response.get("message_type", "")
-            
+
             if message_type == "goodbye":
                 output_event = byova__common__pb2.OutputEvent()
                 output_event.event_type = byova__common__pb2.OutputEvent.EventType.SESSION_END
@@ -267,14 +272,14 @@ class ConversationProcessor:
                 output_event.name = "transfer_requested"
                 va_response.output_events.append(output_event)
                 self.can_be_deleted = True
-            
+
             # Set response type
             final_response_type = response_type if response_type is not None else VoiceVAResponse.ResponseType.PARTIAL
             va_response.response_type = final_response_type
-            
+
             # Set input mode
             va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-            
+
             # Set input handling configuration
             va_response.input_handling_config.CopyFrom(byova__common__pb2.InputHandlingConfig(
                 dtmf_config=byova__common__pb2.DTMFInputConfig(
@@ -286,35 +291,35 @@ class ConversationProcessor:
                     complete_timeout_msec=5000
                 )
             ))
-            
+
             return va_response
-            
+
         except Exception as e:
             self.logger.error(f"Error converting connector response to gRPC: {e}")
             return self._create_error_response(f"Response conversion error: {str(e)}")
-    
+
     def _create_error_response(self, error_message: str) -> VoiceVAResponse:
         """Create an error response."""
         va_response = VoiceVAResponse()
-        
+
         # Create prompt
         prompt = Prompt()
         prompt.text = f"I'm sorry, I encountered an error: {error_message}"
         prompt.is_barge_in_enabled = False
         va_response.prompts.append(prompt)
-        
+
         # Create output event
         output_event = byova__common__pb2.OutputEvent()
         output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
         output_event.name = "error_occurred"
         va_response.output_events.append(output_event)
-        
+
         # Set response type
         va_response.response_type = VoiceVAResponse.ResponseType.FINAL
-        
+
         # Set input mode
         va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-        
+
         # Set input handling configuration
         va_response.input_handling_config.CopyFrom(byova__common__pb2.InputHandlingConfig(
             dtmf_config=byova__common__pb2.DTMFInputConfig(
@@ -326,10 +331,10 @@ class ConversationProcessor:
                 complete_timeout_msec=5000
             )
         ))
-        
+
         self.logger.info(f"Sending error response for conversation {self.conversation_id}")
         return va_response
-    
+
     def cleanup(self):
         """Clean up conversation resources."""
         try:
@@ -344,7 +349,7 @@ class ConversationProcessor:
             )
         except Exception as e:
             self.logger.error(f"Error cleaning up conversation {self.conversation_id}: {e}")
-        
+
         duration = time.time() - self.start_time
         self.logger.info(f"Cleaned up conversation {self.conversation_id} (duration: {duration:.2f}s)")
 
@@ -367,23 +372,23 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         """
         self.router = router
         self.logger = logging.getLogger(__name__)
-        
+
         # Conversation state management - track active conversations by conversation_id
         self.conversations: Dict[str, ConversationProcessor] = {}
-        
+
         # Connection tracking for monitoring
         self.connection_events = []
-        
+
         self.logger.info("WxCCGatewayServer initialized")
 
     def shutdown(self):
         """Gracefully shut down the server and cleanup conversations."""
         self.logger.info("Shutting down WxCCGatewayServer...")
-        
+
         # Clean up all active conversations
         for conversation_id in list(self.conversations.keys()):
             self._cleanup_conversation(conversation_id)
-        
+
         self.logger.info("WxCCGatewayServer shutdown complete")
 
     def _cleanup_conversation(self, conversation_id: str):
@@ -470,7 +475,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         """
         try:
             self.logger.info("ListVirtualAgents called")
-            
+
             # Get all available agents from the router
             available_agents = self.router.get_all_available_agents()
 
@@ -564,13 +569,13 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     self.logger.info(f"Processing event input for conversation {conversation_id}: {event_type_name}")
                 else:
                     self.logger.warning(f"Unknown input type for conversation {conversation_id}")
-                
+
                 # Process the request through the conversation processor
                 self.logger.debug(f"Processing request for conversation {conversation_id}")
                 self.logger.debug(f"Request: {request}")
 
                 yield from processor.process_request(request)
-                
+
                 # Track message event
                 self.add_connection_event("message", conversation_id, agent_id)
 
