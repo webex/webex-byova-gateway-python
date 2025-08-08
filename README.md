@@ -49,10 +49,17 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
 4. **Generate gRPC Stubs**
    ```bash
    # Generate Python gRPC client and server stubs in the generated directory
-   python -m grpc_tools.protoc -Iproto --python_out=src/generated --grpc_python_out=src/generated proto/byova_common.proto proto/voicevirtualagent.proto
+   python -m grpc_tools.protoc -I./proto --python_out=src/generated --grpc_python_out=src/generated proto/*.proto
    ```
    
    Generated protobuf files are stored in the `src/generated` directory to separate auto-generated code from hand-written code.
+   
+   **Note**: The generated files use relative imports within the `src.generated` package. To use them in your code, import the package first:
+   ```python
+   import src.generated
+   import byova_common_pb2
+   import voicevirtualagent_pb2
+   ```
 
 5. **Prepare Audio Files**
    

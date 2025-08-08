@@ -58,12 +58,6 @@ class ConversationProcessor:
             VoiceVAResponse messages
         """
         try:
-            # Handle session start
-            if not self.session_started:
-                self.logger.info(f"Starting session for conversation {self.conversation_id}")
-                yield from self._start_session()
-                self.session_started = True
-            
             # Process the request based on input type
             if request.HasField("audio_input"):
                 yield from self._process_audio_input(request.audio_input)
@@ -93,8 +87,12 @@ class ConversationProcessor:
                 self.virtual_agent_id, "start_session", self.conversation_id, message_data
             )
             
-            # Convert response to gRPC format
-            yield self._convert_connector_response_to_grpc(connector_response)
+            # Convert response to gRPC format with FINAL response type and disabled barge-in for session start
+            yield self._convert_connector_response_to_grpc(
+                connector_response, 
+                response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.FINAL,
+                barge_in_enabled=False
+            )
             
         except Exception as e:
             self.logger.error(f"Error starting session for conversation {self.conversation_id}: {e}")
@@ -166,6 +164,17 @@ class ConversationProcessor:
                 f"parameters={dict(event_input.parameters)}"
             )
             
+            # Handle SESSION_START event explicitly
+            if event_input.event_type == byova__common__pb2.EventInput.EventType.SESSION_START:
+                if not self.session_started:
+                    self.logger.info(f"Processing SESSION_START event for conversation {self.conversation_id}")
+                    yield from self._start_session()
+                    self.session_started = True
+                else:
+                    self.logger.warning(f"SESSION_START event received but session already started for conversation {self.conversation_id}")
+                return
+            
+            # Handle other event types
             # Convert request to connector format
             message_data = {
                 "conversation_id": self.conversation_id,
@@ -190,86 +199,82 @@ class ConversationProcessor:
             self.logger.error(f"Error processing event input for conversation {self.conversation_id}: {e}")
             yield self._create_error_response(f"Event processing error: {str(e)}")
     
-    def _convert_connector_response_to_grpc(self, connector_response: Dict[str, Any]) -> voicevirtualagent__pb2.VoiceVAResponse:
-        """Convert connector response to gRPC format."""
+    def _convert_connector_response_to_grpc(self, connector_response: Dict[str, Any], response_type: voicevirtualagent__pb2.VoiceVAResponse.ResponseType = None, barge_in_enabled: bool = None) -> voicevirtualagent__pb2.VoiceVAResponse:
+        """Convert connector response to gRPC format with optional response type and barge-in settings."""
         try:
+            va_response = voicevirtualagent__pb2.VoiceVAResponse()
+            
             # Handle empty or silence responses
             if not connector_response or connector_response.get("message_type") == "silence":
-                return voicevirtualagent__pb2.VoiceVAResponse(
-                    prompts=[],
-                    output_events=[],
-                    input_sensitive=False,
-                    input_mode=voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF,
-                    response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL,
-                )
+                final_response_type = response_type if response_type is not None else voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL
+                va_response.response_type = final_response_type
+                va_response.input_mode = voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF
+                va_response.input_handling_config.CopyFrom(byova__common__pb2.InputHandlingConfig(
+                    dtmf_config=byova__common__pb2.DTMFInputConfig(
+                        dtmf_input_length=1,
+                        inter_digit_timeout_msec=300,
+                        termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND
+                    ),
+                    speech_timers=byova__common__pb2.InputSpeechTimers(
+                        complete_timeout_msec=5000
+                    )
+                ))
+                return va_response
             
             # Create prompts
-            prompts = []
             if connector_response.get("text"):
                 audio_content = connector_response.get("audio_content", b"")
                 
-                # Determine if barge-in should be enabled
-                # Disable barge-in for welcome messages to prevent interruption
-                is_welcome = connector_response.get("message_type") == "welcome"
-                barge_in_enabled = connector_response.get("barge_in_enabled", True) and not is_welcome
+                # Use specified barge-in setting, or fall back to connector response setting
+                if barge_in_enabled is not None:
+                    # Use the explicitly specified barge-in setting
+                    final_barge_in_enabled = barge_in_enabled
+                else:
+                    # Use the barge-in setting from the connector response
+                    final_barge_in_enabled = connector_response.get("barge_in_enabled", True)
                 
-                prompt = voicevirtualagent__pb2.Prompt(
-                    text=connector_response["text"],
-                    audio_content=audio_content,
-                    is_barge_in_enabled=barge_in_enabled,
-                )
-                prompts.append(prompt)
+                prompt = voicevirtualagent__pb2.Prompt()
+                prompt.text = connector_response["text"]
+                prompt.audio_content = audio_content
+                prompt.is_barge_in_enabled = final_barge_in_enabled
+                va_response.prompts.append(prompt)
             
             # Create output events
-            output_events = []
             message_type = connector_response.get("message_type", "")
             
             if message_type == "goodbye":
-                event = byova__common__pb2.OutputEvent(
-                    event_type=byova__common__pb2.OutputEvent.EventType.SESSION_END,
-                    name="session_ended",
-                    metadata={},
-                )
-                output_events.append(event)
+                output_event = byova__common__pb2.OutputEvent()
+                output_event.event_type = byova__common__pb2.OutputEvent.EventType.SESSION_END
+                output_event.name = "session_ended"
+                va_response.output_events.append(output_event)
                 self.can_be_deleted = True
             elif message_type == "transfer":
-                event = byova__common__pb2.OutputEvent(
-                    event_type=byova__common__pb2.OutputEvent.EventType.TRANSFER_TO_AGENT,
-                    name="transfer_requested",
-                    metadata={},
-                )
-                output_events.append(event)
+                output_event = byova__common__pb2.OutputEvent()
+                output_event.event_type = byova__common__pb2.OutputEvent.EventType.TRANSFER_TO_AGENT
+                output_event.name = "transfer_requested"
+                va_response.output_events.append(output_event)
                 self.can_be_deleted = True
             
-            # Create DTMF input configuration
-            dtmf_config = byova__common__pb2.DTMFInputConfig(
-                dtmf_input_length=1,
-                inter_digit_timeout_msec=300,
-                termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND
-            )
+            # Set response type
+            final_response_type = response_type if response_type is not None else voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL
+            va_response.response_type = final_response_type
             
-            # Create speech timers configuration
-            speech_timers = byova__common__pb2.InputSpeechTimers(
-                complete_timeout_msec=5000
-            )
+            # Set input mode
+            va_response.input_mode = voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF
             
-            # Create input handling configuration
-            input_handling_config = byova__common__pb2.InputHandlingConfig(
-                dtmf_config=dtmf_config,
-                speech_timers=speech_timers
-            )
+            # Set input handling configuration
+            va_response.input_handling_config.CopyFrom(byova__common__pb2.InputHandlingConfig(
+                dtmf_config=byova__common__pb2.DTMFInputConfig(
+                    dtmf_input_length=1,
+                    inter_digit_timeout_msec=300,
+                    termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND
+                ),
+                speech_timers=byova__common__pb2.InputSpeechTimers(
+                    complete_timeout_msec=5000
+                )
+            ))
             
-            # Create response
-            response = voicevirtualagent__pb2.VoiceVAResponse(
-                prompts=prompts,
-                output_events=output_events,
-                input_sensitive=False,
-                input_mode=voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF,
-                input_handling_config=input_handling_config,
-                response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.PARTIAL,
-            )
-            
-            return response
+            return va_response
             
         except Exception as e:
             self.logger.error(f"Error converting connector response to gRPC: {e}")
@@ -277,45 +282,40 @@ class ConversationProcessor:
     
     def _create_error_response(self, error_message: str) -> voicevirtualagent__pb2.VoiceVAResponse:
         """Create an error response."""
-        prompt = voicevirtualagent__pb2.Prompt(
-            text=f"I'm sorry, I encountered an error: {error_message}",
-            is_barge_in_enabled=False,
-        )
+        va_response = voicevirtualagent__pb2.VoiceVAResponse()
         
-        event = byova__common__pb2.OutputEvent(
-            event_type=byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT,
-            name="error_occurred",
-            metadata={},
-        )
+        # Create prompt
+        prompt = voicevirtualagent__pb2.Prompt()
+        prompt.text = f"I'm sorry, I encountered an error: {error_message}"
+        prompt.is_barge_in_enabled = False
+        va_response.prompts.append(prompt)
         
-        # Create DTMF input configuration
-        dtmf_config = byova__common__pb2.DTMFInputConfig(
-            dtmf_input_length=1,
-            inter_digit_timeout_msec=300,
-            termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND
-        )
+        # Create output event
+        output_event = byova__common__pb2.OutputEvent()
+        output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
+        output_event.name = "error_occurred"
+        va_response.output_events.append(output_event)
         
-        # Create speech timers configuration
-        speech_timers = byova__common__pb2.InputSpeechTimers(
-            complete_timeout_msec=5000
-        )
+        # Set response type
+        va_response.response_type = voicevirtualagent__pb2.VoiceVAResponse.ResponseType.FINAL
         
-        # Create input handling configuration
-        input_handling_config = byova__common__pb2.InputHandlingConfig(
-            dtmf_config=dtmf_config,
-            speech_timers=speech_timers
-        )
+        # Set input mode
+        va_response.input_mode = voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF
         
-        response = voicevirtualagent__pb2.VoiceVAResponse(
-            prompts=[prompt],
-            output_events=[event],
-            input_sensitive=False,
-            input_mode=voicevirtualagent__pb2.VoiceVAInputMode.INPUT_VOICE_DTMF,
-            input_handling_config=input_handling_config,
-            response_type=voicevirtualagent__pb2.VoiceVAResponse.ResponseType.FINAL,
-        )
+        # Set input handling configuration
+        va_response.input_handling_config.CopyFrom(byova__common__pb2.InputHandlingConfig(
+            dtmf_config=byova__common__pb2.DTMFInputConfig(
+                dtmf_input_length=1,
+                inter_digit_timeout_msec=300,
+                termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND
+            ),
+            speech_timers=byova__common__pb2.InputSpeechTimers(
+                complete_timeout_msec=5000
+            )
+        ))
         
-        return response
+        self.logger.info(f"Sending error response for conversation {self.conversation_id}")
+        return va_response
     
     def cleanup(self):
         """Clean up the conversation processor."""
@@ -554,6 +554,9 @@ class WxCCGatewayServer(voicevirtualagent__pb2_grpc.VoiceVirtualAgentServicer):
                     self.logger.warning(f"Unknown input type for conversation {conversation_id}")
                 
                 # Process the request through the conversation processor
+                self.logger.debug(f"Processing request for conversation {conversation_id}")
+                self.logger.debug(f"Request: {request}")
+
                 yield from processor.process_request(request)
                 
                 # Track message event

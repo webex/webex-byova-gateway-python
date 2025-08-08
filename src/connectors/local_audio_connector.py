@@ -100,6 +100,7 @@ class LocalAudioConnector(IVendorConnector):
             "session_id": session_id,
             "agent_id": self.agent_id,
             "message_type": "welcome",
+            "barge_in_enabled": False,  # Disable barge-in for welcome message
         }
 
     def send_message(
@@ -123,76 +124,81 @@ class LocalAudioConnector(IVendorConnector):
         # Log relevant parts of message_data without audio bytes
         log_data = {
             "conversation_id": message_data.get("conversation_id"),
-            "customer_org_id": message_data.get("customer_org_id"),
             "virtual_agent_id": message_data.get("virtual_agent_id"),
             "input_type": message_data.get("input_type"),
-            "text": message_data.get("text", ""),
-            "has_audio_data": "audio_data" in message_data,
         }
         self.logger.debug(f"Message data for conversation {session_id}: {log_data}")
 
-        # Extract text from message data (could be from speech-to-text)
-        text = message_data.get("text", "").lower()
+        # Ignore session start events - these should be handled by start_session method
+        if message_data.get("input_type") == "session_start":
+            self.logger.info(f"Ignoring session start event in send_message for conversation {session_id}")
+            return {
+                "audio_content": b"",
+                "text": "",
+                "session_id": session_id,
+                "agent_id": self.agent_id,
+                "message_type": "silence",
+                "barge_in_enabled": False,
+            }
 
-        # Check if this is actual speech content or just silence/background noise
-        # If there's no text content and it's just audio data, don't respond
-        if not text and "audio_data" in message_data:
-            audio_data = message_data.get("audio_data", {})
-            caller_audio = audio_data.get("caller_audio", b"")
+        # Handle DTMF input - only log the digits
+        if message_data.get("input_type") == "dtmf" and "dtmf_data" in message_data:
+            dtmf_data = message_data.get("dtmf_data", {})
+            dtmf_events = dtmf_data.get("dtmf_events", [])
+            if dtmf_events:
+                self.logger.info(f"Received DTMF input for conversation {session_id}: {dtmf_events}")
+                # Convert DTMF events to a string for easier processing
+                dtmf_string = "".join([str(digit) for digit in dtmf_events])
+                self.logger.info(f"DTMF digits entered: {dtmf_string}")
+            
+            # Return silence response for DTMF (no audio response)
+            return {
+                "audio_content": b"",
+                "text": "",
+                "session_id": session_id,
+                "agent_id": self.agent_id,
+                "message_type": "silence",
+                "barge_in_enabled": False,
+            }
 
-            # Check if the audio is mostly silence (all 0x7f bytes or similar)
-            if caller_audio and all(
-                b == 0x7F for b in caller_audio[:100]
-            ):  # Check first 100 bytes
-                self.logger.debug(
-                    f"Detected silence/background noise for conversation {session_id}, not responding"
-                )
-                return {
-                    "audio_content": b"",  # No audio response
-                    "text": "",  # No text response
-                    "session_id": session_id,
-                    "agent_id": self.agent_id,
-                    "message_type": "silence",
-                }
+        # Handle event inputs - log start and end of input events
+        if message_data.get("input_type") == "event" and "event_data" in message_data:
+            event_data = message_data.get("event_data", {})
+            event_name = event_data.get("name", "")
+            
+            self.logger.info(f"Event for conversation {session_id}: {event_name}")
+            
+            # Return silence response for events (no audio response)
+            return {
+                "audio_content": b"",
+                "text": "",
+                "session_id": session_id,
+                "agent_id": self.agent_id,
+                "message_type": "silence",
+                "barge_in_enabled": False,
+            }
 
-        # Determine response based on input
-        if "transfer" in text or "agent" in text:
-            audio_file = self.audio_files.get("transfer", "transferring.wav")
-            response_text = "Transferring you to an agent."
-            message_type = "transfer"
-        elif "error" in text or "problem" in text:
-            audio_file = self.audio_files.get("error", "error.wav")
-            response_text = "I'm sorry, I encountered an error. Please try again."
-            message_type = "error"
-        elif "goodbye" in text or "bye" in text or "end" in text:
-            audio_file = self.audio_files.get("goodbye", "goodbye.wav")
-            response_text = "Thank you for calling, have a great day."
-            message_type = "goodbye"
-        else:
-            # For the default case, use the default audio file (default_response.wav)
-            # with the specific text message requested
-            audio_file = self.audio_files.get("default", "default_response.wav")
-            response_text = "I understand, let me help you with that."
-            message_type = "default"
+        # Handle audio input - return silence (no processing)
+        if message_data.get("input_type") == "audio":
+            self.logger.debug(f"Received audio input for conversation {session_id}")
+            return {
+                "audio_content": b"",
+                "text": "",
+                "session_id": session_id,
+                "agent_id": self.agent_id,
+                "message_type": "silence",
+                "barge_in_enabled": False,
+            }
 
-        audio_path = self.audio_base_path / audio_file
-
-        # Read the audio file as bytes
-        try:
-            with open(audio_path, "rb") as f:
-                audio_bytes = f.read()
-        except FileNotFoundError:
-            self.logger.error(f"Audio file not found: {audio_path}")
-            audio_bytes = b""
-
-        self.logger.info(f"Conversation {session_id} response: {response_text}")
-
+        # Default: return silence for any other input type
+        self.logger.debug(f"Unhandled input type for conversation {session_id}: {message_data.get('input_type')}")
         return {
-            "audio_content": audio_bytes,
-            "text": response_text,
+            "audio_content": b"",
+            "text": "",
             "session_id": session_id,
             "agent_id": self.agent_id,
-            "message_type": message_type,
+            "message_type": "silence",
+            "barge_in_enabled": False,
         }
 
     def end_session(self, session_id: str) -> None:
