@@ -77,6 +77,49 @@ connectors:
         default: "default_response.wav"
 ```
 
+### AWS Lex Connector (`aws_lex_connector.py`)
+
+**Purpose**: Integration with Amazon Lex v2 for virtual agent capabilities
+
+**Features**:
+- Connects to existing AWS Lex v2 instances
+- Automatically discovers and lists available Lex bots as agents
+- Supports multiple AWS credential methods
+- Foundation for full conversation handling
+
+**Prerequisites**:
+1. AWS account with Lex v2 bots configured
+2. AWS credentials configured (via AWS CLI, environment variables, or IAM roles)
+3. Python packages: `boto3` and `botocore`
+
+**Configuration**:
+```yaml
+connectors:
+  - name: "aws_lex_connector"
+    type: "aws_lex_connector"
+    class: "AWSLexConnector"
+    module: "connectors.aws_lex_connector"
+    config:
+      region_name: "us-east-1"  # Your AWS region
+      # Optional: Explicit credentials
+      # aws_access_key_id: "${AWS_ACCESS_KEY_ID}"
+      # aws_secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+      # aws_session_token: "${AWS_SESSION_TOKEN}"
+    agents: []  # Auto-populated from Lex bots
+```
+
+**AWS Credentials**:
+The connector supports multiple ways to provide AWS credentials:
+
+1. **Default credentials** (recommended): Configure via AWS CLI (`aws configure`) or environment variables
+2. **Explicit credentials**: Provide in config file (less secure)
+3. **IAM roles**: When running on EC2 or ECS with appropriate IAM roles
+
+**Current Limitations**:
+- Basic connectivity and bot listing only
+- Full conversation handling not yet implemented
+- Audio processing integration pending
+
 ## Adding New Connectors
 
 ### 1. Create Connector Class

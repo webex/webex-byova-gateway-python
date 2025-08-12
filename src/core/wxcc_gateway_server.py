@@ -482,9 +482,17 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             # Build the response
             virtual_agents = []
             for i, agent_id in enumerate(available_agents):
+                display_name = agent_id
+                # The agent_id now includes the connector prefix (e.g., "aws_lex_connector: Bot Name")
+                # Extract just the agent name for display
+                if ": " in agent_id:
+                    agent_id = agent_id.split(": ", 1)[1]
+                else:
+                    agent_id = agent_id
+
                 agent_info = byova__common__pb2.VirtualAgentInfo(
                     virtual_agent_id=agent_id,
-                    virtual_agent_name=f"Local Audio Agent {i + 1}",
+                    virtual_agent_name=display_name,
                     is_default=(i == 0),  # First agent is default
                     attributes={},
                 )

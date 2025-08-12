@@ -37,6 +37,11 @@ class VirtualAgentRouter:
         # Value: IVendorConnector instance
         self.agent_to_connector_map: Dict[str, IVendorConnector] = {}
 
+        # Dictionary to map agent IDs to their connector names
+        # Key: agent ID
+        # Value: connector name (e.g., "local_audio_connector", "aws_lex_connector")
+        self.agent_to_connector_name_map: Dict[str, str] = {}
+
         # Set up logging
         self.logger = logging.getLogger(__name__)
 
@@ -113,6 +118,7 @@ class VirtualAgentRouter:
                 # Map each agent to this connector
                 for agent_id in available_agents:
                     self.agent_to_connector_map[agent_id] = connector_instance
+                    self.agent_to_connector_name_map[agent_id] = connector_id
                     self.logger.info(
                         f"Mapped agent '{agent_id}' to connector '{connector_id}'"
                     )
@@ -142,6 +148,21 @@ class VirtualAgentRouter:
             List of all unique virtual agent IDs registered in the router
         """
         return list(self.agent_to_connector_map.keys())
+
+    def get_agent_info_with_connector(self) -> List[Dict[str, str]]:
+        """
+        Get a list of all available agents with their connector information.
+
+        Returns:
+            List of dictionaries containing agent_id and connector_name
+        """
+        agent_info = []
+        for agent_id, connector_name in self.agent_to_connector_name_map.items():
+            agent_info.append({
+                "agent_id": agent_id,
+                "connector_name": connector_name
+            })
+        return agent_info
 
     def get_connector_for_agent(self, agent_id: str) -> IVendorConnector:
         """
@@ -225,6 +246,7 @@ class VirtualAgentRouter:
                 for connector_id, conn_instance in self.loaded_connectors.items()
                 if conn_instance == connector
             },
+            "agent_to_connector_names": self.agent_to_connector_name_map,
             "total_connectors": len(self.loaded_connectors),
             "total_agents": len(self.agent_to_connector_map),
         }

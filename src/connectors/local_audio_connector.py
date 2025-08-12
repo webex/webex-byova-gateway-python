@@ -60,9 +60,9 @@ class LocalAudioConnector(IVendorConnector):
         Get available virtual agent IDs.
 
         Returns:
-            List containing the local playback agent ID
+            List containing the local playback agent ID with connector prefix
         """
-        return [self.agent_id]
+        return [f"Local Audio: {self.agent_id}"]
 
     def start_conversation(
         self, conversation_id: str, request_data: Dict[str, Any]
