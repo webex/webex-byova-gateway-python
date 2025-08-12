@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src" / "core"))
 from core.virtual_agent_router import VirtualAgentRouter
 from core.wxcc_gateway_server import WxCCGatewayServer
 from monitoring.app import run_web_app
-from src.generated import voicevirtualagent_pb2_grpc
+from src.generated.voicevirtualagent_pb2_grpc import add_VoiceVirtualAgentServicer_to_server
 
 
 def setup_logging(config: dict) -> None:
@@ -151,16 +151,21 @@ def create_router_config(config: dict) -> dict:
     Returns:
         Router configuration dictionary
     """
-    # Convert the list-based connector config to the dictionary format expected by router
-    connectors_config = {}
-
-    for connector in config.get("connectors", []):
-        connector_id = connector.get("name", "unknown")
-        connectors_config[connector_id] = {
-            "class": connector.get("class"),
-            "module": connector.get("module"),
-            "config": connector.get("config", {}),
-        }
+    # The connectors config is already in the correct dictionary format
+    connectors_config = config.get("connectors", {})
+    
+    # Ensure each connector has the required fields
+    for connector_id, connector_config in connectors_config.items():
+        if not isinstance(connector_config, dict):
+            raise ValueError(f"Connector {connector_id} configuration must be a dictionary")
+        
+        # Ensure required fields exist
+        if "class" not in connector_config:
+            raise ValueError(f"Connector {connector_id} missing required 'class' field")
+        if "module" not in connector_config:
+            raise ValueError(f"Connector {connector_id} missing required 'module' field")
+        if "config" not in connector_config:
+            connectors_config[connector_id]["config"] = {}
 
     return {"connectors": connectors_config}
 
@@ -218,7 +223,7 @@ def main():
         )
 
         # Add servicer to the server
-        voicevirtualagent_pb2_grpc.add_VoiceVirtualAgentServicer_to_server(
+        add_VoiceVirtualAgentServicer_to_server(
             server, grpc_server
         )
 

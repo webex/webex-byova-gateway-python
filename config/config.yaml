@@ -11,7 +11,7 @@ gateway:
 
 # Connector configurations
 connectors:
-  - name: "my_local_test_agent"
+  my_local_test_agent:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
@@ -28,8 +28,18 @@ connectors:
     agents:
       - "Local Playback"
 
-# Example configuration for future vendor connectors
-# Uncomment and modify as needed when adding new connectors
+  aws_lex_connector:
+    type: "aws_lex_connector"
+    class: "AWSLexConnector"
+    module: "connectors.aws_lex_connector"
+    config:
+      region_name: "us-east-1"  # AWS region where your Lex bots are located
+      # Optional: Explicit AWS credentials (will use default credentials if not provided)
+      # aws_access_key_id: "${AWS_ACCESS_KEY_ID}"
+      # aws_secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+      # aws_session_token: "${AWS_SESSION_TOKEN}"  # For temporary credentials
+    agents: []  # Will be populated automatically from Lex bots in the region
+
 #  - name: "vendor_x_connector"
 #    type: "vendor_x_connector"
 #    class: "VendorXConnector"

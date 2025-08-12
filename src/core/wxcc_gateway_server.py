@@ -481,18 +481,17 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
 
             # Build the response
             virtual_agents = []
-            for i, agent_id in enumerate(available_agents):
-                display_name = agent_id
-                # The agent_id now includes the connector prefix (e.g., "aws_lex_connector: Bot Name")
+            for i, full_agent_id in enumerate(available_agents):
+                # The full_agent_id includes the connector prefix (e.g., "aws_lex_connector: Bot Name")
                 # Extract just the agent name for display
-                if ": " in agent_id:
-                    agent_id = agent_id.split(": ", 1)[1]
+                if ": " in full_agent_id:
+                    agent_name = full_agent_id.split(": ", 1)[1]
                 else:
-                    agent_id = agent_id
+                    agent_name = full_agent_id
 
                 agent_info = byova__common__pb2.VirtualAgentInfo(
-                    virtual_agent_id=agent_id,
-                    virtual_agent_name=display_name,
+                    virtual_agent_id=full_agent_id,  # Use the full agent ID for routing
+                    virtual_agent_name=agent_name,   # Use the extracted name for display
                     is_default=(i == 0),  # First agent is default
                     attributes={},
                 )
@@ -553,6 +552,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     try:
                         self.router.get_connector_for_agent(agent_id)
                     except ValueError:
+                        self.logger.error(f"Agent not found: {agent_id}")
                         context.set_code(grpc.StatusCode.NOT_FOUND)
                         context.set_details(f"Agent not found: {agent_id}")
                         return
