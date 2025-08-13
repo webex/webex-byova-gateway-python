@@ -5,7 +5,6 @@
 gateway:
   name: "BYOVA Gateway"
   version: "1.0.0"
-  log_level: "INFO"
   host: "0.0.0.0"
   port: 50051
 
@@ -77,7 +76,7 @@ monitoring:
 logging:
   # Gateway logging (gRPC server, connectors, etc.)
   gateway:
-    level: "INFO"
+    level: "DEBUG"
     format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file: "logs/gateway.log"
     max_size: "10MB"

@@ -263,7 +263,7 @@ def main():
         print(f"📡 gRPC Server: {server_address}")
         print(f"🌐 Access URL: grpc://{host}:{port}")
         print(f"📁 Configuration: {config_path}")
-        print(f"📝 Log Level: {gateway_config.get('log_level', 'INFO')}")
+        print(f"📝 Log Level: {gateway_config.get('level', 'INFO')}")
         print(f"🔧 Gateway Version: {gateway_config.get('version', '1.0.0')}")
         print()
 
