@@ -60,7 +60,7 @@ class AudioConverter:
             elif bit_depth == 8:
                 # For 8-bit audio, take every other byte
                 samples_8khz = pcm_16khz_data[::2]
-                self.logger.info(f"Resampled 16kHz to 8kHz: {len(pcm_16khz_data)} bytes -> {len(samples_8khz_data)} bytes")
+                self.logger.info(f"Resampled 16kHz to 8kHz: {len(pcm_16khz_data)} bytes -> {len(samples_8khz)} bytes")
                 return samples_8khz
                 
             else:
@@ -238,23 +238,21 @@ class AudioConverter:
         
         return ulaw_byte & 0xFF
     
-    def convert_aws_lex_audio_to_wxcc(self, pcm_16khz_data: bytes, bit_depth: int = 16, 
-                                     convert_to_wav: bool = True) -> tuple[bytes, str]:
+    def convert_aws_lex_audio_to_wxcc(self, pcm_16khz_data: bytes, bit_depth: int = 16) -> tuple[bytes, str]:
         """
         Complete conversion from AWS Lex audio format to WxCC-compatible format.
         
-        This is a convenience method that performs the complete conversion:
+        This method performs the complete conversion:
         1. Resample 16kHz → 8kHz
         2. Convert 16-bit PCM → 8-bit u-law
-        3. Optionally package as WAV file
+        3. Package as WAV file (always required for WxCC)
         
         Args:
             pcm_16khz_data: Raw PCM audio data from AWS Lex (16kHz, 16-bit)
             bit_depth: Source bit depth (default: 16)
-            convert_to_wav: Whether to convert to WAV format (default: True)
             
         Returns:
-            Tuple of (audio_data, content_type)
+            Tuple of (wav_audio_data, "audio/wav")
         """
         try:
             # Step 1: Resample from 16kHz to 8kHz
@@ -263,23 +261,17 @@ class AudioConverter:
             # Step 2: Convert 8kHz PCM to u-law format
             ulaw_audio = self.pcm_to_ulaw(pcm_8khz, sample_rate=8000, bit_depth=bit_depth)
             
-            # Step 3: Optionally convert to WAV format
-            if convert_to_wav:
-                wav_audio = self.pcm_to_wav(
-                    ulaw_audio, 
-                    sample_rate=8000,      # WxCC expects 8kHz
-                    bit_depth=8,           # WxCC expects 8-bit
-                    channels=1,            # WxCC expects mono
-                    encoding="ulaw"        # WxCC expects u-law
-                )
-                content_type = "audio/wav"
-                self.logger.info("Converted 16kHz PCM to WxCC-compatible WAV format (8kHz, 8-bit u-law)")
-            else:
-                wav_audio = ulaw_audio
-                content_type = "audio/ulaw"
-                self.logger.info("Keeping audio in u-law format for WxCC compatibility")
+            # Step 3: Convert to WAV format (always required for WxCC)
+            wav_audio = self.pcm_to_wav(
+                ulaw_audio, 
+                sample_rate=8000,      # WxCC expects 8kHz
+                bit_depth=8,           # WxCC expects 8-bit
+                channels=1,            # WxCC expects mono
+                encoding="ulaw"        # WxCC expects u-law
+            )
             
-            return wav_audio, content_type
+            self.logger.info("Converted 16kHz PCM to WxCC-compatible WAV format (8kHz, 8-bit u-law)")
+            return wav_audio, "audio/wav"
             
         except Exception as e:
             self.logger.error(f"Error in complete AWS Lex to WxCC conversion: {e}")
@@ -311,8 +303,7 @@ def pcm_to_wav(pcm_data: bytes, sample_rate: int = 8000, bit_depth: int = 8,
 
 
 def convert_aws_lex_audio_to_wxcc(pcm_16khz_data: bytes, bit_depth: int = 16,
-                                 convert_to_wav: bool = True,
                                  logger: Optional[logging.Logger] = None) -> tuple[bytes, str]:
     """Convenience function for complete AWS Lex to WxCC conversion."""
     converter = AudioConverter(logger)
-    return converter.convert_aws_lex_audio_to_wxcc(pcm_16khz_data, bit_depth, convert_to_wav)
+    return converter.convert_aws_lex_audio_to_wxcc(pcm_16khz_data, bit_depth)

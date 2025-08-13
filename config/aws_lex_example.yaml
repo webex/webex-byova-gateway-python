@@ -1,0 +1,34 @@
+# Example AWS Lex Connector Configuration
+# Copy this file and modify as needed for your environment
+
+aws_lex_connector:
+  # Required: AWS region where your Lex bots are located
+  region_name: "us-east-1"
+  
+  # Optional: Explicit AWS credentials (if not using default chain)
+  # aws_access_key_id: "YOUR_ACCESS_KEY"
+  # aws_secret_access_key: "YOUR_SECRET_KEY"
+  
+  # Optional: Bot alias ID to use for conversations
+  # Default: "TSTALIASID" (most Lex bots have this by default)
+  # Change this if your bot uses a different alias
+  bot_alias_id: "TSTALIASID"
+  
+  # Note: Audio conversion to WAV format is always enabled (WxCC requirement)
+
+# Example configurations for different environments:
+
+# Development/Testing
+aws_lex_connector_dev:
+  region_name: "us-east-1"
+  bot_alias_id: "TSTALIASID"
+
+# Production
+aws_lex_connector_prod:
+  region_name: "us-east-1"
+  bot_alias_id: "PRODALIASID"  # Your production bot alias
+
+# Custom bot with specific alias
+aws_lex_connector_custom:
+  region_name: "us-west-2"
+  bot_alias_id: "CUSTOMALIAS"  # Your custom bot alias

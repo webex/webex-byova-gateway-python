@@ -21,8 +21,8 @@ class AWSLexConnector(IVendorConnector):
     This connector provides a simple interface to AWS Lex bots using the
     standard TSTALIASID alias that most Lex bots have by default.
     
-    Audio Format Configuration:
-    - convert_to_wav: Whether to convert PCM audio to WAV format (default: True)
+    Bot Configuration:
+    - bot_alias_id: Bot alias ID to use for conversations (default: TSTALIASID)
     
     WxCC Audio Requirements:
     - Sample Rate: 8000 Hz (8kHz) - REQUIRED to avoid 5-second delays
@@ -48,7 +48,7 @@ class AWSLexConnector(IVendorConnector):
                 - region_name: AWS region (required)
                 - aws_access_key_id: AWS access key (optional, uses default chain)
                 - aws_secret_access_key: AWS secret key (optional, uses default chain)
-                - convert_to_wav: Whether to convert PCM to WAV (default: True)
+                - bot_alias_id: Bot alias ID to use for conversations (default: TSTALIASID)
                 
         Note: WxCC requires 8kHz, 8-bit u-law, mono audio to avoid 5-second delays.
         AWS Lex returns 16kHz, 16-bit PCM, which this connector automatically converts
@@ -64,7 +64,10 @@ class AWSLexConnector(IVendorConnector):
         self.aws_secret_access_key = config.get('aws_secret_access_key')
         
         # Audio format configuration for WAV conversion
-        self.convert_to_wav = config.get('convert_to_wav', True)      # Default: convert to WAV
+        # WxCC always requires WAV format, so this is always enabled
+        
+        # Bot alias configuration
+        self.bot_alias_id = config.get('bot_alias_id', 'TSTALIASID')  # Default: TSTALIASID
         
         # Set up logging
         self.logger = logging.getLogger(__name__)
@@ -82,6 +85,8 @@ class AWSLexConnector(IVendorConnector):
         self._sessions = {}
         
         self.logger.info(f"AWSLexConnector initialized for region: {self.region_name}")
+        self.logger.info(f"Bot alias ID: {self.bot_alias_id}")
+        self.logger.info("Audio conversion to WAV format: Always enabled (WxCC requirement)")
 
     def _init_aws_clients(self) -> None:
         """Initialize AWS Lex clients."""
@@ -186,6 +191,7 @@ class AWSLexConnector(IVendorConnector):
             }
 
             self.logger.info(f"Started Lex conversation: {conversation_id} with bot: {bot_name} (ID: {actual_bot_id})")
+            self.logger.info(f"Using bot alias: {self.bot_alias_id}")
 
             # Send initial text to Lex and get audio response
             try:
@@ -197,7 +203,7 @@ class AWSLexConnector(IVendorConnector):
                 
                 response = self.lex_runtime.recognize_utterance(
                     botId=actual_bot_id,
-                    botAliasId='TSTALIASID',
+                    botAliasId=self.bot_alias_id,
                     localeId='en_US',
                     sessionId=session_id,
                     requestContentType='text/plain; charset=utf-8',
@@ -223,8 +229,7 @@ class AWSLexConnector(IVendorConnector):
                         # AWS Lex returns 16kHz, 16-bit PCM, but WxCC expects 8kHz, 8-bit u-law
                         wav_audio, content_type = convert_aws_lex_audio_to_wxcc(
                             audio_response, 
-                            bit_depth=16,       # Lex returns 16-bit PCM
-                            convert_to_wav=self.convert_to_wav
+                            bit_depth=16       # Lex returns 16-bit PCM
                         )
                         
                         return {
