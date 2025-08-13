@@ -87,20 +87,38 @@ class ConversationProcessor:
                 "input_type": "conversation_start"
             }
 
+            self.logger.info(f"Starting conversation with message_data: {message_data}")
+
             # Route to connector
             connector_response = self.router.route_request(
                 self.virtual_agent_id, "start_conversation", self.conversation_id, message_data
             )
 
+            self.logger.info(f"Connector response received: {connector_response}")
+            self.logger.info(f"Connector response type: {type(connector_response)}")
+            if isinstance(connector_response, dict):
+                self.logger.info(f"Connector response keys: {list(connector_response.keys())}")
+                self.logger.info(f"Audio content present: {connector_response.get('audio_content') is not None}")
+                if connector_response.get('audio_content'):
+                    self.logger.info(f"Audio content size: {len(connector_response.get('audio_content'))}")
+
             # Convert response to gRPC format with FINAL response type and disabled barge-in for conversation start
-            yield self._convert_connector_response_to_grpc(
+            grpc_response = self._convert_connector_response_to_grpc(
                 connector_response,
                 response_type=VoiceVAResponse.ResponseType.FINAL,
-                barge_in_enabled=True # Enable barge-in for conversation start (until server bug is resolved)
+                barge_in_enabled=False # Enable barge-in for conversation start (until server bug is resolved)
             )
+
+            self.logger.info(f"gRPC response created: {grpc_response}")
+            if grpc_response and hasattr(grpc_response, 'prompts'):
+                self.logger.info(f"gRPC response has {len(grpc_response.prompts)} prompts")
+
+            yield grpc_response
 
         except Exception as e:
             self.logger.error(f"Error starting conversation for conversation {self.conversation_id}: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             yield self._create_error_response(f"Conversation start error: {str(e)}")
 
     def _process_audio_input(self, audio_input) -> Iterator[VoiceVAResponse]:
@@ -214,10 +232,13 @@ class ConversationProcessor:
     def _convert_connector_response_to_grpc(self, connector_response: Dict[str, Any], response_type: VoiceVAResponse.ResponseType = None, barge_in_enabled: bool = None) -> VoiceVAResponse:
         """Convert connector response to gRPC format with optional response type and barge-in settings."""
         try:
+            self.logger.info(f"Converting connector response to gRPC: {connector_response}")
+            
             va_response = VoiceVAResponse()
 
             # Handle empty or silence responses
             if not connector_response or connector_response.get("message_type") == "silence":
+                self.logger.info("Handling silence/empty response")
                 # For silence responses, only send a response if explicitly requested (e.g., for session start)
                 # Otherwise, return None to indicate no response should be sent
                 if response_type is not None:
@@ -240,9 +261,10 @@ class ConversationProcessor:
                     return None
 
             # Create prompts
-            if connector_response.get("text"):
-                audio_content = connector_response.get("audio_content", b"")
-
+            audio_content = connector_response.get("audio_content")
+            self.logger.info(f"Audio content present: {audio_content is not None}, size: {len(audio_content) if audio_content else 0}")
+            
+            if audio_content:
                 # Use specified barge-in setting, or fall back to connector response setting
                 if barge_in_enabled is not None:
                     # Use the explicitly specified barge-in setting
@@ -251,11 +273,14 @@ class ConversationProcessor:
                     # Use the barge-in setting from the connector response
                     final_barge_in_enabled = connector_response.get("barge_in_enabled", True)
 
+                self.logger.info(f"Creating prompt with audio content, barge_in_enabled: {final_barge_in_enabled}")
                 prompt = Prompt()
                 prompt.text = connector_response["text"]
                 prompt.audio_content = audio_content
                 prompt.is_barge_in_enabled = final_barge_in_enabled
                 va_response.prompts.append(prompt)
+            else:
+                self.logger.warning("No audio content found in connector response")
 
             # Create output events
             message_type = connector_response.get("message_type", "")
@@ -274,8 +299,7 @@ class ConversationProcessor:
                 self.can_be_deleted = True
 
             # Set response type
-            final_response_type = response_type if response_type is not None else VoiceVAResponse.ResponseType.PARTIAL
-            va_response.response_type = final_response_type
+            va_response.response_type = response_type
 
             # Set input mode
             va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
@@ -292,10 +316,13 @@ class ConversationProcessor:
                 )
             ))
 
+            self.logger.info(f"Final gRPC response created with {len(va_response.prompts)} prompts")
             return va_response
 
         except Exception as e:
             self.logger.error(f"Error converting connector response to gRPC: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_error_response(f"Response conversion error: {str(e)}")
 
     def _create_error_response(self, error_message: str) -> VoiceVAResponse:
