@@ -1,0 +1,318 @@
+"""
+Audio utility functions for the Webex Contact Center BYOVA Gateway.
+
+This module provides audio format conversion utilities that can be used
+by all connectors to ensure WxCC compatibility.
+"""
+
+import logging
+import struct
+from typing import Optional
+
+
+class AudioConverter:
+    """
+    Audio format converter utility class.
+    
+    Provides methods to convert between different audio formats and ensure
+    WxCC compatibility (8kHz, 8-bit u-law, mono).
+    """
+    
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        """
+        Initialize the audio converter.
+        
+        Args:
+            logger: Optional logger instance. If not provided, creates a new one.
+        """
+        self.logger = logger or logging.getLogger(__name__)
+    
+    def resample_16khz_to_8khz(self, pcm_16khz_data: bytes, bit_depth: int = 16) -> bytes:
+        """
+        Resample 16kHz PCM audio to 8kHz using simple decimation.
+        
+        AWS Lex returns 16kHz, 16-bit PCM, but WxCC expects 8kHz.
+        This method downsamples by taking every other sample (simple decimation).
+        
+        Args:
+            pcm_16khz_data: Raw PCM audio data at 16kHz
+            bit_depth: Audio bit depth (default: 16)
+            
+        Returns:
+            Resampled PCM audio data at 8kHz
+        """
+        try:
+            if bit_depth == 16:
+                # Convert bytes to 16-bit integers (little-endian)
+                samples_16khz = struct.unpack(f'<{len(pcm_16khz_data)//2}h', pcm_16khz_data)
+                
+                # Simple decimation: take every other sample to go from 16kHz to 8kHz
+                samples_8khz = samples_16khz[::2]
+                
+                # Convert back to bytes
+                pcm_8khz_data = struct.pack(f'<{len(samples_8khz)}h', *samples_8khz)
+                
+                self.logger.info(f"Resampled 16kHz to 8kHz: {len(pcm_16khz_data)} bytes -> {len(pcm_8khz_data)} bytes")
+                self.logger.info(f"Sample count: {len(samples_16khz)} -> {len(samples_8khz)}")
+                
+                return pcm_8khz_data
+                
+            elif bit_depth == 8:
+                # For 8-bit audio, take every other byte
+                samples_8khz = pcm_16khz_data[::2]
+                self.logger.info(f"Resampled 16kHz to 8kHz: {len(pcm_16khz_data)} bytes -> {len(samples_8khz_data)} bytes")
+                return samples_8khz
+                
+            else:
+                self.logger.warning(f"Unsupported bit depth for resampling: {bit_depth}, returning original data")
+                return pcm_16khz_data
+                
+        except Exception as e:
+            self.logger.error(f"Error resampling 16kHz to 8kHz: {e}")
+            # Return original data if resampling fails
+            return pcm_16khz_data
+    
+    def pcm_to_ulaw(self, pcm_data: bytes, sample_rate: int = 8000, bit_depth: int = 16) -> bytes:
+        """
+        Convert raw PCM audio data to u-law format for WxCC compatibility.
+        
+        WxCC expects 8-bit u-law encoding, but AWS Lex returns 16-bit PCM.
+        This method converts the PCM data to u-law format.
+        
+        Args:
+            pcm_data: Raw PCM audio data (typically 16-bit from Lex)
+            sample_rate: Source sample rate (default: 8000)
+            bit_depth: Source bit depth (default: 16)
+            
+        Returns:
+            u-law encoded audio data as bytes
+        """
+        try:
+            # Convert bytes to 16-bit integers (little-endian)
+            if bit_depth == 16:
+                # Convert 16-bit PCM to u-law
+                pcm_samples = struct.unpack(f'<{len(pcm_data)//2}h', pcm_data)
+            elif bit_depth == 8:
+                # Convert 8-bit PCM to u-law
+                pcm_samples = struct.unpack(f'<{len(pcm_data)}B', pcm_data)
+                # Convert 8-bit unsigned to 16-bit signed
+                pcm_samples = [(sample - 128) * 256 for sample in pcm_samples]
+            else:
+                self.logger.warning(f"Unsupported bit depth: {bit_depth}, returning original data")
+                return pcm_data
+            
+            # Convert to u-law
+            ulaw_samples = []
+            for sample in pcm_samples:
+                # Clamp sample to 16-bit range
+                sample = max(-32768, min(32767, int(sample)))
+                
+                # Convert to u-law
+                ulaw_byte = self._linear_to_ulaw(sample)
+                ulaw_samples.append(ulaw_byte)
+            
+            ulaw_data = bytes(ulaw_samples)
+            self.logger.info(f"Converted {len(pcm_data)} bytes PCM ({bit_depth}bit) to {len(ulaw_data)} bytes u-law")
+            
+            return ulaw_data
+            
+        except Exception as e:
+            self.logger.error(f"Error converting PCM to u-law: {e}")
+            # Return original PCM data if conversion fails
+            return pcm_data
+    
+    def pcm_to_wav(self, pcm_data: bytes, sample_rate: int = 8000, bit_depth: int = 8, 
+                   channels: int = 1, encoding: str = "ulaw") -> bytes:
+        """
+        Convert raw PCM audio data to WAV format compatible with WxCC.
+        
+        WxCC expects: 8kHz, 8-bit u-law, mono audio
+        Avoid: 16kHz, 16-bit PCM (causes 5-second delay and missed caller responses)
+        
+        Args:
+            pcm_data: Raw PCM audio data from AWS Lex
+            sample_rate: Audio sample rate in Hz (default: 8000 for WxCC compatibility)
+            bit_depth: Audio bit depth (default: 8 for WxCC compatibility)
+            channels: Number of audio channels (default: 1 for mono)
+            encoding: Audio encoding (default: "ulaw" for WxCC compatibility)
+            
+        Returns:
+            WAV format audio data as bytes
+        """
+        try:
+            # WAV file header constants
+            RIFF_HEADER = b'RIFF'
+            WAVE_FORMAT = b'WAVE'
+            FMT_CHUNK = b'fmt '
+            DATA_CHUNK = b'data'
+            
+            # WxCC-compatible audio format settings
+            if encoding == "ulaw":
+                # u-law encoding (WxCC preferred)
+                audio_format = 7  # WAVE_FORMAT_MULAW
+                bytes_per_sample = 1  # 8-bit u-law = 1 byte per sample
+            else:
+                # PCM encoding (fallback)
+                audio_format = 1  # WAVE_FORMAT_PCM
+                bytes_per_sample = bit_depth // 8
+            
+            # Calculate sizes
+            block_align = channels * bytes_per_sample
+            byte_rate = sample_rate * block_align
+            data_size = len(pcm_data)
+            file_size = 36 + data_size  # 36 bytes for headers + data size
+            
+            # Build WAV header with WxCC-compatible format
+            wav_header = struct.pack('<4sI4s4sIHHIIHH4sI',
+                RIFF_HEADER,           # RIFF identifier
+                file_size,             # File size - 8
+                WAVE_FORMAT,           # WAVE format
+                FMT_CHUNK,             # Format chunk identifier
+                16,                    # Format chunk size
+                audio_format,          # Audio format (7 = u-law, 1 = PCM)
+                channels,              # Number of channels (1 = mono)
+                sample_rate,           # Sample rate (8000 Hz for WxCC)
+                byte_rate,             # Byte rate
+                block_align,           # Block align
+                bit_depth,             # Bits per sample (8 for u-law)
+                DATA_CHUNK,            # Data chunk identifier
+                data_size              # Data size
+            )
+            
+            # Combine header and audio data
+            wav_data = wav_header + pcm_data
+            
+            self.logger.info(f"Converted PCM to WAV: {len(pcm_data)} bytes PCM -> {len(wav_data)} bytes WAV")
+            self.logger.info(f"WAV format: {sample_rate}Hz, {bit_depth}bit, {channels} channel(s), encoding: {encoding}")
+            self.logger.info(f"WxCC compatibility: {'YES' if sample_rate == 8000 and bit_depth == 8 and encoding == 'ulaw' else 'NO'}")
+            
+            return wav_data
+            
+        except Exception as e:
+            self.logger.error(f"Error converting PCM to WAV: {e}")
+            # Return original PCM data if conversion fails
+            return pcm_data
+    
+    def _linear_to_ulaw(self, sample: int) -> int:
+        """
+        Convert a 16-bit linear PCM sample to 8-bit u-law.
+        
+        Args:
+            sample: 16-bit signed PCM sample (-32768 to 32767)
+            
+        Returns:
+            8-bit u-law sample (0 to 255)
+        """
+        # u-law encoding table (simplified implementation)
+        MULAW_BIAS = 0x84
+        MULAW_CLIP = 32635
+        
+        # Clamp the sample
+        if sample > MULAW_CLIP:
+            sample = MULAW_CLIP
+        elif sample < -MULAW_CLIP:
+            sample = -MULAW_CLIP
+        
+        # Add bias
+        sample += MULAW_BIAS
+        
+        # Get sign bit
+        sign = (sample >> 8) & 0x80
+        if sign != 0:
+            sample = -sample
+        if sample > MULAW_CLIP:
+            sample = MULAW_CLIP
+        
+        # Find exponent
+        exponent = 7
+        mask = 0x4000
+        while (sample & mask) == 0 and exponent > 0:
+            mask >>= 1
+            exponent -= 1
+        
+        # Calculate mantissa
+        mantissa = (sample >> (exponent + 3)) & 0x0F
+        
+        # Combine into u-law byte
+        ulaw_byte = ~(sign | (exponent << 4) | mantissa)
+        
+        return ulaw_byte & 0xFF
+    
+    def convert_aws_lex_audio_to_wxcc(self, pcm_16khz_data: bytes, bit_depth: int = 16, 
+                                     convert_to_wav: bool = True) -> tuple[bytes, str]:
+        """
+        Complete conversion from AWS Lex audio format to WxCC-compatible format.
+        
+        This is a convenience method that performs the complete conversion:
+        1. Resample 16kHz → 8kHz
+        2. Convert 16-bit PCM → 8-bit u-law
+        3. Optionally package as WAV file
+        
+        Args:
+            pcm_16khz_data: Raw PCM audio data from AWS Lex (16kHz, 16-bit)
+            bit_depth: Source bit depth (default: 16)
+            convert_to_wav: Whether to convert to WAV format (default: True)
+            
+        Returns:
+            Tuple of (audio_data, content_type)
+        """
+        try:
+            # Step 1: Resample from 16kHz to 8kHz
+            pcm_8khz = self.resample_16khz_to_8khz(pcm_16khz_data, bit_depth)
+            
+            # Step 2: Convert 8kHz PCM to u-law format
+            ulaw_audio = self.pcm_to_ulaw(pcm_8khz, sample_rate=8000, bit_depth=bit_depth)
+            
+            # Step 3: Optionally convert to WAV format
+            if convert_to_wav:
+                wav_audio = self.pcm_to_wav(
+                    ulaw_audio, 
+                    sample_rate=8000,      # WxCC expects 8kHz
+                    bit_depth=8,           # WxCC expects 8-bit
+                    channels=1,            # WxCC expects mono
+                    encoding="ulaw"        # WxCC expects u-law
+                )
+                content_type = "audio/wav"
+                self.logger.info("Converted 16kHz PCM to WxCC-compatible WAV format (8kHz, 8-bit u-law)")
+            else:
+                wav_audio = ulaw_audio
+                content_type = "audio/ulaw"
+                self.logger.info("Keeping audio in u-law format for WxCC compatibility")
+            
+            return wav_audio, content_type
+            
+        except Exception as e:
+            self.logger.error(f"Error in complete AWS Lex to WxCC conversion: {e}")
+            # Return original data if conversion fails
+            return pcm_16khz_data, "audio/pcm"
+
+
+# Convenience functions for easy use
+def resample_16khz_to_8khz(pcm_16khz_data: bytes, bit_depth: int = 16, 
+                           logger: Optional[logging.Logger] = None) -> bytes:
+    """Convenience function to resample 16kHz PCM to 8kHz."""
+    converter = AudioConverter(logger)
+    return converter.resample_16khz_to_8khz(pcm_16khz_data, bit_depth)
+
+
+def pcm_to_ulaw(pcm_data: bytes, sample_rate: int = 8000, bit_depth: int = 16,
+                logger: Optional[logging.Logger] = None) -> bytes:
+    """Convenience function to convert PCM to u-law."""
+    converter = AudioConverter(logger)
+    return converter.pcm_to_ulaw(pcm_data, sample_rate, bit_depth)
+
+
+def pcm_to_wav(pcm_data: bytes, sample_rate: int = 8000, bit_depth: int = 8,
+               channels: int = 1, encoding: str = "ulaw", 
+               logger: Optional[logging.Logger] = None) -> bytes:
+    """Convenience function to convert PCM to WAV."""
+    converter = AudioConverter(logger)
+    return converter.pcm_to_wav(pcm_data, sample_rate, bit_depth, channels, encoding)
+
+
+def convert_aws_lex_audio_to_wxcc(pcm_16khz_data: bytes, bit_depth: int = 16,
+                                 convert_to_wav: bool = True,
+                                 logger: Optional[logging.Logger] = None) -> tuple[bytes, str]:
+    """Convenience function for complete AWS Lex to WxCC conversion."""
+    converter = AudioConverter(logger)
+    return converter.convert_aws_lex_audio_to_wxcc(pcm_16khz_data, bit_depth, convert_to_wav)
