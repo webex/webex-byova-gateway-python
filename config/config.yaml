@@ -17,6 +17,12 @@ connectors:
     config:
       agent_id: "Local Playback"
       audio_base_path: "audio"
+      # Audio recording configuration
+      record_caller_audio: true  # Set to true to enable recording of caller audio
+      audio_recording:
+        output_dir: "logs/audio_recordings"  # Directory to save audio recordings
+        silence_threshold: 3000  # Amplitude threshold for silence detection
+        silence_duration: 1.0  # Amount of silence in seconds before stopping recording
       # Audio file mappings (matching your actual files)
       audio_files:
         welcome: "welcome.wav"
@@ -78,7 +84,7 @@ monitoring:
 logging:
   # Gateway logging (gRPC server, connectors, etc.)
   gateway:
-    level: "INFO"
+    level: "DEBUG"
     format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file: "logs/gateway.log"
     max_size: "10MB"
