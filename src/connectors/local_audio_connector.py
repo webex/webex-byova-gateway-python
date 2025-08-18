@@ -236,6 +236,11 @@ class LocalAudioConnector(IVendorConnector):
                         "barge_in_enabled": False,
                     }
 
+            # Check for silence timeout when DTMF inputs are received
+            if self.record_caller_audio and conversation_id in self.audio_recorders:
+                if not self.audio_recorders[conversation_id].check_silence_timeout():
+                    self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
+
             # Return silence response for other DTMF inputs (no audio response)
             return {
                 "audio_content": b"",
@@ -252,6 +257,11 @@ class LocalAudioConnector(IVendorConnector):
             event_name = event_data.get("name", "")
 
             self.logger.info(f"Event for conversation {conversation_id}: {event_name}")
+
+            # Check for silence timeout when events are received
+            if self.record_caller_audio and conversation_id in self.audio_recorders:
+                if not self.audio_recorders[conversation_id].check_silence_timeout():
+                    self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
 
             # Return silence response for events (no audio response)
             return {
@@ -275,6 +285,11 @@ class LocalAudioConnector(IVendorConnector):
                     message_data["audio_data"], conversation_id
                 )
 
+            # Check for silence timeout even when audio data is received
+            if self.record_caller_audio and conversation_id in self.audio_recorders:
+                if not self.audio_recorders[conversation_id].check_silence_timeout():
+                    self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
+
             return {
                 "audio_content": b"",
                 "text": "",
@@ -288,6 +303,12 @@ class LocalAudioConnector(IVendorConnector):
         self.logger.debug(
             f"Unhandled input type for conversation {conversation_id}: {message_data.get('input_type')}"
         )
+
+        # Check for silence timeout for any unhandled input types
+        if self.record_caller_audio and conversation_id in self.audio_recorders:
+            if not self.audio_recorders[conversation_id].check_silence_timeout():
+                self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
+
         return {
             "audio_content": b"",
             "text": "",
@@ -318,6 +339,8 @@ class LocalAudioConnector(IVendorConnector):
             file_path = self.audio_recorders[conversation_id].finalize_recording()
             if file_path:
                 self.logger.info(f"Audio recording saved to {file_path}")
+            else:
+                self.logger.info(f"No audio recording was created for conversation {conversation_id} (no speech detected)")
             del self.audio_recorders[conversation_id]
 
         # Simulate playing goodbye message
@@ -442,6 +465,7 @@ class LocalAudioConnector(IVendorConnector):
                 "silence_threshold", 3000
             )
             silence_duration = self.audio_recording_config.get("silence_duration", 2.0)
+            quiet_threshold = self.audio_recording_config.get("quiet_threshold", 20)
 
             # Create audio recorder
             self.audio_recorders[conversation_id] = AudioRecorder(
@@ -449,12 +473,14 @@ class LocalAudioConnector(IVendorConnector):
                 output_dir=output_dir,
                 silence_threshold=silence_threshold,
                 silence_duration=silence_duration,
+                quiet_threshold=quiet_threshold,
                 logger=self.logger,
             )
 
             self.logger.info(
                 f"Initialized audio recorder for conversation {conversation_id} "
-                f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, output: {output_dir})"
+                f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, "
+                f"quiet threshold: {quiet_threshold}, output: {output_dir})"
             )
         except Exception as e:
             self.logger.error(f"Failed to initialize audio recorder: {e}")

@@ -23,6 +23,7 @@ connectors:
         output_dir: "logs/audio_recordings"  # Directory to save audio recordings
         silence_threshold: 3000  # Amplitude threshold for silence detection
         silence_duration: 1.0  # Amount of silence in seconds before stopping recording
+        quiet_threshold: 20  # How far from 127 (quiet background) to consider "silence"
       # Audio file mappings (matching your actual files)
       audio_files:
         welcome: "welcome.wav"

@@ -664,6 +664,7 @@ class AudioRecorder:
         output_dir: str = "logs",
         silence_threshold: int = 3000,
         silence_duration: float = 2.0,
+        quiet_threshold: int = 20,
         sample_rate: int = 8000,
         bit_depth: int = 8,
         channels: int = 1,
@@ -678,6 +679,7 @@ class AudioRecorder:
             output_dir: Directory to save WAV files (default: 'logs')
             silence_threshold: Amplitude threshold for silence detection
             silence_duration: Amount of silence (in seconds) before finalizing the recording
+            quiet_threshold: How far from 127 (quiet background) to consider "silence" (default: 20)
             sample_rate: Audio sample rate in Hz
             bit_depth: Audio bit depth
             channels: Number of audio channels
@@ -689,6 +691,7 @@ class AudioRecorder:
         self.output_dir = Path(output_dir)
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
+        self.quiet_threshold = quiet_threshold
         self.sample_rate = sample_rate
         self.bit_depth = bit_depth
         self.channels = channels
@@ -700,13 +703,16 @@ class AudioRecorder:
         self.recording = False
         self.last_audio_time = 0
         self.file_path = None
+        self.waiting_for_speech = True  # Wait for first non-silence before starting recording
+        self.speech_detected = False    # Track if we've ever detected speech
 
         # Ensure output directory exists
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.logger.info(
             f"AudioRecorder initialized for conversation {conversation_id} "
-            f"(silence threshold: {silence_threshold}, duration: {silence_duration}s)"
+            f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, "
+            f"quiet threshold: {quiet_threshold}, waiting for speech: {self.waiting_for_speech})"
         )
 
     def _create_ulaw_wav_file(self, file_path: str) -> None:
@@ -860,12 +866,6 @@ class AudioRecorder:
             )
             return True
 
-        if not self.recording:
-            self.start_recording()
-
-        # Update the last audio time
-        self.last_audio_time = time.time()
-        
         # Log audio data characteristics
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
@@ -892,44 +892,107 @@ class AudioRecorder:
             # Write to WAV file - ensure we have a copy of the buffer before clearing
             buffer_copy = bytes(self.audio_buffer)
             
-            try:
-                if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
-                    # Use custom u-law writing
-                    self._write_ulaw_audio_data(buffer_copy)
-                    bytes_written = len(buffer_copy)
+            # Check for silence first to determine if we should start recording
+            is_silence = self.detect_silence(buffer_copy)
+            
+            if self.waiting_for_speech:
+                if is_silence:
+                    # Still waiting for speech, don't start recording yet
                     self.logger.debug(
-                        f"Wrote {bytes_written} bytes to u-law WAV file {self.file_path}"
+                        f"Still waiting for speech in conversation {self.conversation_id}, "
+                        f"silence detected in audio segment"
                     )
-                elif self.wav_file:
-                    # Use standard wave module
-                    bytes_written = len(buffer_copy)
-                    self.wav_file.writeframes(buffer_copy)
-                    self.logger.debug(
-                        f"Wrote {bytes_written} bytes to WAV file {self.file_path}"
-                    )
+                    # Clear the buffer since we're not recording yet
+                    self.audio_buffer = bytearray()
+                    return True
                 else:
-                    self.logger.error("No WAV file handle available for writing")
-                    
-            except Exception as e:
-                self.logger.error(f"Error writing to WAV file: {e}")
-
-            # Check for silence
-            if self.detect_silence(buffer_copy):
-                # Check if silence duration threshold exceeded
-                silence_time = time.time() - self.last_audio_time
-                if silence_time >= self.silence_duration:
+                    # Speech detected! Start recording now
+                    self.waiting_for_speech = False
+                    self.speech_detected = True
+                    self.last_audio_time = time.time()
+                    self.start_recording()
                     self.logger.info(
-                        f"Silence detected for {silence_time:.2f}s in conversation {self.conversation_id}, finalizing recording"
+                        f"Speech detected! Starting recording for conversation {self.conversation_id}"
                     )
-                    self.finalize_recording()
-                    return False
-            else:
-                # Reset the last audio time as we detected non-silence
-                self.last_audio_time = time.time()
+            
+            # At this point, we're either already recording or just started
+            if self.recording:
+                try:
+                    if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
+                        # Use custom u-law writing
+                        self._write_ulaw_audio_data(buffer_copy)
+                        bytes_written = len(buffer_copy)
+                        self.logger.debug(
+                            f"Wrote {bytes_written} bytes to u-law WAV file {self.file_path}"
+                        )
+                    elif self.wav_file:
+                        # Use standard wave module
+                        bytes_written = len(buffer_copy)
+                        self.wav_file.writeframes(buffer_copy)
+                        self.logger.debug(
+                            f"Wrote {bytes_written} bytes to WAV file {self.file_path}"
+                        )
+                    else:
+                        self.logger.error("No WAV file handle available for writing")
+                        
+                except Exception as e:
+                    self.logger.error(f"Error writing to WAV file: {e}")
+
+                # Check for silence after recording has started
+                if is_silence:
+                    # Check if silence duration threshold exceeded
+                    silence_time = time.time() - self.last_audio_time
+                    self.logger.debug(
+                        f"Silence detected in audio segment, silence duration so far: {silence_time:.2f}s "
+                        f"(threshold: {self.silence_duration}s)"
+                    )
+                    if silence_time >= self.silence_duration:
+                        self.logger.info(
+                            f"Silence detected for {silence_time:.2f}s in conversation {self.conversation_id}, finalizing recording"
+                        )
+                        self.finalize_recording()
+                        return False
+                else:
+                    # Reset the last audio time as we detected non-silence
+                    self.logger.debug(
+                        f"Non-silence detected in audio segment, resetting silence timer for {self.conversation_id}"
+                    )
+                    self.last_audio_time = time.time()
 
             # Clear the buffer after processing
             self.audio_buffer = bytearray()
 
+        return True
+
+    def check_silence_timeout(self) -> bool:
+        """
+        Check if the recording should be finalized due to silence timeout.
+        This method can be called periodically to check for silence even when no audio data is received.
+        
+        Returns:
+            True if recording continues, False if recording was finalized due to silence
+        """
+        if not self.recording:
+            # If we're not recording yet, check if we should start recording
+            if self.waiting_for_speech:
+                self.logger.debug(
+                    f"Still waiting for speech in conversation {self.conversation_id}, "
+                    f"no recording started yet"
+                )
+                return True
+            return True
+            
+        # Check if we've exceeded the silence duration
+        current_time = time.time()
+        silence_time = current_time - self.last_audio_time
+        
+        if silence_time >= self.silence_duration:
+            self.logger.info(
+                f"Silence timeout reached ({silence_time:.2f}s) for conversation {self.conversation_id}, finalizing recording"
+            )
+            self.finalize_recording()
+            return False
+            
         return True
 
     def _get_frame_size(self) -> int:
@@ -1022,27 +1085,37 @@ class AudioRecorder:
         # For u-law encoding, we can directly check byte values
         # Silence in u-law is typically represented by values close to 0xFF
         if self.encoding == "ulaw":
-            # Count how many bytes differ significantly from 0xFF (silence in u-law)
-            # U-law silence is typically 0xFF, so we check for values that differ from that
-            diff_threshold = (
-                10  # Smaller threshold means more sensitive silence detection
+            # Use the configured silence threshold to determine sensitivity
+            # The threshold represents the percentage of non-silent samples allowed
+            # Higher threshold = more sensitive (more likely to detect silence)
+            threshold_percentage = min(100, max(1, 100 - (self.silence_threshold / 100)))
+            
+            # Enhanced silence detection: consider both true silence (0xFF) and quiet background noise
+            # In u-law, 127 represents very quiet background noise (room tone, breathing, etc.)
+            # Values closer to 127 are quieter, values closer to 0 or 255 are louder
+            
+            # Count bytes that represent significant audio (not silence or quiet background)
+            # We'll consider values in the "quiet" range (around 127) as effective silence
+            quiet_threshold = self.quiet_threshold  # Use the quiet_threshold from __init__
+            significant_audio_count = sum(
+                1 for byte in audio_data 
+                if abs(byte - 127) > quiet_threshold and byte != 0xFF
             )
-            non_silence_count = sum(
-                1 for byte in audio_data if abs(byte - 0xFF) > diff_threshold
-            )
-            # Calculate percentage of non-silent samples
+            
+            # Calculate percentage of significant audio samples
             if len(audio_data) > 0:
-                non_silence_percentage = (non_silence_count / len(audio_data)) * 100
+                significant_audio_percentage = (significant_audio_count / len(audio_data)) * 100
                 self.logger.debug(
-                    f"Detected {non_silence_percentage:.2f}% non-silent samples"
+                    f"Detected {significant_audio_percentage:.2f}% significant audio samples "
+                    f"(threshold: {threshold_percentage:.1f}%, configured: {self.silence_threshold})"
                 )
 
-                # If less than 10% of samples are non-silent, consider it silence
-                is_silence = non_silence_percentage < 10
+                # If less than threshold percentage of samples are significant audio, consider it silence
+                is_silence = significant_audio_percentage < threshold_percentage
                 if is_silence:
-                    self.logger.debug("Audio segment detected as silence")
+                    self.logger.debug("Audio segment detected as silence (including quiet background)")
                 else:
-                    self.logger.debug("Audio segment contains speech/audio")
+                    self.logger.debug("Audio segment contains significant speech/audio")
 
                 return is_silence
 
@@ -1058,6 +1131,11 @@ class AudioRecorder:
             The path to the saved WAV file, or None if no recording was in progress
         """
         if not self.recording:
+            if self.waiting_for_speech:
+                self.logger.info(
+                    f"No recording to finalize for conversation {self.conversation_id} - "
+                    f"still waiting for speech"
+                )
             return None
 
         # Write any remaining data
