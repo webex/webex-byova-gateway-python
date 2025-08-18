@@ -580,12 +580,18 @@ class LocalAudioConnector(IVendorConnector):
                 return
 
             # Add audio data to recorder
-            self.audio_recorders[conversation_id].add_audio_data(audio_bytes, "ulaw")
+            # Try to detect the actual audio format based on the data characteristics
+            detected_encoding = self.audio_converter.detect_audio_encoding(audio_bytes)
+            self.logger.debug(f"Detected audio encoding: {detected_encoding}")
+            
+            self.audio_recorders[conversation_id].add_audio_data(audio_bytes, detected_encoding)
         except Exception as e:
             self.logger.error(
                 f"Error recording audio for conversation {conversation_id}: {e}"
             )
             # Don't raise the exception, continue without recording
+
+
 
     def _convert_audio_to_wxcc_format(self, audio_path: Path) -> bytes:
         """

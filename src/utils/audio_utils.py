@@ -51,32 +51,83 @@ class AudioConverter:
             file_size = audio_path.stat().st_size
 
             # Read WAV file properties
-            with wave.open(str(audio_path), "rb") as wav_file:
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-                sample_rate = wav_file.getframerate()
-                n_frames = wav_file.getnframes()
-                compression_type = wav_file.getcomptype()
-                bit_depth = sample_width * 8
-                duration = n_frames / sample_rate if sample_rate > 0 else 0
+            try:
+                with wave.open(str(audio_path), "rb") as wav_file:
+                    channels = wav_file.getnchannels()
+                    sample_width = wav_file.getsampwidth()
+                    sample_rate = wav_file.getframerate()
+                    n_frames = wav_file.getnframes()
+                    compression_type = wav_file.getcomptype()
+                    bit_depth = sample_width * 8
+                    duration = n_frames / sample_rate if sample_rate > 0 else 0
 
-                return {
-                    "file_path": str(audio_path),
-                    "file_size": file_size,
-                    "channels": channels,
-                    "sample_width": sample_width,
-                    "sample_rate": sample_rate,
-                    "bit_depth": bit_depth,
-                    "n_frames": n_frames,
-                    "duration": duration,
-                    "compression_type": compression_type,
-                    "is_wxcc_compatible": (
-                        sample_rate == 8000 and 
-                        bit_depth == 8 and 
-                        channels == 1 and 
-                        compression_type == b"NONE"
-                    )
-                }
+                    # Handle u-law encoding (format 7)
+                    is_ulaw = compression_type == 7 or compression_type == b"ULAW"
+                    is_pcm = compression_type == 1 or compression_type == b"NONE"
+                    
+                    # For u-law, bit depth is effectively 8-bit
+                    effective_bit_depth = 8 if is_ulaw else bit_depth
+
+                    return {
+                        "file_path": str(audio_path),
+                        "file_size": file_size,
+                        "channels": channels,
+                        "sample_width": sample_width,
+                        "sample_rate": sample_rate,
+                        "bit_depth": effective_bit_depth,
+                        "n_frames": n_frames,
+                        "duration": duration,
+                        "compression_type": compression_type,
+                        "encoding": "ulaw" if is_ulaw else "pcm",
+                        "is_wxcc_compatible": (
+                            sample_rate == 8000 and 
+                            effective_bit_depth == 8 and 
+                            channels == 1 and 
+                            (is_ulaw or is_pcm)
+                        )
+                    }
+            except Exception as wave_error:
+                # If wave module fails, try to read the file manually to detect u-law
+                self.logger.debug(f"Wave module failed: {wave_error}, trying manual detection")
+                
+                try:
+                    with open(audio_path, 'rb') as f:
+                        header = f.read(44)  # Read WAV header
+                        
+                        if len(header) >= 44 and header.startswith(b'RIFF') and b'WAVE' in header:
+                            # Check for u-law format (format 7)
+                            if len(header) >= 20:
+                                format_code = int.from_bytes(header[20:22], byteorder='little')
+                                if format_code == 7:  # u-law
+                                    # Extract other properties from header
+                                    channels = int.from_bytes(header[22:24], byteorder='little')
+                                    sample_rate = int.from_bytes(header[24:28], byteorder='little')
+                                    bit_depth = 8  # u-law is effectively 8-bit
+                                    
+                                    # Estimate duration from file size
+                                    estimated_duration = (file_size - 44) / (sample_rate * channels)
+                                    
+                                    return {
+                                        "file_path": str(audio_path),
+                                        "file_size": file_size,
+                                        "channels": channels,
+                                        "sample_rate": sample_rate,
+                                        "bit_depth": bit_depth,
+                                        "n_frames": int(estimated_duration * sample_rate),
+                                        "duration": estimated_duration,
+                                        "compression_type": 7,
+                                        "encoding": "ulaw",
+                                        "is_wxcc_compatible": (
+                                            sample_rate == 8000 and 
+                                            bit_depth == 8 and 
+                                            channels == 1
+                                        )
+                                    }
+                except Exception as manual_error:
+                    self.logger.debug(f"Manual detection also failed: {manual_error}")
+                
+                # If all else fails, return error
+                raise wave_error
 
         except Exception as e:
             self.logger.error(f"Error analyzing audio file {audio_path}: {e}")
@@ -158,9 +209,9 @@ class AudioConverter:
             # Check if already in correct format
             if audio_info.get("is_wxcc_compatible", False):
                 self.logger.info(f"Audio file {audio_path} already in WXCC-compatible format")
-                # Read and return the file as-is
-                with wave.open(str(audio_path), "rb") as wav_file:
-                    return wav_file.readframes(wav_file.getnframes())
+                # Return the entire file as-is (including WAV headers)
+                with open(audio_path, 'rb') as f:
+                    return f.read()
 
             self.logger.info(f"Converting audio file {audio_path} to WXCC-compatible format")
             self.logger.info(
@@ -169,8 +220,16 @@ class AudioConverter:
             )
 
             # Read the original audio data
-            with wave.open(str(audio_path), "rb") as wav_file:
-                pcm_data = wav_file.readframes(wav_file.getnframes())
+            if audio_info.get("encoding") == "ulaw":
+                # For u-law files, read raw data manually
+                with open(audio_path, 'rb') as f:
+                    # Skip WAV header (44 bytes) and read audio data
+                    f.seek(44)
+                    pcm_data = f.read()
+            else:
+                # For PCM files, use wave module
+                with wave.open(str(audio_path), "rb") as wav_file:
+                    pcm_data = wav_file.readframes(wav_file.getnframes())
 
             # Step 1: Resample if needed
             if audio_info["sample_rate"] != 8000:
@@ -524,6 +583,69 @@ class AudioConverter:
             # Return original data if conversion fails
             return pcm_16khz_data, "audio/pcm"
 
+    def detect_audio_encoding(self, audio_bytes: bytes) -> str:
+        """
+        Detect the encoding of audio data based on byte patterns.
+        
+        Args:
+            audio_bytes: Raw audio data bytes
+            
+        Returns:
+            Detected encoding string ("ulaw", "pcm_16bit", "pcm_8bit", or "unknown")
+        """
+        if not audio_bytes or len(audio_bytes) < 10:
+            return "unknown"
+        
+        try:
+            # Check for u-law encoding patterns
+            # u-law typically has values in the range 0x00-0xFF, with 0xFF often representing silence
+            ulaw_indicators = 0
+            pcm_indicators = 0
+            
+            # Sample some bytes to analyze patterns
+            sample_size = min(100, len(audio_bytes))
+            sample_bytes = audio_bytes[:sample_size]
+            
+            for byte in sample_bytes:
+                # u-law characteristics: values are typically not evenly distributed
+                # PCM characteristics: more even distribution, especially for speech
+                if byte == 0xFF:  # Common u-law silence value
+                    ulaw_indicators += 1
+                elif byte == 0x00:  # Common u-law silence value
+                    ulaw_indicators += 1
+                elif 0x10 <= byte <= 0xF0:  # Common u-law speech range
+                    ulaw_indicators += 1
+                
+                # PCM characteristics: more varied distribution
+                if 0x01 <= byte <= 0xFE:
+                    pcm_indicators += 1
+            
+            # Calculate confidence scores
+            ulaw_confidence = ulaw_indicators / sample_size
+            pcm_confidence = pcm_indicators / sample_size
+            
+            if self.logger and self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"Audio encoding detection - u-law confidence: {ulaw_confidence:.2f}, PCM confidence: {pcm_confidence:.2f}")
+            
+            # Determine encoding based on confidence scores
+            if ulaw_confidence > 0.7:
+                return "ulaw"
+            elif pcm_confidence > 0.6:
+                # Try to determine bit depth
+                if len(audio_bytes) % 2 == 0:
+                    return "pcm_16bit"
+                else:
+                    return "pcm_8bit"
+            else:
+                # Default to u-law for telephony systems
+                return "ulaw"
+                
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Error detecting audio encoding: {e}")
+            # Default to u-law for telephony systems
+            return "ulaw"
+
 
 class AudioRecorder:
     """
@@ -587,6 +709,102 @@ class AudioRecorder:
             f"(silence threshold: {silence_threshold}, duration: {silence_duration}s)"
         )
 
+    def _create_ulaw_wav_file(self, file_path: str) -> None:
+        """
+        Create a u-law WAV file with proper headers.
+        
+        Args:
+            file_path: Path to the WAV file to create
+        """
+        try:
+            # Create the file and write u-law WAV header
+            # Note: Don't use 'with' statement as we need to keep the file open
+            f = open(file_path, 'wb')
+            
+            # WAV file header for u-law encoding
+            # RIFF header
+            f.write(b'RIFF')
+            f.write(struct.pack('<I', 0))  # File size placeholder
+            f.write(b'WAVE')
+            
+            # Format chunk
+            f.write(b'fmt ')
+            f.write(struct.pack('<I', 16))  # Format chunk size
+            f.write(struct.pack('<H', 7))   # Audio format: 7 = u-law
+            f.write(struct.pack('<H', self.channels))  # Number of channels
+            f.write(struct.pack('<I', self.sample_rate))  # Sample rate
+            f.write(struct.pack('<I', self.sample_rate * self.channels))  # Byte rate
+            f.write(struct.pack('<H', self.channels))  # Block align
+            f.write(struct.pack('<H', 8))  # Bits per sample (u-law is effectively 8-bit)
+            
+            # Data chunk header
+            f.write(b'data')
+            f.write(struct.pack('<I', 0))  # Data size placeholder
+            
+            # Store file handle and position for later writing
+            self._wav_file_handle = f
+            self._data_start_pos = f.tell()
+            self._riff_size_pos = 4
+            
+        except Exception as e:
+            self.logger.error(f"Error creating u-law WAV file: {e}")
+            # Clean up file handle if creation failed
+            if hasattr(self, '_wav_file_handle') and self._wav_file_handle:
+                try:
+                    self._wav_file_handle.close()
+                except:
+                    pass
+                self._wav_file_handle = None
+            raise
+
+    def _write_ulaw_audio_data(self, audio_data: bytes) -> None:
+        """
+        Write u-law audio data to the WAV file.
+        
+        Args:
+            audio_data: u-law encoded audio data
+        """
+        try:
+            if hasattr(self, '_wav_file_handle') and self._wav_file_handle:
+                # Write audio data
+                self._wav_file_handle.write(audio_data)
+                
+                # Update file size in RIFF header
+                current_pos = self._wav_file_handle.tell()
+                file_size = current_pos - 8
+                data_size = current_pos - self._data_start_pos
+                
+                self.logger.debug(f"Writing {len(audio_data)} bytes, updating headers: file_size={file_size}, data_size={data_size}")
+                
+                # Seek back to update headers
+                self._wav_file_handle.seek(self._riff_size_pos)
+                self._wav_file_handle.write(struct.pack('<I', file_size))
+                
+                self._wav_file_handle.seek(self._data_start_pos - 4)
+                self._wav_file_handle.write(struct.pack('<I', data_size))
+                
+                # Return to end of file
+                self._wav_file_handle.seek(current_pos)
+                
+                # Flush to ensure data is written to disk
+                self._wav_file_handle.flush()
+                
+            else:
+                self.logger.error("No u-law WAV file handle available for writing")
+                
+        except Exception as e:
+            self.logger.error(f"Error writing u-law audio data: {e}")
+            raise
+
+    def _close_ulaw_wav_file(self) -> None:
+        """Close the u-law WAV file properly."""
+        try:
+            if hasattr(self, '_wav_file_handle') and self._wav_file_handle:
+                self._wav_file_handle.close()
+                self._wav_file_handle = None
+        except Exception as e:
+            self.logger.error(f"Error closing u-law WAV file: {e}")
+
     def start_recording(self) -> None:
         """
         Start a new audio recording session.
@@ -604,11 +822,17 @@ class AudioRecorder:
         filename = f"caller_audio_{self.conversation_id}_{timestamp}.wav"
         self.file_path = self.output_dir / filename
 
-        # Set up WAV file
-        self.wav_file = wave.open(str(self.file_path), "wb")
-        self.wav_file.setnchannels(self.channels)
-        self.wav_file.setsampwidth(self.bit_depth // 8)
-        self.wav_file.setframerate(self.sample_rate)
+        # Set up WAV file based on encoding type
+        if self.encoding.lower() == "ulaw":
+            # Use custom u-law WAV file creation
+            self._create_ulaw_wav_file(str(self.file_path))
+            self.wav_file = None  # We're using custom file handling
+        else:
+            # Use standard wave module for PCM
+            self.wav_file = wave.open(str(self.file_path), "wb")
+            self.wav_file.setnchannels(self.channels)
+            self.wav_file.setsampwidth(self.bit_depth // 8)
+            self.wav_file.setframerate(self.sample_rate)
 
         # Reset state
         self.audio_buffer = bytearray()
@@ -641,33 +865,53 @@ class AudioRecorder:
 
         # Update the last audio time
         self.last_audio_time = time.time()
+        
         # Log audio data characteristics
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(
                 f"Adding {len(audio_data)} bytes of {encoding} audio data to recording"
             )
             self.logger.debug(f"First 10 bytes: {audio_data[:10]}")
+            # Log hex representation for debugging
+            hex_preview = audio_data[:20].hex()
+            self.logger.debug(f"Audio data hex preview: {hex_preview}...")
 
+        # Convert audio data to the recording format if needed
+        processed_audio = self._convert_audio_to_recording_format(audio_data, encoding)
+        
         # Add audio data to buffer
-        self.audio_buffer.extend(audio_data)
+        self.audio_buffer.extend(processed_audio)
         self.logger.debug(
             f"Buffer size after adding data: {len(self.audio_buffer)} bytes"
         )
+        
         # Check if we have enough data to process
-        if (
-            len(self.audio_buffer) >= 640
-        ):  # Process in smaller chunks for more frequent writes
+        # Use frame-aligned buffer sizes based on encoding and bit depth
+        frame_size = self._get_frame_size()
+        if len(self.audio_buffer) >= frame_size:
             # Write to WAV file - ensure we have a copy of the buffer before clearing
             buffer_copy = bytes(self.audio_buffer)
-            if self.wav_file:
-                try:
+            
+            try:
+                if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
+                    # Use custom u-law writing
+                    self._write_ulaw_audio_data(buffer_copy)
+                    bytes_written = len(buffer_copy)
+                    self.logger.debug(
+                        f"Wrote {bytes_written} bytes to u-law WAV file {self.file_path}"
+                    )
+                elif self.wav_file:
+                    # Use standard wave module
                     bytes_written = len(buffer_copy)
                     self.wav_file.writeframes(buffer_copy)
                     self.logger.debug(
                         f"Wrote {bytes_written} bytes to WAV file {self.file_path}"
                     )
-                except Exception as e:
-                    self.logger.error(f"Error writing to WAV file: {e}")
+                else:
+                    self.logger.error("No WAV file handle available for writing")
+                    
+            except Exception as e:
+                self.logger.error(f"Error writing to WAV file: {e}")
 
             # Check for silence
             if self.detect_silence(buffer_copy):
@@ -687,6 +931,80 @@ class AudioRecorder:
             self.audio_buffer = bytearray()
 
         return True
+
+    def _get_frame_size(self) -> int:
+        """
+        Get the appropriate frame size for buffering based on audio format.
+        
+        Returns:
+            Frame size in bytes for optimal buffering
+        """
+        # For 8kHz audio, use 160 samples per frame (20ms chunks)
+        # This provides good balance between latency and efficiency
+        samples_per_frame = 160
+        
+        if self.encoding == "ulaw":
+            # u-law is 8-bit, so 1 byte per sample
+            return samples_per_frame
+        elif self.encoding == "pcm":
+            # PCM bit depth determines bytes per sample
+            bytes_per_sample = self.bit_depth // 8
+            return samples_per_frame * bytes_per_sample
+        else:
+            # Default to 640 bytes for unknown formats
+            return 640
+
+    def _convert_audio_to_recording_format(self, audio_data: bytes, input_encoding: str) -> bytes:
+        """
+        Convert incoming audio data to the recording format.
+        
+        Args:
+            audio_data: Raw audio data bytes
+            input_encoding: Encoding of the input audio data
+            
+        Returns:
+            Audio data converted to the recording format
+        """
+        try:
+            # If input encoding matches recording encoding, return as-is
+            if input_encoding.lower() == self.encoding.lower():
+                self.logger.debug(f"Audio format matches recording format ({input_encoding})")
+                return audio_data
+            
+            # Convert between different formats
+            if input_encoding.lower() == "pcm" and self.encoding.lower() == "ulaw":
+                # Convert PCM to u-law
+                self.logger.debug("Converting PCM to u-law for recording")
+                # Assume 16-bit PCM if we can't determine bit depth
+                assumed_bit_depth = 16
+                if len(audio_data) % 2 == 0:  # Even number of bytes suggests 16-bit
+                    assumed_bit_depth = 16
+                else:
+                    assumed_bit_depth = 8
+                
+                # Use the AudioConverter to convert PCM to u-law
+                converter = AudioConverter(self.logger)
+                return converter.pcm_to_ulaw(audio_data, sample_rate=self.sample_rate, bit_depth=assumed_bit_depth)
+            
+            elif input_encoding.lower() == "ulaw" and self.encoding.lower() == "pcm":
+                # Convert u-law to PCM
+                self.logger.debug("Converting u-law to PCM for recording")
+                # This is more complex and might not be needed
+                # For now, return as-is and log a warning
+                self.logger.warning("u-law to PCM conversion not implemented, using original data")
+                return audio_data
+            
+            else:
+                # Unknown conversion, log warning and return as-is
+                self.logger.warning(
+                    f"Unknown audio format conversion: {input_encoding} -> {self.encoding}, using original data"
+                )
+                return audio_data
+                
+        except Exception as e:
+            self.logger.error(f"Error converting audio format: {e}")
+            # Return original data if conversion fails
+            return audio_data
 
     def detect_silence(self, audio_data: bytes) -> bool:
         """
@@ -743,12 +1061,27 @@ class AudioRecorder:
             return None
 
         # Write any remaining data
-        if self.audio_buffer and self.wav_file:
-            self.wav_file.writeframes(bytes(self.audio_buffer))
+        if self.audio_buffer:
+            buffer_copy = bytes(self.audio_buffer)
+            
+            try:
+                if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
+                    # Use custom u-law writing
+                    self._write_ulaw_audio_data(buffer_copy)
+                elif self.wav_file:
+                    # Use standard wave module
+                    self.wav_file.writeframes(buffer_copy)
+                else:
+                    self.logger.error("No WAV file handle available for writing final data")
+            except Exception as e:
+                self.logger.error(f"Error writing final audio data: {e}")
+            
             self.audio_buffer = bytearray()
 
         # Close the WAV file
-        if self.wav_file:
+        if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
+            self._close_ulaw_wav_file()
+        elif self.wav_file:
             self.wav_file.close()
             self.wav_file = None
 
@@ -794,6 +1127,182 @@ def save_audio_to_file(
         wav_file.writeframes(audio_data)
 
     return file_path
+
+
+def create_test_audio_file(
+    output_path: str,
+    duration_seconds: float = 3.0,
+    sample_rate: int = 8000,
+    bit_depth: int = 8,
+    channels: int = 1,
+    encoding: str = "ulaw",
+    logger: Optional[logging.Logger] = None,
+) -> str:
+    """
+    Create a test audio file with a simple tone for debugging audio format issues.
+    
+    Args:
+        output_path: Path to save the test audio file
+        duration_seconds: Duration of the test audio in seconds
+        sample_rate: Audio sample rate in Hz
+        bit_depth: Audio bit depth
+        channels: Number of audio channels
+        encoding: Audio encoding format
+        logger: Optional logger instance
+        
+    Returns:
+        Path to the created test audio file
+    """
+    try:
+        import math
+        
+        # Create a simple sine wave tone at 440 Hz (A note)
+        frequency = 440.0
+        num_samples = int(sample_rate * duration_seconds)
+        
+        if encoding.lower() == "ulaw":
+            # Generate u-law encoded test tone
+            audio_data = bytearray()
+            for i in range(num_samples):
+                # Generate sine wave
+                sample = math.sin(2 * math.pi * frequency * i / sample_rate)
+                # Convert to 16-bit PCM range (-32768 to 32767)
+                pcm_sample = int(sample * 16384)  # Scale to avoid clipping
+                
+                # Convert to u-law
+                converter = AudioConverter(logger)
+                ulaw_byte = converter._linear_to_ulaw(pcm_sample)
+                audio_data.append(ulaw_byte)
+                
+        elif encoding.lower() == "pcm":
+            # Generate PCM test tone
+            if bit_depth == 16:
+                audio_data = bytearray()
+                for i in range(num_samples):
+                    # Generate sine wave
+                    sample = math.sin(2 * math.pi * frequency * i / sample_rate)
+                    # Convert to 16-bit PCM range (-32768 to 32767)
+                    pcm_sample = int(sample * 16384)  # Scale to avoid clipping
+                    # Pack as little-endian 16-bit
+                    audio_data.extend(struct.pack('<h', pcm_sample))
+            else:  # 8-bit PCM
+                audio_data = bytearray()
+                for i in range(num_samples):
+                    # Generate sine wave
+                    sample = math.sin(2 * math.pi * frequency * i / sample_rate)
+                    # Convert to 8-bit unsigned PCM range (0 to 255)
+                    pcm_sample = int((sample + 1) * 127.5)
+                    audio_data.append(pcm_sample)
+        else:
+            raise ValueError(f"Unsupported encoding: {encoding}")
+        
+        # Create WAV file
+        converter = AudioConverter(logger)
+        wav_data = converter.pcm_to_wav(
+            bytes(audio_data),
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            channels=channels,
+            encoding=encoding
+        )
+        
+        # Save to file
+        with open(output_path, 'wb') as f:
+            f.write(wav_data)
+        
+        if logger:
+            logger.info(f"Created test audio file: {output_path}")
+            logger.info(f"Format: {sample_rate}Hz, {bit_depth}bit, {channels} channel(s), {encoding}")
+            logger.info(f"Duration: {duration_seconds}s, Size: {len(wav_data)} bytes")
+        
+        return output_path
+        
+    except Exception as e:
+        if logger:
+            logger.error(f"Error creating test audio file: {e}")
+        raise
+
+
+def analyze_audio_quality(audio_path: Path, logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+    """
+    Analyze audio file quality and detect potential issues.
+    
+    Args:
+        audio_path: Path to the audio file to analyze
+        logger: Optional logger instance
+        
+    Returns:
+        Dictionary containing audio quality metrics and potential issues
+    """
+    try:
+        converter = AudioConverter(logger)
+        audio_info = converter.analyze_audio_file(audio_path)
+        
+        if "error" in audio_info:
+            return {"error": audio_info["error"]}
+        
+        # Read audio data for analysis
+        with wave.open(str(audio_path), "rb") as wav_file:
+            audio_data = wav_file.readframes(wav_file.getnframes())
+        
+        # Analyze audio characteristics
+        quality_metrics = {
+            "file_info": audio_info,
+            "quality_issues": [],
+            "recommendations": []
+        }
+        
+        # Check for common quality issues
+        if audio_info["sample_rate"] != 8000:
+            quality_metrics["quality_issues"].append(f"Non-standard sample rate: {audio_info['sample_rate']}Hz (expected 8000Hz)")
+            quality_metrics["recommendations"].append("Convert to 8kHz for telephony compatibility")
+        
+        if audio_info["channels"] != 1:
+            quality_metrics["quality_issues"].append(f"Non-mono audio: {audio_info['channels']} channels (expected 1)")
+            quality_metrics["recommendations"].append("Convert to mono for telephony compatibility")
+        
+        if audio_info["bit_depth"] != 8:
+            quality_metrics["quality_issues"].append(f"Non-standard bit depth: {audio_info['bit_depth']}bit (expected 8bit)")
+            quality_metrics["recommendations"].append("Convert to 8-bit for telephony compatibility")
+        
+        # Analyze audio data patterns
+        if len(audio_data) > 0:
+            # Check for silence patterns
+            silence_bytes = sum(1 for byte in audio_data if byte in [0xFF, 0x00])
+            silence_percentage = (silence_bytes / len(audio_data)) * 100
+            
+            if silence_percentage > 90:
+                quality_metrics["quality_issues"].append(f"High silence content: {silence_percentage:.1f}%")
+                quality_metrics["recommendations"].append("Check audio input source and encoding")
+            
+            # Check for data patterns that might indicate corruption
+            unique_bytes = len(set(audio_data))
+            if unique_bytes < 10:
+                quality_metrics["quality_issues"].append(f"Low data variety: only {unique_bytes} unique byte values")
+                quality_metrics["recommendations"].append("Audio may be corrupted or improperly encoded")
+            
+            # Check for repeated patterns that might indicate encoding issues
+            if len(audio_data) > 100:
+                sample = audio_data[:100]
+                pattern_length = 1
+                for i in range(1, min(50, len(sample) // 2)):
+                    if sample[:i] * (len(sample) // i) == sample[:(len(sample) // i) * i]:
+                        pattern_length = i
+                        break
+                
+                if pattern_length > 1:
+                    quality_metrics["quality_issues"].append(f"Repeated pattern detected: {pattern_length} byte pattern")
+                    quality_metrics["recommendations"].append("Audio may have encoding or processing issues")
+        
+        return quality_metrics
+        
+    except Exception as e:
+        if logger:
+            logger.error(f"Error analyzing audio quality: {e}")
+        return {"error": str(e)}
+
+
+
 
 
 # Convenience functions for easy use
