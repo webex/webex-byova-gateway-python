@@ -13,7 +13,7 @@ import time
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 class AudioConverter:
@@ -32,6 +32,209 @@ class AudioConverter:
             logger: Optional logger instance. If not provided, creates a new one.
         """
         self.logger = logger or logging.getLogger(__name__)
+
+    def analyze_audio_file(self, audio_path: Path) -> Dict[str, Any]:
+        """
+        Analyze audio file properties and return comprehensive metadata.
+
+        Args:
+            audio_path: Path to the audio file to analyze
+
+        Returns:
+            Dictionary containing audio file metadata
+        """
+        try:
+            if not audio_path.exists():
+                return {"error": f"File not found: {audio_path}"}
+
+            # Get file size
+            file_size = audio_path.stat().st_size
+
+            # Read WAV file properties
+            with wave.open(str(audio_path), "rb") as wav_file:
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                sample_rate = wav_file.getframerate()
+                n_frames = wav_file.getnframes()
+                compression_type = wav_file.getcomptype()
+                bit_depth = sample_width * 8
+                duration = n_frames / sample_rate if sample_rate > 0 else 0
+
+                return {
+                    "file_path": str(audio_path),
+                    "file_size": file_size,
+                    "channels": channels,
+                    "sample_width": sample_width,
+                    "sample_rate": sample_rate,
+                    "bit_depth": bit_depth,
+                    "n_frames": n_frames,
+                    "duration": duration,
+                    "compression_type": compression_type,
+                    "is_wxcc_compatible": (
+                        sample_rate == 8000 and 
+                        bit_depth == 8 and 
+                        channels == 1 and 
+                        compression_type == b"NONE"
+                    )
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error analyzing audio file {audio_path}: {e}")
+            return {"error": str(e)}
+
+    def resample_24khz_to_8khz(self, pcm_24khz_data: bytes, bit_depth: int = 16) -> bytes:
+        """
+        Resample 24kHz PCM audio to 8kHz using simple decimation.
+
+        Args:
+            pcm_24khz_data: Raw PCM audio data at 24kHz
+            bit_depth: Audio bit depth (default: 16)
+
+        Returns:
+            Resampled PCM audio data at 8kHz
+        """
+        try:
+            if bit_depth == 16:
+                # Convert bytes to 16-bit integers (little-endian)
+                samples_24khz = struct.unpack(
+                    f"<{len(pcm_24khz_data) // 2}h", pcm_24khz_data
+                )
+
+                # Simple decimation: take every 3rd sample to go from 24kHz to 8kHz
+                samples_8khz = samples_24khz[::3]
+
+                # Convert back to bytes
+                pcm_8khz_data = struct.pack(f"<{len(samples_8khz)}h", *samples_8khz)
+
+                self.logger.info(
+                    f"Resampled 24kHz to 8kHz: {len(pcm_24khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
+                )
+                self.logger.info(
+                    f"Sample count: {len(samples_24khz)} -> {len(samples_8khz)}"
+                )
+
+                return pcm_8khz_data
+
+            elif bit_depth == 8:
+                # For 8-bit audio, take every 3rd byte
+                samples_8khz = pcm_24khz_data[::3]
+                self.logger.info(
+                    f"Resampled 24kHz to 8kHz: {len(pcm_24khz_data)} bytes -> {len(samples_8khz)} bytes"
+                )
+                return samples_8khz
+
+            else:
+                self.logger.warning(
+                    f"Unsupported bit depth for 24kHz resampling: {bit_depth}, returning original data"
+                )
+                return pcm_24khz_data
+
+        except Exception as e:
+            self.logger.error(f"Error resampling 24kHz to 8kHz: {e}")
+            # Return original data if resampling fails
+            return pcm_24khz_data
+
+    def convert_any_audio_to_wxcc(self, audio_path: Path) -> bytes:
+        """
+        Convert any audio file to WXCC-compatible format (8kHz, 8-bit u-law, mono).
+
+        This method handles various input formats and converts them to the format
+        expected by Webex Contact Center.
+
+        Args:
+            audio_path: Path to the audio file to convert
+
+        Returns:
+            Audio data in WXCC-compatible WAV format (8kHz, 8-bit u-law)
+        """
+        try:
+            # Analyze the audio file first
+            audio_info = self.analyze_audio_file(audio_path)
+            
+            if "error" in audio_info and audio_info["error"] is not None:
+                self.logger.error(f"Cannot convert audio file: {audio_info['error']}")
+                return b""
+
+            # Check if already in correct format
+            if audio_info.get("is_wxcc_compatible", False):
+                self.logger.info(f"Audio file {audio_path} already in WXCC-compatible format")
+                # Read and return the file as-is
+                with wave.open(str(audio_path), "rb") as wav_file:
+                    return wav_file.readframes(wav_file.getnframes())
+
+            self.logger.info(f"Converting audio file {audio_path} to WXCC-compatible format")
+            self.logger.info(
+                f"Original format: {audio_info['sample_rate']}Hz, {audio_info['bit_depth']}bit, "
+                f"{audio_info['channels']} channel(s), compression: {audio_info['compression_type']}"
+            )
+
+            # Read the original audio data
+            with wave.open(str(audio_path), "rb") as wav_file:
+                pcm_data = wav_file.readframes(wav_file.getnframes())
+
+            # Step 1: Resample if needed
+            if audio_info["sample_rate"] != 8000:
+                if audio_info["sample_rate"] == 16000:
+                    pcm_data = self.resample_16khz_to_8khz(pcm_data, audio_info["bit_depth"])
+                    self.logger.info(f"Resampled from {audio_info['sample_rate']}Hz to 8kHz")
+                elif audio_info["sample_rate"] == 24000:
+                    pcm_data = self.resample_24khz_to_8khz(pcm_data, audio_info["bit_depth"])
+                    self.logger.info(f"Resampled from {audio_info['sample_rate']}Hz to 8kHz")
+                else:
+                    self.logger.warning(
+                        f"Unsupported sample rate: {audio_info['sample_rate']}Hz, using original"
+                    )
+
+            # Step 2: Convert to u-law if needed
+            if audio_info["bit_depth"] != 8 or audio_info["compression_type"] != b"NONE":
+                pcm_data = self.pcm_to_ulaw(pcm_data, sample_rate=8000, bit_depth=16)
+                self.logger.info("Converted PCM to u-law format")
+
+            # Step 3: Convert to WAV format with proper headers
+            wav_data = self.pcm_to_wav(
+                pcm_data,
+                sample_rate=8000,  # WXCC expects 8kHz
+                bit_depth=8,  # WXCC expects 8-bit
+                channels=1,  # WXCC expects mono
+                encoding="ulaw",  # WXCC expects u-law
+            )
+
+            self.logger.info(
+                f"Successfully converted to WXCC-compatible format: {len(wav_data)} bytes"
+            )
+            return wav_data
+
+        except Exception as e:
+            self.logger.error(f"Error converting audio file {audio_path}: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # Return empty bytes if conversion fails
+            return b""
+
+    def validate_wav_file(self, audio_path: Path) -> bool:
+        """
+        Validate if a file is a valid WAV file.
+
+        Args:
+            audio_path: Path to the file to validate
+
+        Returns:
+            True if the file is a valid WAV file, False otherwise
+        """
+        try:
+            if not audio_path.exists():
+                return False
+
+            with wave.open(str(audio_path), "rb") as wav_file:
+                # Try to read basic properties - this will fail if not a valid WAV
+                _ = wav_file.getnchannels()
+                _ = wav_file.getsampwidth()
+                _ = wav_file.getframerate()
+                _ = wav_file.getnframes()
+                return True
+
+        except Exception:
+            return False
 
     def resample_16khz_to_8khz(
         self, pcm_16khz_data: bytes, bit_depth: int = 16
@@ -632,3 +835,72 @@ def convert_aws_lex_audio_to_wxcc(
     """Convenience function for complete AWS Lex to WxCC conversion."""
     converter = AudioConverter(logger)
     return converter.convert_aws_lex_audio_to_wxcc(pcm_16khz_data, bit_depth)
+
+
+def get_audio_file_info(
+    audio_path: Path, logger: Optional[logging.Logger] = None
+) -> Dict[str, Any]:
+    """
+    Get comprehensive audio file information.
+    
+    Args:
+        audio_path: Path to the audio file to analyze
+        logger: Optional logger instance
+        
+    Returns:
+        Dictionary containing audio file metadata
+    """
+    converter = AudioConverter(logger)
+    return converter.analyze_audio_file(audio_path)
+
+
+def is_wxcc_compatible(
+    audio_path: Path, logger: Optional[logging.Logger] = None
+) -> bool:
+    """
+    Check if audio file is already in WXCC-compatible format.
+    
+    Args:
+        audio_path: Path to the audio file to check
+        logger: Optional logger instance
+        
+    Returns:
+        True if the file is WXCC-compatible, False otherwise
+    """
+    converter = AudioConverter(logger)
+    audio_info = converter.analyze_audio_file(audio_path)
+    return audio_info.get("is_wxcc_compatible", False) if "error" not in audio_info else False
+
+
+def convert_any_audio_to_wxcc(
+    audio_path: Path, logger: Optional[logging.Logger] = None
+) -> bytes:
+    """
+    Convert any audio file to WXCC-compatible format.
+    
+    Args:
+        audio_path: Path to the audio file to convert
+        logger: Optional logger instance
+        
+    Returns:
+        Audio data in WXCC-compatible WAV format
+    """
+    converter = AudioConverter(logger)
+    return converter.convert_any_audio_to_wxcc(audio_path)
+
+
+def validate_wav_file(
+    audio_path: Path, logger: Optional[logging.Logger] = None
+) -> bool:
+    """
+    Validate if a file is a valid WAV file.
+    
+    Args:
+        audio_path: Path to the file to validate
+        logger: Optional logger instance
+        
+    Returns:
+        True if the file is a valid WAV file, False otherwise
+    """
+    converter = AudioConverter(logger)
+    return converter.validate_wav_file(audio_path)

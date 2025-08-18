@@ -7,7 +7,6 @@ It's useful for testing and development purposes.
 
 import base64
 import logging
-import struct
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -599,116 +598,9 @@ class LocalAudioConnector(IVendorConnector):
             Audio data in WXCC-compatible WAV format (8kHz, 8-bit u-law)
         """
         try:
-            import wave
-
-            # Check if file exists
-            if not audio_path.exists():
-                self.logger.error(f"Audio file not found: {audio_path}")
-                return b""
-
-            # Get original file size
-            original_size = audio_path.stat().st_size
-            self.logger.info(f"Original file size: {original_size} bytes")
-
-            # Read the original WAV file
-            with wave.open(str(audio_path), "rb") as wav_file:
-                # Get file properties
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-                sample_rate = wav_file.getframerate()
-                n_frames = wav_file.getnframes()
-                compression_type = wav_file.getcomptype()
-
-                self.logger.info(f"Converting audio file: {audio_path}")
-                self.logger.info(
-                    f"Original format: {sample_rate}Hz, {sample_width * 8}bit, {channels} channel(s), compression: {compression_type}"
-                )
-                self.logger.info(
-                    f"Original frames: {n_frames}, duration: {n_frames / sample_rate:.2f}s"
-                )
-
-                # Read all audio data
-                pcm_data = wav_file.readframes(n_frames)
-                self.logger.info(f"Read PCM data: {len(pcm_data)} bytes")
-
-                # Determine bit depth from sample width
-                bit_depth = sample_width * 8
-
-                # Convert to WXCC-compatible format
-                if sample_rate != 8000 or bit_depth != 8 or compression_type != b"NONE":
-                    self.logger.info(
-                        "Converting audio to WXCC-compatible format (8kHz, 8-bit u-law)"
-                    )
-
-                    # Step 1: Resample if needed
-                    if sample_rate != 8000:
-                        if sample_rate == 16000:
-                            pcm_data = self.audio_converter.resample_16khz_to_8khz(
-                                pcm_data, bit_depth
-                            )
-                            self.logger.info(
-                                f"Resampled from {sample_rate}Hz to 8kHz: {len(pcm_data)} bytes"
-                            )
-                        elif sample_rate == 24000:
-                            # For 24kHz, we need to resample to 8kHz (take every 3rd sample)
-                            if bit_depth == 16:
-                                samples_24khz = struct.unpack(
-                                    f"<{len(pcm_data) // 2}h", pcm_data
-                                )
-                                samples_8khz = samples_24khz[
-                                    ::3
-                                ]  # Take every 3rd sample
-                                pcm_data = struct.pack(
-                                    f"<{len(samples_8khz)}h", *samples_8khz
-                                )
-                                self.logger.info(
-                                    f"Resampled from {sample_rate}Hz to 8kHz: {len(pcm_data)} bytes"
-                                )
-                            else:
-                                # For 8-bit, take every 3rd byte
-                                pcm_data = pcm_data[::3]
-                                self.logger.info(
-                                    f"Resampled from {sample_rate}Hz to 8kHz: {len(pcm_data)} bytes"
-                                )
-                        else:
-                            self.logger.warning(
-                                f"Unsupported sample rate: {sample_rate}Hz, using original"
-                            )
-
-                    # Step 2: Convert to u-law if needed
-                    if bit_depth != 8 or compression_type != b"NONE":
-                        pcm_data = self.audio_converter.pcm_to_ulaw(
-                            pcm_data, sample_rate=8000, bit_depth=16
-                        )
-                        self.logger.info(
-                            f"Converted PCM to u-law format: {len(pcm_data)} bytes"
-                        )
-
-                    # Step 3: Convert to WAV format with proper headers
-                    wav_data = self.audio_converter.pcm_to_wav(
-                        pcm_data,
-                        sample_rate=8000,  # WXCC expects 8kHz
-                        bit_depth=8,  # WXCC expects 8-bit
-                        channels=1,  # WXCC expects mono
-                        encoding="ulaw",  # WXCC expects u-law
-                    )
-
-                    self.logger.info(
-                        f"Successfully converted to WXCC-compatible format: {len(wav_data)} bytes"
-                    )
-                    self.logger.info(
-                        f"Conversion ratio: {len(wav_data) / original_size:.2f}x"
-                    )
-                    return wav_data
-                else:
-                    # Already in correct format, just return as-is
-                    self.logger.info("Audio file already in WXCC-compatible format")
-                    return pcm_data
-
+            # Use the centralized audio conversion utility
+            return self.audio_converter.convert_any_audio_to_wxcc(audio_path)
         except Exception as e:
             self.logger.error(f"Error converting audio file {audio_path}: {e}")
-            import traceback
-
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
             # Return empty bytes if conversion fails
             return b""
