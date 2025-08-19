@@ -5,7 +5,6 @@ This connector simulates a virtual agent by playing local audio files.
 It's useful for testing and development purposes.
 """
 
-import base64
 import logging
 from pathlib import Path
 from typing import Any, Dict, List
@@ -506,111 +505,22 @@ class LocalAudioConnector(IVendorConnector):
             return
 
         try:
-            # Initialize audio_bytes variable
-            audio_bytes = None
-
-            # Add detailed logging of the initial audio_data type
-            self.logger.debug(
-                f"Processing audio data of type {type(audio_data)} for {conversation_id}"
-            )
-
-            # Ensure audio_data is bytes - handle various input types
-            if isinstance(audio_data, dict):
-                # Extract audio data from dictionary
-                self.logger.debug(
-                    f"Audio data is dictionary with keys: {list(audio_data.keys())}"
-                )
-                if "audio_data" in audio_data:
-                    self.logger.debug(
-                        f"Extracting audio data from dictionary key 'audio_data' for {conversation_id}"
-                    )
-                    audio_data = audio_data["audio_data"]
-                    self.logger.debug(f"Extracted audio data type: {type(audio_data)}")
-                    audio_bytes = audio_data  # Assign extracted bytes to audio_bytes
-                else:
-                    # Try to find any key that might contain audio data
-                    audio_keys = [k for k in audio_data.keys() if "audio" in k.lower()]
-                    if audio_keys:
-                        key = audio_keys[0]
-                        self.logger.debug(
-                            f"Found audio data under key '{key}' for {conversation_id}"
-                        )
-                        audio_data = audio_data[key]
-                        self.logger.debug(f"Extracted audio data type: {type(audio_data)}")
-                        audio_bytes = audio_data  # Assign extracted bytes to audio_bytes
-                    else:
-                        self.logger.error(
-                            f"No audio data found in dictionary for {conversation_id}. Keys: {list(audio_data.keys())}"
-                        )
-                        return
-            elif isinstance(audio_data, str):
-                self.logger.debug(f"Audio data is string type, length: {len(audio_data)}")
-                # If string is empty or None, log error and return
-                if not audio_data:
-                    self.logger.error(f"Empty string audio data received for {conversation_id}")
-                    return
-
-                # Only log full audio data in debug mode
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    # Log the first few characters to understand the format
-                    first_chars = audio_data[:100].replace('\n', '\\n').replace('\r', '\\r')
-                    self.logger.debug(
-                        f"Converting string audio data to bytes for {conversation_id}, data preview: '{first_chars}...'"
-                    )
-                else:
-                    self.logger.debug(
-                        f"Converting string audio data to bytes for {conversation_id} (length: {len(audio_data)})"
-                    )
-
-                # Try to convert from base64 string
-                try:
-                    # Try to decode as base64 first
-                    self.logger.debug(f"Attempting base64 decode for {conversation_id}")
-                    audio_bytes = base64.b64decode(audio_data)
-                    self.logger.debug(f"Base64 decode successful, got {len(audio_bytes)} bytes")
-                except Exception as e:
-                    self.logger.debug(f"Base64 decode failed: {e}, trying direct encoding")
-                    # If not base64, try direct encoding
-                    audio_bytes = audio_data.encode(
-                        "latin1"
-                    )  # Use latin1 to preserve byte values
-                    self.logger.debug(f"Direct encoding successful, got {len(audio_bytes)} bytes")
-            elif isinstance(audio_data, (bytes, bytearray)):
-                self.logger.debug(f"Audio data is already in bytes type, length: {len(audio_data)}")
-                # If bytes are empty, log error and return
-                if not audio_data:
-                    self.logger.error(f"Empty bytes audio data received for {conversation_id}")
-                    return
-
-                # Only log full audio data in debug mode
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    # Convert bytes to hex for better visibility in logs
-                    hex_preview = audio_data[:50].hex()
-                    self.logger.debug(
-                        f"Processing bytes audio data for {conversation_id}, hex preview: {hex_preview}..."
-                    )
-                else:
-                    self.logger.debug(
-                        f"Processing bytes audio data for {conversation_id} (length: {len(audio_data)})"
-                    )
-                audio_bytes = audio_data
-            else:
-                self.logger.error(
-                    f"Unsupported audio data type: {type(audio_data)} for {conversation_id}"
-                )
-                return
+            # Use the parent class method to extract audio bytes
+            audio_bytes = self.extract_audio_data(audio_data, conversation_id, self.logger)
 
             # Ensure we have valid audio bytes before proceeding
             if audio_bytes is None:
-                self.logger.error(f"Failed to convert audio data to bytes for {conversation_id}")
+                self.logger.error(f"Failed to extract audio data for conversation {conversation_id}")
                 return
 
-            # Add audio data to recorder
             # Try to detect the actual audio format based on the data characteristics
             detected_encoding = self.audio_converter.detect_audio_encoding(audio_bytes)
             self.logger.debug(f"Detected audio encoding: {detected_encoding}")
-            
-            self.audio_recorders[conversation_id].add_audio_data(audio_bytes, detected_encoding)
+
+            # Process audio format if needed
+            processed_audio, final_encoding = self.process_audio_format(audio_bytes, detected_encoding, conversation_id)
+
+            self.audio_recorders[conversation_id].add_audio_data(processed_audio, final_encoding)
         except Exception as e:
             self.logger.error(
                 f"Error recording audio for conversation {conversation_id}: {e}"
