@@ -288,6 +288,145 @@ class IVendorConnector(ABC):
         Returns:
             Tuple of (processed_audio_bytes, resulting_encoding)
         """
-        # Base implementation just returns the audio data unchanged
-        # Subclasses can override to provide format conversion
+        # Default implementation: return the bytes unchanged
         return audio_bytes, detected_encoding
+
+    def create_response(self, conversation_id: str, message_type: str = "silence",
+                       text: str = "", audio_content: bytes = b"",
+                       barge_in_enabled: bool = False, **additional_params) -> Dict[str, Any]:
+        """
+        Create a standardized response dictionary with common fields.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            message_type: Type of message (silence, welcome, transfer, etc.)
+            text: Text response to send to the client
+            audio_content: Audio bytes to send to the client
+            barge_in_enabled: Whether barge-in is enabled for this response
+            **additional_params: Additional parameters to include in the response
+
+        Returns:
+            Standardized response dictionary with common fields
+        """
+        # Create base response
+        response = {
+            "audio_content": audio_content,
+            "text": text,
+            "conversation_id": conversation_id,
+            "agent_id": getattr(self, "agent_id", "Unknown"),  # Use agent_id if available
+            "message_type": message_type,
+            "barge_in_enabled": barge_in_enabled
+        }
+
+        # Add any additional parameters
+        response.update(additional_params)
+
+        return response
+    
+    def handle_conversation_start(self, conversation_id: str, message_data: Dict[str, Any],
+                                logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+        """
+        Handle conversation start events.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            message_data: Message data containing the conversation start event
+            logger: Optional logger instance
+
+        Returns:
+            Standardized silence response
+        """
+        if logger:
+            logger.info(f"Ignoring conversation start event in send_message for conversation {conversation_id}")
+
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence"
+        )
+    
+    def handle_event(self, conversation_id: str, message_data: Dict[str, Any],
+                    logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+        """
+        Handle event inputs.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            message_data: Message data containing the event
+            logger: Optional logger instance
+    
+        Returns:
+            Standardized silence response
+        """
+        if logger and "event_data" in message_data:
+            event_name = message_data.get("event_data", {}).get("name", "")
+            logger.info(f"Event for conversation {conversation_id}: {event_name}")
+
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence"
+        )
+
+    def handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any],
+                          logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+        """
+        Handle audio input by returning a silence response.
+        Subclasses may override this to process the audio input.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            message_data: Message data containing audio input
+            logger: Optional logger instance
+    
+        Returns:
+            Standardized silence response
+        """
+        if logger:
+            logger.debug(f"Received audio input for conversation {conversation_id}")
+    
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence"
+        )
+
+    def handle_unrecognized_input(self, conversation_id: str, message_data: Dict[str, Any],
+                                 logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+        """
+        Handle unrecognized input types by returning a silence response.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            message_data: Message data with unrecognized input type
+            logger: Optional logger instance
+    
+        Returns:
+            Standardized silence response
+        """
+        if logger:
+            logger.debug(
+                f"Unhandled input type for conversation {conversation_id}: {message_data.get('input_type')}"
+            )
+    
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence"
+        )
+
+    def check_silence_timeout(self, conversation_id: str, record_caller_audio: bool = False,
+                            audio_recorders: Optional[Dict[str, Any]] = None,
+                            logger: Optional[logging.Logger] = None) -> None:
+        """
+        Check for silence timeout in audio recordings.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            record_caller_audio: Whether caller audio recording is enabled
+            audio_recorders: Dictionary of audio recorders by conversation ID
+            logger: Optional logger instance
+        """
+        if not record_caller_audio or not audio_recorders or conversation_id not in audio_recorders:
+            return
+    
+        if hasattr(audio_recorders[conversation_id], "check_silence_timeout"):
+            if not audio_recorders[conversation_id].check_silence_timeout():
+                if logger:
+                    logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")

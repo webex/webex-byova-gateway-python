@@ -149,17 +149,7 @@ class LocalAudioConnector(IVendorConnector):
 
         # Ignore conversation start events - these should be handled by start_conversation method
         if message_data.get("input_type") == "conversation_start":
-            self.logger.info(
-                f"Ignoring conversation start event in send_message for conversation {conversation_id}"
-            )
-            return {
-                "audio_content": b"",
-                "text": "",
-                "conversation_id": conversation_id,
-                "agent_id": self.agent_id,
-                "message_type": "silence",
-                "barge_in_enabled": False,
-            }
+            return self.handle_conversation_start(conversation_id, message_data, self.logger)
 
         # Handle DTMF input - check for transfer and log the digits
         if message_data.get("input_type") == "dtmf" and "dtmf_data" in message_data:
@@ -195,14 +185,13 @@ class LocalAudioConnector(IVendorConnector):
                         audio_bytes = b""
 
                     # Return transfer response
-                    return {
-                        "audio_content": audio_bytes,
-                        "text": "Transferring you to an agent. Please wait.",
-                        "conversation_id": conversation_id,
-                        "agent_id": self.agent_id,
-                        "message_type": "transfer",
-                        "barge_in_enabled": False,
-                    }
+                    return self.create_response(
+                        conversation_id=conversation_id,
+                        message_type="transfer",
+                        text="Transferring you to an agent. Please wait.",
+                        audio_content=audio_bytes,
+                        barge_in_enabled=False
+                    )
 
                 # Check if user entered '6' for goodbye
                 elif (
@@ -226,58 +215,37 @@ class LocalAudioConnector(IVendorConnector):
                         audio_bytes = b""
 
                     # Return goodbye response
-                    return {
-                        "audio_content": audio_bytes,
-                        "text": "Thank you for calling. Goodbye!",
-                        "conversation_id": conversation_id,
-                        "agent_id": self.agent_id,
-                        "message_type": "goodbye",
-                        "barge_in_enabled": False,
-                    }
+                    return self.create_response(
+                        conversation_id=conversation_id,
+                        message_type="goodbye",
+                        text="Thank you for calling. Goodbye!",
+                        audio_content=audio_bytes,
+                        barge_in_enabled=False
+                    )
 
             # Check for silence timeout when DTMF inputs are received
-            if self.record_caller_audio and conversation_id in self.audio_recorders:
-                if not self.audio_recorders[conversation_id].check_silence_timeout():
-                    self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
+            self.check_silence_timeout(
+                conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
+            )
 
             # Return silence response for other DTMF inputs (no audio response)
-            return {
-                "audio_content": b"",
-                "text": "",
-                "conversation_id": conversation_id,
-                "agent_id": self.agent_id,
-                "message_type": "silence",
-                "barge_in_enabled": False,
-            }
+            return self.create_response(
+                conversation_id=conversation_id,
+                message_type="silence"
+            )
 
         # Handle event inputs - log start and end of input events
         if message_data.get("input_type") == "event" and "event_data" in message_data:
-            event_data = message_data.get("event_data", {})
-            event_name = event_data.get("name", "")
-
-            self.logger.info(f"Event for conversation {conversation_id}: {event_name}")
-
             # Check for silence timeout when events are received
-            if self.record_caller_audio and conversation_id in self.audio_recorders:
-                if not self.audio_recorders[conversation_id].check_silence_timeout():
-                    self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
+            self.check_silence_timeout(
+                conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
+            )
 
             # Return silence response for events (no audio response)
-            return {
-                "audio_content": b"",
-                "text": "",
-                "conversation_id": conversation_id,
-                "agent_id": self.agent_id,
-                "message_type": "silence",
-                "barge_in_enabled": False,
-            }
+            return self.handle_event(conversation_id, message_data, self.logger)
 
         # Handle audio input - return silence (no processing)
         if message_data.get("input_type") == "audio":
-            self.logger.debug(
-                f"Received audio input for conversation {conversation_id}"
-            )
-
             # Record audio if enabled
             if self.record_caller_audio and "audio_data" in message_data:
                 self._process_audio_for_recording(
@@ -285,37 +253,19 @@ class LocalAudioConnector(IVendorConnector):
                 )
 
             # Check for silence timeout even when audio data is received
-            if self.record_caller_audio and conversation_id in self.audio_recorders:
-                if not self.audio_recorders[conversation_id].check_silence_timeout():
-                    self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
+            self.check_silence_timeout(
+                conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
+            )
 
-            return {
-                "audio_content": b"",
-                "text": "",
-                "conversation_id": conversation_id,
-                "agent_id": self.agent_id,
-                "message_type": "silence",
-                "barge_in_enabled": False,
-            }
+            return self.handle_audio_input(conversation_id, message_data, self.logger)
 
         # Default: return silence for any other input type
-        self.logger.debug(
-            f"Unhandled input type for conversation {conversation_id}: {message_data.get('input_type')}"
+        # Check for silence timeout for any unhandled input types
+        self.check_silence_timeout(
+            conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
         )
 
-        # Check for silence timeout for any unhandled input types
-        if self.record_caller_audio and conversation_id in self.audio_recorders:
-            if not self.audio_recorders[conversation_id].check_silence_timeout():
-                self.logger.info(f"Recording finalized due to silence timeout for conversation {conversation_id}")
-
-        return {
-            "audio_content": b"",
-            "text": "",
-            "conversation_id": conversation_id,
-            "agent_id": self.agent_id,
-            "message_type": "silence",
-            "barge_in_enabled": False,
-        }
+        return self.handle_unrecognized_input(conversation_id, message_data, self.logger)
 
     def end_conversation(
         self, conversation_id: str, message_data: Dict[str, Any] = None
