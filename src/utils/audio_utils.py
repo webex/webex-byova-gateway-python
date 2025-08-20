@@ -669,6 +669,8 @@ class AudioRecorder:
         bit_depth: int = 8,
         channels: int = 1,
         encoding: str = "ulaw",
+        buffer_only: bool = False,
+        on_audio_ready: Optional[callable] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         """
@@ -698,6 +700,8 @@ class AudioRecorder:
         self.encoding = encoding
 
         # Internal state
+        self.buffer_only = buffer_only
+        self.on_audio_ready = on_audio_ready
         self.audio_buffer = bytearray()
         self.wav_file = None
         self.recording = False
@@ -823,31 +827,40 @@ class AudioRecorder:
             )
             self.finalize_recording()
 
-        # Generate filename with timestamp and conversation ID
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"caller_audio_{self.conversation_id}_{timestamp}.wav"
-        self.file_path = self.output_dir / filename
+        # Generate filename with timestamp and conversation ID (only if not buffer-only)
+        if not self.buffer_only:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"caller_audio_{self.conversation_id}_{timestamp}.wav"
+            self.file_path = self.output_dir / filename
 
-        # Set up WAV file based on encoding type
-        if self.encoding.lower() == "ulaw":
-            # Use custom u-law WAV file creation
-            self._create_ulaw_wav_file(str(self.file_path))
-            self.wav_file = None  # We're using custom file handling
+            # Set up WAV file based on encoding type
+            if self.encoding.lower() == "ulaw":
+                # Use custom u-law WAV file creation
+                self._create_ulaw_wav_file(str(self.file_path))
+                self.wav_file = None  # We're using custom file handling
+            else:
+                # Use standard wave module for PCM
+                self.wav_file = wave.open(str(self.file_path), "wb")
+                self.wav_file.setnchannels(self.channels)
+                self.wav_file.setsampwidth(self.bit_depth // 8)
+                self.wav_file.setframerate(self.sample_rate)
         else:
-            # Use standard wave module for PCM
-            self.wav_file = wave.open(str(self.file_path), "wb")
-            self.wav_file.setnchannels(self.channels)
-            self.wav_file.setsampwidth(self.bit_depth // 8)
-            self.wav_file.setframerate(self.sample_rate)
+            # Buffer-only mode: no file creation
+            self.file_path = None
 
         # Reset state
         self.audio_buffer = bytearray()
         self.recording = True
         self.last_audio_time = time.time()
 
-        self.logger.info(
-            f"Started recording audio for conversation {self.conversation_id} to {self.file_path}"
-        )
+        if self.buffer_only:
+            self.logger.info(
+                f"Started buffering audio for conversation {self.conversation_id} (buffer-only mode)"
+            )
+        else:
+            self.logger.info(
+                f"Started recording audio for conversation {self.conversation_id} to {self.file_path}"
+            )
 
     def add_audio_data(self, audio_data: bytes, encoding: str = "ulaw") -> bool:
         """
@@ -917,26 +930,33 @@ class AudioRecorder:
             
             # At this point, we're either already recording or just started
             if self.recording:
-                try:
-                    if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
-                        # Use custom u-law writing
-                        self._write_ulaw_audio_data(buffer_copy)
-                        bytes_written = len(buffer_copy)
-                        self.logger.debug(
-                            f"Wrote {bytes_written} bytes to u-law WAV file {self.file_path}"
-                        )
-                    elif self.wav_file:
-                        # Use standard wave module
-                        bytes_written = len(buffer_copy)
-                        self.wav_file.writeframes(buffer_copy)
-                        self.logger.debug(
-                            f"Wrote {bytes_written} bytes to WAV file {self.file_path}"
-                        )
-                    else:
-                        self.logger.error("No WAV file handle available for writing")
-                        
-                except Exception as e:
-                    self.logger.error(f"Error writing to WAV file: {e}")
+                if not self.buffer_only:
+                    # File recording mode: write to WAV file
+                    try:
+                        if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
+                            # Use custom u-law writing
+                            self._write_ulaw_audio_data(buffer_copy)
+                            bytes_written = len(buffer_copy)
+                            self.logger.debug(
+                                f"Wrote {bytes_written} bytes to u-law WAV file {self.file_path}"
+                            )
+                        elif self.wav_file:
+                            # Use standard wave module
+                            bytes_written = len(buffer_copy)
+                            self.wav_file.writeframes(buffer_copy)
+                            self.logger.debug(
+                                f"Wrote {bytes_written} bytes to WAV file {self.file_path}"
+                            )
+                        else:
+                            self.logger.error("No WAV file handle available for writing")
+                            
+                    except Exception as e:
+                        self.logger.error(f"Error writing to WAV file: {e}")
+                else:
+                    # Buffer-only mode: just log the data addition
+                    self.logger.debug(
+                        f"Added {len(buffer_copy)} bytes to buffer (buffer-only mode)"
+                    )
 
                 # Check for silence after recording has started
                 if is_silence:
@@ -950,7 +970,23 @@ class AudioRecorder:
                         self.logger.info(
                             f"Silence detected for {silence_time:.2f}s in conversation {self.conversation_id}, finalizing recording"
                         )
+                        
+                        # Get the audio data before finalizing (make a copy)
+                        audio_data = bytes(self.audio_buffer) if self.audio_buffer else None
+                        
+                        # Clear the buffer before finalizing (to prevent double-clearing)
+                        self.audio_buffer = bytearray()
+                        
+                        # Finalize the recording
                         self.finalize_recording()
+                        
+                        # Invoke callback if provided
+                        if self.on_audio_ready and audio_data:
+                            try:
+                                self.on_audio_ready(self.conversation_id, audio_data)
+                            except Exception as e:
+                                self.logger.error(f"Error in on_audio_ready callback: {e}")
+                        
                         return False
                 else:
                     # Reset the last audio time as we detected non-silence
@@ -990,7 +1026,20 @@ class AudioRecorder:
             self.logger.info(
                 f"Silence timeout reached ({silence_time:.2f}s) for conversation {self.conversation_id}, finalizing recording"
             )
+            
+            # Get the audio data before finalizing (make a copy)
+            audio_data = bytes(self.audio_buffer) if self.audio_buffer else None
+            
+            # Finalize the recording
             self.finalize_recording()
+            
+            # Invoke callback if provided
+            if self.on_audio_ready and audio_data:
+                try:
+                    self.on_audio_ready(self.conversation_id, audio_data)
+                except Exception as e:
+                    self.logger.error(f"Error in on_audio_ready callback: {e}")
+            
             return False
             
         return True
@@ -1138,8 +1187,8 @@ class AudioRecorder:
                 )
             return None
 
-        # Write any remaining data
-        if self.audio_buffer:
+        # Write any remaining data (only if not buffer-only)
+        if self.audio_buffer and not self.buffer_only:
             buffer_copy = bytes(self.audio_buffer)
             
             try:
@@ -1153,23 +1202,81 @@ class AudioRecorder:
                     self.logger.error("No WAV file handle available for writing final data")
             except Exception as e:
                 self.logger.error(f"Error writing final audio data: {e}")
-            
-            self.audio_buffer = bytearray()
+        
+        # Clear the buffer (for both modes)
+        self.audio_buffer = bytearray()
 
-        # Close the WAV file
-        if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
-            self._close_ulaw_wav_file()
-        elif self.wav_file:
-            self.wav_file.close()
-            self.wav_file = None
+        # Close the WAV file (only if not buffer-only)
+        if not self.buffer_only:
+            if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
+                self._close_ulaw_wav_file()
+            elif self.wav_file:
+                self.wav_file.close()
+                self.wav_file = None
 
         self.recording = False
 
-        self.logger.info(
-            f"Finalized audio recording for conversation {self.conversation_id} at {self.file_path}"
-        )
+        if self.buffer_only:
+            self.logger.info(
+                f"Finalized audio buffering for conversation {self.conversation_id} (buffer size: {len(self.audio_buffer)} bytes)"
+            )
+        else:
+            self.logger.info(
+                f"Finalized audio recording for conversation {self.conversation_id} at {self.file_path}"
+            )
 
         return str(self.file_path) if self.file_path else None
+
+    def get_buffered_audio(self) -> Optional[bytes]:
+        """
+        Get the current buffered audio data without writing to file.
+        
+        This method is useful in buffer-only mode to access the accumulated audio data.
+        
+        Returns:
+            The buffered audio data as bytes, or None if no data is available
+        """
+        if self.audio_buffer and len(self.audio_buffer) > 0:
+            return bytes(self.audio_buffer)
+        return None
+
+    def get_buffer_size(self) -> int:
+        """
+        Get the current size of the audio buffer.
+        
+        Returns:
+            Number of bytes currently in the buffer
+        """
+        return len(self.audio_buffer)
+
+    def clear_buffer(self) -> None:
+        """
+        Clear the audio buffer.
+        
+        This method is useful for resetting the buffer without finalizing the recording.
+        """
+        self.audio_buffer = bytearray()
+        self.logger.debug(f"Cleared audio buffer for conversation {self.conversation_id}")
+
+    def trigger_audio_ready_callback(self) -> bool:
+        """
+        Manually trigger the audio ready callback with current buffer data.
+        
+        This is useful when you want to process audio immediately without waiting
+        for silence detection.
+        
+        Returns:
+            True if callback was triggered, False if no callback or no data
+        """
+        if self.on_audio_ready and self.audio_buffer:
+            audio_data = self.get_buffered_audio()
+            if audio_data:
+                try:
+                    self.on_audio_ready(self.conversation_id, audio_data)
+                    return True
+                except Exception as e:
+                    self.logger.error(f"Error in on_audio_ready callback: {e}")
+        return False
 
 
 def save_audio_to_file(
