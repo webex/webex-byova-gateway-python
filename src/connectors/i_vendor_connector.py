@@ -322,7 +322,7 @@ class IVendorConnector(ABC):
         response.update(additional_params)
 
         return response
-    
+
     def handle_conversation_start(self, conversation_id: str, message_data: Dict[str, Any],
                                 logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
         """
@@ -343,7 +343,7 @@ class IVendorConnector(ABC):
             conversation_id=conversation_id,
             message_type="silence"
         )
-    
+
     def handle_event(self, conversation_id: str, message_data: Dict[str, Any],
                     logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
         """
@@ -353,7 +353,7 @@ class IVendorConnector(ABC):
             conversation_id: Unique identifier for the conversation
             message_data: Message data containing the event
             logger: Optional logger instance
-    
+
         Returns:
             Standardized silence response
         """
@@ -376,13 +376,13 @@ class IVendorConnector(ABC):
             conversation_id: Unique identifier for the conversation
             message_data: Message data containing audio input
             logger: Optional logger instance
-    
+
         Returns:
             Standardized silence response
         """
         if logger:
             logger.debug(f"Received audio input for conversation {conversation_id}")
-    
+
         return self.create_response(
             conversation_id=conversation_id,
             message_type="silence"
@@ -397,7 +397,7 @@ class IVendorConnector(ABC):
             conversation_id: Unique identifier for the conversation
             message_data: Message data with unrecognized input type
             logger: Optional logger instance
-    
+
         Returns:
             Standardized silence response
         """
@@ -405,7 +405,7 @@ class IVendorConnector(ABC):
             logger.debug(
                 f"Unhandled input type for conversation {conversation_id}: {message_data.get('input_type')}"
             )
-    
+
         return self.create_response(
             conversation_id=conversation_id,
             message_type="silence"
@@ -425,7 +425,7 @@ class IVendorConnector(ABC):
         """
         if not record_caller_audio or not audio_recorders or conversation_id not in audio_recorders:
             return
-    
+
         if hasattr(audio_recorders[conversation_id], "check_silence_timeout"):
             if not audio_recorders[conversation_id].check_silence_timeout():
                 if logger:
