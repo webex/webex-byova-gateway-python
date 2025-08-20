@@ -1,5 +1,15 @@
 # Webex Contact Center BYOVA Gateway - Agent Guide
 
+> **⚠️ IMPORTANT: This is a Functional Example, Not Production-Ready**
+> 
+> This project is designed as a **functional example** for customers and developers building on BYOVA (Bring Your Own Virtual Agent). It demonstrates best practices for coding and well-documented methods for interfacing with BYOVA, but it is **NOT intended to be a fully production-ready application**.
+> 
+> **Purpose**: This gateway serves as a reference implementation that customers can:
+> - **Fork and build upon** for their own implementations
+> - **Extract specific parts and pieces** they need to understand BYOVA integration
+> - **Learn best practices** for connecting to different voice agent services
+> - **Use as a starting point** for their own BYOVA integrations
+
 This document provides guidance for AI agents working with this codebase. It explains the architecture, design patterns, and conventions used in the Webex Contact Center BYOVA (Bring Your Own Virtual Agent) Gateway.
 
 ## Project Overview
@@ -9,10 +19,21 @@ The Webex Contact Center BYOVA Gateway is a Python-based gateway that acts as a 
 ### Purpose
 
 The primary purpose of this gateway is to:
-- Provide a flexible integration layer between WxCC and virtual agent platforms
-- Abstract vendor-specific implementations behind a common interface
-- Enable easy addition of new virtual agent connectors
-- Provide monitoring and debugging capabilities
+- **Serve as a functional example** for customers implementing BYOVA integrations
+- **Demonstrate best practices** for coding and documentation
+- **Provide a flexible integration layer** between WxCC and virtual agent platforms
+- **Abstract vendor-specific implementations** behind a common interface
+- **Enable easy addition of new virtual agent connectors** through well-defined patterns
+- **Provide monitoring and debugging capabilities** for development and testing
+- **Show customers how to interface with BYOVA** through practical, working code
+
+### Target Audience
+
+This gateway is specifically designed for:
+- **Developers** who need to understand BYOVA integration patterns
+- **Customers** who want to build their own voice agent integrations
+- **Architects** who need to understand the design patterns for BYOVA
+- **DevOps teams** who want to see examples of monitoring and deployment patterns
 
 ### Core Architecture
 
@@ -119,9 +140,19 @@ webex-byova-gateway-python/
 
 ## Development Guidelines
 
+### Educational and Reference Purpose
+
+This gateway is designed to be **educational and instructive** for customers implementing BYOVA integrations. When working with this codebase:
+
+- **Study the patterns**: Each connector demonstrates how to properly implement the BYOVA interface
+- **Learn from examples**: The existing connectors show real-world integration approaches
+- **Use as templates**: Copy and modify connector patterns for your own implementations
+- **Understand best practices**: The code follows enterprise-grade coding standards and patterns
+- **Reference the architecture**: Use the modular design as a blueprint for your own systems
+
 ### Adding a New Connector
 
-To add support for a new virtual agent platform:
+To add support for a new virtual agent platform (or to learn how to create your own):
 
 1. Create a new connector class in `src/connectors/`
 2. Inherit from `IVendorConnector` and implement all required methods
@@ -281,11 +312,39 @@ When submitting PRs to this project:
 - Gracefully handle expected failure modes
 - Log exceptions with stack traces at appropriate levels
 
+## How Customers Should Use This Project
+
+### For Learning and Understanding BYOVA
+
+This gateway serves as a **comprehensive learning resource** for BYOVA integration:
+
+- **Read the code**: Study how the gRPC interfaces are implemented
+- **Examine connectors**: Understand how different voice agent services are integrated
+- **Follow the patterns**: Use the established architectural patterns in your own code
+- **Reference the interfaces**: Use the abstract base classes as contracts for your implementations
+
+### For Building Your Own Implementation
+
+When building your own BYOVA integration:
+
+- **Fork this repository**: Use it as a starting point for your project
+- **Extract components**: Take only the parts you need (e.g., just the base connector interface)
+- **Customize connectors**: Modify existing connectors or create new ones for your vendors
+- **Adapt the architecture**: Use the modular design as inspiration for your system
+
+### For Production Use
+
+**Important**: This gateway is not production-ready. For production use:
+
+- **Implement proper security**: Add authentication, authorization, and encryption
+- **Add production monitoring**: Implement comprehensive logging, metrics, and alerting
+- **Handle scaling**: Design for horizontal scaling and load balancing
+- **Add error handling**: Implement robust error handling and recovery mechanisms
+- **Security review**: Conduct thorough security reviews before deployment
+
 ## Working with the Codebase
 
-To begin development:
-
-1. **Create Virtual Environment**
+To begin development (for learning or building upon this example):
    
    Always use a virtual environment to keep dependencies isolated:
    ```bash
@@ -324,3 +383,119 @@ To begin development:
 
 4. **Access Monitoring Interface**
    - Open http://localhost:8080 in a browser
+
+## AI Agent Development Guidelines
+
+### Working with AI Agents (Like Me)
+
+This section provides specific guidance for AI agents working with this codebase to ensure effective development and accurate assistance.
+
+#### Code Understanding Patterns
+
+When analyzing this codebase as an AI agent:
+
+- **Start with the interfaces**: Always examine `i_vendor_connector.py` first to understand the contract
+- **Follow the data flow**: Trace requests from `wxcc_gateway_server.py` → `virtual_agent_router.py` → specific connectors
+- **Study the generated code**: The `src/generated/` directory contains the gRPC stubs that define the API contract
+- **Check configuration patterns**: Look at `config/config.yaml` to understand how connectors are loaded and configured
+
+#### Common AI Agent Tasks and Solutions
+
+**Adding New Connectors:**
+- Use existing connectors as templates (e.g., `local_audio_connector.py`)
+- Ensure all abstract methods from `IVendorConnector` are implemented
+- Follow the error handling patterns established in existing connectors
+- Add appropriate logging and monitoring hooks
+
+**Debugging Integration Issues:**
+- Check the monitoring interface at `/api/debug/sessions` for real-time session data
+- Review logs for conversation flow and error conditions
+- Verify gRPC message format conversions in `convert_wxcc_to_vendor` and `convert_vendor_to_wxcc`
+- Test with the local audio connector first before integrating external services
+
+**Code Quality and Standards:**
+- Follow the established error handling patterns in `error_handling.py`
+- Use the logging patterns demonstrated throughout the codebase
+- Maintain the modular architecture when adding new features
+- Ensure all new code includes proper docstrings and type hints
+
+#### AI Agent Best Practices for This Codebase
+
+1. **Always check the virtual environment**: Remind users to activate `venv` before running Python code
+2. **Verify gRPC stub generation**: Ensure proto files are compiled before testing
+3. **Test incrementally**: Start with local connector before external integrations
+4. **Use the monitoring interface**: Leverage the built-in web interface for debugging
+5. **Follow the established patterns**: Don't reinvent architecture - extend what exists
+
+#### Common Pitfalls for AI Agents
+
+- **Missing virtual environment activation**: Always check if `venv` is activated
+- **Forgotten gRPC compilation**: Proto files must be compiled to generate Python stubs
+- **Configuration mismatches**: Ensure connector configs match the expected format in `config.yaml`
+- **Interface violations**: New connectors must implement ALL methods from `IVendorConnector`
+- **Error handling gaps**: Follow the established error handling patterns in the codebase
+
+#### AI Agent Workflow for This Codebase
+
+**When a user asks to add a new feature:**
+
+1. **Analyze the request**: Understand what type of connector or functionality is needed
+2. **Examine existing patterns**: Look at similar implementations in the codebase
+3. **Check the interface**: Ensure the new feature follows the established `IVendorConnector` contract
+4. **Plan the implementation**: Break down the task into logical steps
+5. **Implement incrementally**: Start with the core functionality, then add error handling and logging
+6. **Test the integration**: Use the monitoring interface and local connector for validation
+7. **Document the changes**: Update relevant documentation and add proper docstrings
+
+**When debugging issues:**
+
+1. **Check the monitoring interface**: Start at `/api/debug/sessions` for real-time data
+2. **Review the logs**: Look for error patterns and conversation flow issues
+3. **Verify configuration**: Ensure all config values are properly set
+4. **Test with known good data**: Use the local connector to isolate issues
+5. **Check gRPC message formats**: Verify conversions between WxCC and vendor formats
+
+**When explaining concepts to users:**
+
+1. **Start with the architecture**: Show how the modular design works
+2. **Use concrete examples**: Reference specific files and methods in the codebase
+3. **Explain the data flow**: Walk through how requests move through the system
+4. **Highlight best practices**: Point out the established patterns and why they exist
+5. **Provide working examples**: Give users code they can actually run and test
+
+#### Quick Reference for AI Agents
+
+**Key Files to Know:**
+- `src/connectors/i_vendor_connector.py` - Abstract base class for all connectors
+- `src/connectors/local_audio_connector.py` - Working example connector
+- `src/core/wxcc_gateway_server.py` - Main gRPC server implementation
+- `src/core/virtual_agent_router.py` - Routes requests to appropriate connectors
+- `config/config.yaml` - Configuration for connectors and gateway settings
+- `proto/` - Protocol buffer definitions for gRPC interfaces
+
+**Common Patterns:**
+- All connectors inherit from `IVendorConnector` and implement its abstract methods
+- Configuration-driven connector loading in `VirtualAgentRouter`
+- Bidirectional streaming for voice interactions in `ProcessCallerInput`
+- Error handling through dedicated error handling modules
+- Monitoring and debugging via web interface at port 8080
+
+**Testing Approaches:**
+- Use local audio connector for initial testing and validation
+- Monitor real-time data via `/api/debug/sessions` endpoint
+- Check logs for conversation flow and error conditions
+- Test gRPC message format conversions thoroughly
+- Validate configuration changes through the monitoring interface
+
+## Conclusion
+
+This BYOVA Gateway serves as a **functional example and reference implementation** for customers and developers working with BYOVA. It demonstrates:
+
+- **Best practices** for implementing BYOVA gRPC interfaces
+- **Modular architecture** that can be adapted for different use cases
+- **Well-documented code** that serves as a learning resource
+- **Extensible connector system** that shows how to integrate various voice agent services
+
+**Remember**: This is not a production-ready application, but rather a **comprehensive example** that customers can use to understand, learn from, and build upon for their own BYOVA integrations. The code quality, documentation, and architectural patterns are designed to serve as a reference for enterprise-grade BYOVA implementations.
+
+For questions about BYOVA integration or this reference implementation, please refer to the official BYOVA documentation or contact your Webex Contact Center representative.
