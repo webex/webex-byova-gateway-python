@@ -9,7 +9,9 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..utils.audio_utils import AudioConverter, AudioRecorder
+from ..utils.audio_utils import AudioConverter
+from ..utils.audio_buffer import AudioBuffer
+from ..utils.audio_recorder import AudioRecorder
 from .i_vendor_connector import IVendorConnector
 
 
@@ -416,13 +418,28 @@ class LocalAudioConnector(IVendorConnector):
             silence_duration = self.audio_recording_config.get("silence_duration", 2.0)
             quiet_threshold = self.audio_recording_config.get("quiet_threshold", 20)
 
-            # Create audio recorder
-            self.audio_recorders[conversation_id] = AudioRecorder(
+            # Create audio buffer for silence detection and audio data management
+            audio_buffer = AudioBuffer(
                 conversation_id=conversation_id,
-                output_dir=output_dir,
                 silence_threshold=silence_threshold,
                 silence_duration=silence_duration,
                 quiet_threshold=quiet_threshold,
+                sample_rate=8000,  # WxCC compatible sample rate
+                bit_depth=8,       # WxCC compatible bit depth
+                channels=1,        # WxCC compatible channels
+                encoding="ulaw",   # WxCC compatible encoding
+                logger=self.logger,
+            )
+
+            # Create audio recorder that uses the audio buffer
+            self.audio_recorders[conversation_id] = AudioRecorder(
+                conversation_id=conversation_id,
+                audio_buffer=audio_buffer,
+                output_dir=output_dir,
+                sample_rate=8000,  # WxCC compatible sample rate
+                bit_depth=8,       # WxCC compatible bit depth
+                channels=1,        # WxCC compatible channels
+                encoding="ulaw",   # WxCC compatible encoding
                 logger=self.logger,
             )
 
@@ -470,7 +487,13 @@ class LocalAudioConnector(IVendorConnector):
             # Process audio format if needed
             processed_audio, final_encoding = self.process_audio_format(audio_bytes, detected_encoding, conversation_id)
 
-            self.audio_recorders[conversation_id].add_audio_data(processed_audio, final_encoding)
+            # Start recording if not already started
+            audio_recorder = self.audio_recorders[conversation_id]
+            if not audio_recorder.is_recording():
+                audio_recorder.start_recording()
+
+            # Add audio data to the recorder (which will use the audio buffer)
+            audio_recorder.add_audio_data(processed_audio, final_encoding)
         except Exception as e:
             self.logger.error(
                 f"Error recording audio for conversation {conversation_id}: {e}"

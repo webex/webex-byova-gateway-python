@@ -572,18 +572,17 @@ class TestAWSLexConnector:
         """Test that audio buffering is properly initialized."""
         config = {
             "region_name": "us-east-1",
-            "audio_recording": {
-                "output_dir": "test_logs",
+            "audio_buffering": {
                 "silence_threshold": 2500,
                 "silence_duration": 1.5,
                 "quiet_threshold": 15
             }
         }
-        
+
         connector = AWSLexConnector(config)
-        
-        # Check that audio buffering is always enabled
-        assert connector.audio_buffering_config == config["audio_recording"]
+
+        # Check that audio buffering is properly configured
+        assert connector.audio_buffering_config == config["audio_buffering"]
         assert connector.audio_buffers == {}
 
     def test_audio_buffering_always_enabled(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
@@ -592,16 +591,19 @@ class TestAWSLexConnector:
         
         connector = AWSLexConnector(config)
         
-        # Check that audio buffering is always enabled (no config needed)
-        assert connector.audio_buffering_config == {}
+        # Check that audio buffering uses default values when no config provided
+        assert connector.audio_buffering_config == {
+            "silence_threshold": 2000,
+            "silence_duration": 2.5,
+            "quiet_threshold": 20
+        }
         assert connector.audio_buffers == {}
 
     def test_audio_buffer_creation(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
         """Test that audio buffer is created when needed."""
         config = {
             "region_name": "us-east-1",
-            "audio_recording": {
-                "output_dir": "test_logs",
+            "audio_buffering": {
                 "silence_threshold": 3000,
                 "silence_duration": 2.0,
                 "quiet_threshold": 20
@@ -623,10 +625,13 @@ class TestAWSLexConnector:
         # Check buffer properties
         buffer = connector.audio_buffers["test_conv_123"]
         assert buffer.conversation_id == "test_conv_123"
-        assert buffer.buffer_only is True
         assert buffer.silence_threshold == 3000
         assert buffer.silence_duration == 2.0
         assert buffer.quiet_threshold == 20
+        assert buffer.sample_rate == 8000
+        assert buffer.bit_depth == 8
+        assert buffer.channels == 1
+        assert buffer.encoding == "ulaw"
 
 
 if __name__ == "__main__":
