@@ -473,7 +473,12 @@ class AWSLexConnector(IVendorConnector):
                 )
 
             # Buffer audio (always enabled for AWS Lex connector)
-            self._process_audio_for_buffering(audio_bytes, conversation_id)
+            silence_detected = self._process_audio_for_buffering(audio_bytes, conversation_id)
+
+            # Check if silence threshold was detected, if so send END_OF_INPUT event
+            if silence_detected:
+                self.logger.info(f"Silence threshold detected, sending END_OF_INPUT event for conversation {conversation_id}")
+                return self.create_end_of_input_response(conversation_id)
 
             # Check if START_OF_INPUT event has been sent, if not send it
             if conversation_id not in self.conversations_with_start_of_input:
@@ -743,16 +748,19 @@ class AWSLexConnector(IVendorConnector):
 
 
 
-    def _process_audio_for_buffering(self, audio_data, conversation_id: str) -> None:
+    def _process_audio_for_buffering(self, audio_data, conversation_id: str) -> bool:
         """
         Process audio data for buffering.
 
         Args:
             audio_data: Audio data to buffer (bytes, bytearray, or str)
             conversation_id: Unique identifier for the conversation
+
+        Returns:
+            True if silence threshold was detected, False otherwise
         """
         if not audio_data:
-            return
+            return False
 
         # Initialize buffer if not already done
         if conversation_id not in self.audio_buffers:
@@ -760,7 +768,7 @@ class AWSLexConnector(IVendorConnector):
 
         if conversation_id not in self.audio_buffers:
             # Initialization failed
-            return
+            return False
 
         try:
             # Use the parent class method to extract audio bytes
@@ -769,22 +777,26 @@ class AWSLexConnector(IVendorConnector):
             # Ensure we have valid audio bytes before proceeding
             if audio_bytes is None:
                 self.logger.error(f"Failed to extract audio data for conversation {conversation_id}")
-                return
+                return False
 
             # Get the audio buffer for this conversation
             audio_buffer = self.audio_buffers[conversation_id]
             
-            # Add audio data to the buffer
-            # The AudioBuffer will automatically trigger the callback when silence is detected
+            # Add audio data to the buffer and get status
+            buffer_status = audio_buffer.add_audio_data(audio_bytes, encoding="ulaw")
+            
             self.logger.debug(
-                f"Adding {len(audio_bytes)} bytes to buffer for conversation {conversation_id}, "
-                f"current buffer size: {audio_buffer.get_buffer_size()} bytes"
+                f"Added {len(audio_bytes)} bytes to buffer for conversation {conversation_id}, "
+                f"current buffer size: {buffer_status['buffer_size']} bytes, "
+                f"silence detected: {buffer_status['silence_detected']}"
             )
             
-            audio_buffer.add_audio_data(audio_bytes, encoding="ulaw")
+            # Return whether silence threshold was detected
+            return buffer_status.get('silence_detected', False)
             
         except Exception as e:
             self.logger.error(
                 f"Error buffering audio for conversation {conversation_id}: {e}"
             )
             # Don't raise the exception, continue without buffering
+            return False

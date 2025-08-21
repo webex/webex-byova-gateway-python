@@ -483,6 +483,34 @@ class IVendorConnector(ABC):
             output_events=[start_event]
         )
 
+    def create_end_of_input_response(self, conversation_id: str, text: str = "", 
+                                    audio_content: bytes = b"") -> Dict[str, Any]:
+        """
+        Create an end of input response with END_OF_INPUT event.
+        
+        Args:
+            conversation_id: Unique identifier for the conversation
+            text: Optional text (usually empty for end of input)
+            audio_content: Optional audio content
+            
+        Returns:
+            Response with end of input event
+        """
+        end_event = self.create_output_event(
+            EventTypes.END_OF_INPUT,
+            "end_of_input"
+        )
+        
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence",
+            text=text,
+            audio_content=audio_content,
+            barge_in_enabled=True,
+            response_type="silence",
+            output_events=[end_event]
+        )
+
     def handle_conversation_start(self, conversation_id: str, message_data: Dict[str, Any],
                                 logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
         """

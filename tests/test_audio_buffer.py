@@ -111,7 +111,8 @@ class TestAudioBuffer:
         """Test adding empty audio data."""
         result = basic_buffer.add_audio_data(b"", "ulaw")
         
-        assert result is True
+        assert result["buffering_continues"] is True
+        assert result["silence_detected"] is False
         assert len(basic_buffer.audio_buffer) == 0
 
     def test_add_audio_data_basic(self, basic_buffer):
@@ -119,7 +120,8 @@ class TestAudioBuffer:
         test_audio = b"test audio data"
         result = basic_buffer.add_audio_data(test_audio, "ulaw")
         
-        assert result is True
+        assert result["buffering_continues"] is True
+        assert result["silence_detected"] is False
         assert len(basic_buffer.audio_buffer) > 0
 
     def test_buffer_size_limit(self, basic_buffer):
@@ -131,7 +133,8 @@ class TestAudioBuffer:
         large_audio = b"x" * 150
         result = basic_buffer.add_audio_data(large_audio, "ulaw")
         
-        assert result is True
+        assert result["buffering_continues"] is True
+        assert result["silence_detected"] is False
         assert len(basic_buffer.audio_buffer) <= 100
 
     def test_get_buffered_audio(self, basic_buffer):
@@ -338,13 +341,15 @@ class TestAudioBuffer:
     def test_check_silence_timeout_not_buffering(self, basic_buffer):
         """Test silence timeout check when not buffering."""
         result = basic_buffer.check_silence_timeout()
-        assert result is True
+        assert result["buffering_continues"] is True
+        assert result["silence_detected"] is False
 
     def test_check_silence_timeout_waiting_for_speech(self, basic_buffer):
         """Test silence timeout check when waiting for speech."""
         basic_buffer.waiting_for_speech = True
         result = basic_buffer.check_silence_timeout()
-        assert result is True
+        assert result["buffering_continues"] is True
+        assert result["silence_detected"] is False
 
     def test_check_silence_timeout_silence_exceeded(self, basic_buffer):
         """Test silence timeout check when silence duration is exceeded."""
@@ -358,7 +363,8 @@ class TestAudioBuffer:
         
         result = basic_buffer.check_silence_timeout()
         
-        assert result is False
+        assert result["silence_detected"] is True
+        assert result["buffering_continues"] is False
         mock_callback.assert_called_once()
 
     def test_check_silence_timeout_silence_not_exceeded(self, basic_buffer):
@@ -371,7 +377,8 @@ class TestAudioBuffer:
         
         result = basic_buffer.check_silence_timeout()
         
-        assert result is True
+        assert result["silence_detected"] is False
+        assert result["buffering_continues"] is True
 
     def test_add_audio_data_with_callback_trigger(self, basic_buffer):
         """Test that adding audio data can trigger callback when silence is detected."""
@@ -392,5 +399,5 @@ class TestAudioBuffer:
         result = basic_buffer.add_audio_data(silence_data, "ulaw")
         
         # Should return False and trigger callback
-        assert result is False
+        assert result["silence_detected"] is True
         mock_callback.assert_called_once()

@@ -101,7 +101,7 @@ class AudioBuffer:
             f"Started buffering audio for conversation {self.conversation_id}"
         )
 
-    def add_audio_data(self, audio_data: bytes, encoding: str = "ulaw") -> bool:
+    def add_audio_data(self, audio_data: bytes, encoding: str = "ulaw") -> Dict[str, Any]:
         """
         Add audio data to the current buffer.
 
@@ -110,13 +110,24 @@ class AudioBuffer:
             encoding: Format of the input audio data (default: 'ulaw')
 
         Returns:
-            True if buffering continues, False if callback was triggered due to silence
+            Dictionary containing buffer status information:
+            - buffering_continues: True if buffering continues, False if callback was triggered
+            - silence_detected: True if silence threshold was hit during this call
+            - buffer_size: Current size of the buffer in bytes
+            - speech_detected: Whether speech has been detected in this session
+            - waiting_for_speech: Whether still waiting for first speech
         """
         if not audio_data:
             self.logger.warning(
                 f"Received empty audio data for conversation {self.conversation_id}"
             )
-            return True
+            return {
+                "buffering_continues": True,
+                "silence_detected": False,
+                "buffer_size": len(self.audio_buffer),
+                "speech_detected": self.speech_detected,
+                "waiting_for_speech": self.waiting_for_speech
+            }
 
         # Log audio data characteristics
         if self.logger.isEnabledFor(logging.DEBUG):
@@ -143,7 +154,13 @@ class AudioBuffer:
                 processed_audio = processed_audio[:remaining_space]
             else:
                 # Buffer is full, can't add more data
-                return True
+                return {
+                    "buffering_continues": True,
+                    "silence_detected": False,
+                    "buffer_size": len(self.audio_buffer),
+                    "speech_detected": self.speech_detected,
+                    "waiting_for_speech": self.waiting_for_speech
+                }
 
         # Add audio data to buffer
         self.audio_buffer.extend(processed_audio)
@@ -165,7 +182,13 @@ class AudioBuffer:
                         f"Still waiting for speech in conversation {self.conversation_id}, "
                         f"silence detected in audio segment"
                     )
-                    return True
+                    return {
+                        "buffering_continues": True,
+                        "silence_detected": False,
+                        "buffer_size": len(self.audio_buffer),
+                        "speech_detected": self.speech_detected,
+                        "waiting_for_speech": self.waiting_for_speech
+                    }
                 else:
                     # Speech detected! Start buffering now
                     self.waiting_for_speech = False
@@ -205,7 +228,13 @@ class AudioBuffer:
                         # Reset the buffer to waiting for speech state after callback
                         self.reset_after_callback()
                         
-                        return False
+                        return {
+                            "buffering_continues": False,
+                            "silence_detected": True,
+                            "buffer_size": 0,  # Buffer was cleared
+                            "speech_detected": False,  # Reset after callback
+                            "waiting_for_speech": True  # Reset after callback
+                        }
                 else:
                     # Reset the last audio time as we detected non-silence
                     self.logger.debug(
@@ -213,15 +242,26 @@ class AudioBuffer:
                     )
                     self.last_audio_time = time.time()
 
-        return True
+        return {
+            "buffering_continues": True,
+            "silence_detected": False,
+            "buffer_size": len(self.audio_buffer),
+            "speech_detected": self.speech_detected,
+            "waiting_for_speech": self.waiting_for_speech
+        }
 
-    def check_silence_timeout(self) -> bool:
+    def check_silence_timeout(self) -> Dict[str, Any]:
         """
         Check if the buffer should trigger callback due to silence timeout.
         This method can be called periodically to check for silence even when no audio data is received.
         
         Returns:
-            True if buffering continues, False if callback was triggered due to silence
+            Dictionary containing buffer status information:
+            - buffering_continues: True if buffering continues, False if callback was triggered
+            - silence_detected: True if silence timeout was reached
+            - buffer_size: Current size of the buffer in bytes
+            - speech_detected: Whether speech has been detected in this session
+            - waiting_for_speech: Whether still waiting for first speech
         """
         if not self.buffering:
             # If we're not buffering yet, check if we should start buffering
@@ -230,8 +270,20 @@ class AudioBuffer:
                     f"Still waiting for speech in conversation {self.conversation_id}, "
                     f"no buffering started yet"
                 )
-                return True
-            return True
+                return {
+                    "buffering_continues": True,
+                    "silence_detected": False,
+                    "buffer_size": len(self.audio_buffer),
+                    "speech_detected": self.speech_detected,
+                    "waiting_for_speech": self.waiting_for_speech
+                }
+            return {
+                "buffering_continues": True,
+                "silence_detected": False,
+                "buffer_size": len(self.audio_buffer),
+                "speech_detected": self.speech_detected,
+                "waiting_for_speech": self.waiting_for_speech
+            }
             
         # Check if we've exceeded the silence duration
         current_time = time.time()
@@ -256,9 +308,21 @@ class AudioBuffer:
             # Reset the buffer to waiting for speech state after callback
             self.reset_after_callback()
             
-            return False
+            return {
+                "buffering_continues": False,
+                "silence_detected": True,
+                "buffer_size": 0,  # Buffer was cleared
+                "speech_detected": False,  # Reset after callback
+                "waiting_for_speech": True  # Reset after callback
+            }
             
-        return True
+        return {
+            "buffering_continues": True,
+            "silence_detected": False,
+            "buffer_size": len(self.audio_buffer),
+            "speech_detected": self.speech_detected,
+            "waiting_for_speech": self.waiting_for_speech
+        }
 
     def _get_frame_size(self) -> int:
         """
