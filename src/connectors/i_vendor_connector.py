@@ -7,9 +7,22 @@ to integrate with the Webex Contact Center BYOVA Gateway.
 
 import base64
 import logging
+import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+# Common event type constants for WxCC integration
+class EventTypes:
+    """Standard event types for WxCC integration."""
+    START_OF_INPUT = "START_OF_INPUT"
+    END_OF_INPUT = "END_OF_INPUT"
+    SESSION_START = "SESSION_START"
+    SESSION_END = "SESSION_END"
+    TRANSFER_TO_HUMAN = "TRANSFER_TO_HUMAN"
+    CONVERSATION_END = "CONVERSATION_END"
+    CUSTOM_EVENT = "CUSTOM_EVENT"
+    NO_INPUT = "NO_INPUT"
+    NO_MATCH = "NO_MATCH"
 
 class IVendorConnector(ABC):
     """
@@ -291,9 +304,32 @@ class IVendorConnector(ABC):
         # Default implementation: return the bytes unchanged
         return audio_bytes, detected_encoding
 
+    def create_output_event(self, event_type: str, name: str = "", event_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Create a standardized output event for WxCC integration.
+        
+        Args:
+            event_type: Type of event (use EventTypes constants)
+            name: Name/identifier for the event
+            event_data: Optional additional event data
+            
+        Returns:
+            Standardized output event dictionary
+        """
+        event = {
+            "event_type": event_type,
+            "name": name
+        }
+        
+        if event_data:
+            event["event_data"] = event_data
+            
+        return event
+    
     def create_response(self, conversation_id: str, message_type: str = "silence",
                        text: str = "", audio_content: bytes = b"",
-                       barge_in_enabled: bool = False, **additional_params) -> Dict[str, Any]:
+                       barge_in_enabled: bool = False, output_events: Optional[List[Dict[str, Any]]] = None,
+                       **additional_params) -> Dict[str, Any]:
         """
         Create a standardized response dictionary with common fields.
 
@@ -303,6 +339,7 @@ class IVendorConnector(ABC):
             text: Text response to send to the client
             audio_content: Audio bytes to send to the client
             barge_in_enabled: Whether barge-in is enabled for this response
+            output_events: List of output events to include
             **additional_params: Additional parameters to include in the response
 
         Returns:
@@ -318,10 +355,133 @@ class IVendorConnector(ABC):
             "barge_in_enabled": barge_in_enabled
         }
 
+        # Initialize output_events if provided
+        if output_events:
+            response["output_events"] = output_events
+        else:
+            response["output_events"] = []
+
         # Add any additional parameters
         response.update(additional_params)
 
         return response
+
+    def create_transfer_response(self, conversation_id: str, text: str = "", 
+                                audio_content: bytes = b"", reason: str = "user_requested_transfer") -> Dict[str, Any]:
+        """
+        Create a transfer response with TRANSFER_TO_HUMAN event.
+        
+        Args:
+            conversation_id: Unique identifier for the conversation
+            text: Transfer message text
+            audio_content: Optional audio content
+            reason: Reason for transfer
+            
+        Returns:
+            Response with transfer event
+        """
+        transfer_event = self.create_output_event(
+            EventTypes.TRANSFER_TO_HUMAN,
+            "transfer_requested",
+            {"reason": reason, "conversation_id": conversation_id}
+        )
+        
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="transfer",
+            text=text,
+            audio_content=audio_content,
+            barge_in_enabled=False,
+            response_type="final",
+            output_events=[transfer_event]
+        )
+    
+    def create_goodbye_response(self, conversation_id: str, text: str = "", 
+                               audio_content: bytes = b"", reason: str = "user_requested_end") -> Dict[str, Any]:
+        """
+        Create a goodbye response with CONVERSATION_END event.
+        
+        Args:
+            conversation_id: Unique identifier for the conversation
+            text: Goodbye message text
+            audio_content: Optional audio content
+            reason: Reason for ending conversation
+            
+        Returns:
+            Response with conversation end event
+        """
+        end_event = self.create_output_event(
+            EventTypes.CONVERSATION_END,
+            "conversation_ended",
+            {"reason": reason, "conversation_id": conversation_id}
+        )
+        
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="goodbye",
+            text=text,
+            audio_content=audio_content,
+            barge_in_enabled=False,
+            response_type="final",
+            output_events=[end_event]
+        )
+    
+    def create_session_start_response(self, conversation_id: str, text: str = "", 
+                                    audio_content: bytes = b"") -> Dict[str, Any]:
+        """
+        Create a session start response with SESSION_START event.
+        
+        Args:
+            conversation_id: Unique identifier for the conversation
+            text: Welcome message text
+            audio_content: Optional audio content
+            
+        Returns:
+            Response with session start event
+        """
+        start_event = self.create_output_event(
+            EventTypes.SESSION_START,
+            "session_started",
+            {"conversation_id": conversation_id}
+        )
+        
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="welcome",
+            text=text,
+            audio_content=audio_content,
+            barge_in_enabled=True,
+            response_type="silence",
+            output_events=[start_event]
+        )
+    
+    def create_start_of_input_response(self, conversation_id: str, text: str = "", 
+                                      audio_content: bytes = b"") -> Dict[str, Any]:
+        """
+        Create a start of input response with START_OF_INPUT event.
+        
+        Args:
+            conversation_id: Unique identifier for the conversation
+            text: Optional text (usually empty for start of input)
+            audio_content: Optional audio content
+            
+        Returns:
+            Response with start of input event
+        """
+        start_event = self.create_output_event(
+            EventTypes.START_OF_INPUT,
+            "start_of_input"
+        )
+        
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence",
+            text=text,
+            audio_content=audio_content,
+            barge_in_enabled=True,
+            response_type="silence",
+            output_events=[start_event]
+        )
 
     def handle_conversation_start(self, conversation_id: str, message_data: Dict[str, Any],
                                 logger: Optional[logging.Logger] = None) -> Dict[str, Any]:

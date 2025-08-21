@@ -374,9 +374,19 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
+        # First call should send START_OF_INPUT event
         response = connector.send_message("conv123", message_data)
+        assert response["message_type"] == "silence"
+        assert response["text"] == ""
+        assert "output_events" in response
+        assert len(response["output_events"]) == 1
+        assert response["output_events"][0]["event_type"] == "START_OF_INPUT"
+        assert response["output_events"][0]["name"] == "start_of_input"
+        assert response["barge_in_enabled"] is True
+        assert response["response_type"] == "silence"
         
-        # Now that we're just buffering audio, expect a silence response
+        # Second call should return the audio buffered response
+        response = connector.send_message("conv123", message_data)
         assert response["message_type"] == "silence"
         assert "Audio received and buffered" in response["text"]
         assert response["barge_in_enabled"] is True

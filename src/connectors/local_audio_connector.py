@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from ..utils.audio_utils import AudioConverter
 from ..utils.audio_buffer import AudioBuffer
 from ..utils.audio_recorder import AudioRecorder
-from .i_vendor_connector import IVendorConnector
+from .i_vendor_connector import IVendorConnector, EventTypes
 
 
 class LocalAudioConnector(IVendorConnector):
@@ -375,23 +375,25 @@ class LocalAudioConnector(IVendorConnector):
         # Add output events based on message type
         if response["message_type"] == "goodbye":
             response["output_events"].append(
-                {
-                    "event_type": "CONVERSATION_END",
-                    "event_data": {
+                self.create_output_event(
+                    EventTypes.CONVERSATION_END,
+                    "conversation_ended",
+                    {
                         "reason": "user_requested_end",
                         "conversation_id": response["conversation_id"],
-                    },
-                }
+                    }
+                )
             )
         elif response["message_type"] == "transfer":
             response["output_events"].append(
-                {
-                    "event_type": "TRANSFER_TO_HUMAN",
-                    "event_data": {
+                self.create_output_event(
+                    EventTypes.TRANSFER_TO_HUMAN,
+                    "transfer_requested",
+                    {
                         "reason": "user_requested_transfer",
                         "conversation_id": response["conversation_id"],
-                    },
-                }
+                    }
+                )
             )
 
         return response

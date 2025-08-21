@@ -99,6 +99,9 @@ class AWSLexConnector(IVendorConnector):
         # Track which conversations have already triggered callbacks to prevent duplicates
         self.conversations_with_callbacks = set()
 
+        # Track which conversations have already sent START_OF_INPUT event
+        self.conversations_with_start_of_input = set()
+
         self.logger.info("Caller audio buffering is enabled")
 
         self.logger.info(f"AWSLexConnector initialized for region: {self.region_name}")
@@ -411,23 +414,19 @@ class AWSLexConnector(IVendorConnector):
             # Process special DTMF codes
             if "5" in dtmf_string:  # Transfer code
                 self.logger.info(f"DTMF transfer requested for conversation {conversation_id}")
-                return self.create_response(
+                return self.create_transfer_response(
                     conversation_id=conversation_id,
-                    message_type="transfer",
                     text=f"Transferring you from the {bot_name} assistant to a live agent.",
                     audio_content=b"",  # Would need to load transfer audio here
-                    barge_in_enabled=False,
-                    response_type="final"
+                    reason="dtmf_transfer_requested"
                 )
             elif "6" in dtmf_string:  # Goodbye code
                 self.logger.info(f"DTMF goodbye requested for conversation {conversation_id}")
-                return self.create_response(
+                return self.create_goodbye_response(
                     conversation_id=conversation_id,
-                    message_type="goodbye",
                     text=f"Goodbye from the {bot_name} assistant. Thank you for your time.",
                     audio_content=b"",  # Would need to load transfer audio here
-                    barge_in_enabled=False,
-                    response_type="final"
+                    reason="dtmf_goodbye_requested"
                 )
             else:
                 # For other DTMF digits, send to Lex as tex
@@ -450,7 +449,7 @@ class AWSLexConnector(IVendorConnector):
 
         Args:
             conversation_id: Conversation identifier
-            message_data: Message data containing audio inpu
+            message_data: Message data containing audio input
             bot_id: Lex bot ID
             session_id: Lex session ID
             bot_name: Name of the bo
@@ -475,6 +474,13 @@ class AWSLexConnector(IVendorConnector):
 
             # Buffer audio (always enabled for AWS Lex connector)
             self._process_audio_for_buffering(audio_bytes, conversation_id)
+
+            # Check if START_OF_INPUT event has been sent, if not send it
+            if conversation_id not in self.conversations_with_start_of_input:
+                self.logger.info(f"Sending START_OF_INPUT event for conversation {conversation_id}")
+                self.conversations_with_start_of_input.add(conversation_id)
+                
+                return self.create_start_of_input_response(conversation_id)
 
             # AWS Lex requires specific audio format
             # We're using linear 16-bit PCM at 16kHz sample rate with a single channel
@@ -598,6 +604,11 @@ class AWSLexConnector(IVendorConnector):
         if conversation_id in self.conversations_with_callbacks:
             del self.conversations_with_callbacks[conversation_id]
             self.logger.debug(f"Cleaned up callback tracking for conversation {conversation_id}")
+
+        # Clean up START_OF_INPUT tracking
+        if conversation_id in self.conversations_with_start_of_input:
+            del self.conversations_with_start_of_input[conversation_id]
+            self.logger.debug(f"Cleaned up START_OF_INPUT tracking for conversation {conversation_id}")
 
         # No return value needed for normal end_conversation calls
 
