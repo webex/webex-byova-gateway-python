@@ -995,8 +995,18 @@ class AudioRecorder:
                     )
                     self.last_audio_time = time.time()
 
-            # Clear the buffer after processing
-            self.audio_buffer = bytearray()
+            # For buffer-only mode, don't clear the buffer after each frame
+            # We want to accumulate all audio data until silence is detected
+            if not self.buffer_only:
+                # Clear the buffer after processing (file recording mode)
+                self.audio_buffer = bytearray()
+            else:
+                # In buffer-only mode, keep accumulating data
+                # The buffer will only be cleared when silence is detected or recording is finalized
+                self.logger.debug(
+                    f"Buffer-only mode: keeping {len(self.audio_buffer)} bytes in buffer "
+                    f"for conversation {self.conversation_id}"
+                )
 
         return True
 

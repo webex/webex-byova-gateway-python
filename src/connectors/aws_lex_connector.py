@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from typing import Any, Dict, List
 
 from .i_vendor_connector import IVendorConnector
-from ..utils.audio_utils import convert_aws_lex_audio_to_wxcc
+from ..utils.audio_utils import convert_aws_lex_audio_to_wxcc, AudioRecorder
 
 
 class AWSLexConnector(IVendorConnector):
@@ -83,6 +83,14 @@ class AWSLexConnector(IVendorConnector):
 
         # Simple session storage for conversations
         self._sessions = {}
+
+        # Audio buffering configuration - always enabled for AWS Lex connector
+        self.audio_buffers = {}  # Dictionary to store audio buffers by conversation ID
+
+        # Get audio buffering configuration
+        self.audio_buffering_config = config.get("audio_recording", {})
+
+        self.logger.info("Caller audio buffering is enabled")
 
         self.logger.info(f"AWSLexConnector initialized for region: {self.region_name}")
         self.logger.info(f"Bot alias ID: {self.bot_alias_id}")
@@ -238,7 +246,8 @@ class AWSLexConnector(IVendorConnector):
                             text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                             audio_content=wav_audio,
                             barge_in_enabled=True,
-                            content_type=content_type
+                            content_type=content_type,
+                            response_type="final"
                         )
                     else:
                         self.logger.warning("Audio stream was empty, falling back to text-only response")
@@ -247,7 +256,8 @@ class AWSLexConnector(IVendorConnector):
                             message_type="welcome",
                             text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                             audio_content=b"",
-                            barge_in_enabled=False
+                            barge_in_enabled=False,
+                            response_type="final"
                         )
                 else:
                     self.logger.error("No audio stream in Lex response")
@@ -262,7 +272,8 @@ class AWSLexConnector(IVendorConnector):
                         message_type="welcome",
                         text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                         audio_content=b"",
-                        barge_in_enabled=False
+                        barge_in_enabled=False,
+                        response_type="final"
                     )
 
             except ClientError as e:
@@ -276,7 +287,8 @@ class AWSLexConnector(IVendorConnector):
                     message_type="welcome",
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
-                    barge_in_enabled=True
+                    barge_in_enabled=True,
+                    response_type="final"
                 )
 
             except Exception as e:
@@ -291,7 +303,8 @@ class AWSLexConnector(IVendorConnector):
                     message_type="welcome",
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
-                    barge_in_enabled=True
+                    barge_in_enabled=True,
+                    response_type="final"
                 )
 
         except Exception as e:
@@ -304,7 +317,8 @@ class AWSLexConnector(IVendorConnector):
                 message_type="error",
                 text="I'm having trouble starting our conversation. Please try again.",
                 audio_content=b"",
-                barge_in_enabled=False
+                barge_in_enabled=False,
+                response_type="final"
             )
 
     def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -336,7 +350,8 @@ class AWSLexConnector(IVendorConnector):
                 message_type="error",
                 text="No active conversation found. Please start a new conversation.",
                 audio_content=b"",
-                barge_in_enabled=False
+                barge_in_enabled=False,
+                response_type="final"
             )
 
         # Get session info
@@ -349,19 +364,19 @@ class AWSLexConnector(IVendorConnector):
         if message_data.get("input_type") == "conversation_start":
             return self.handle_conversation_start(conversation_id, message_data, self.logger)
 
-        # Handle DTMF inpu
+        # Handle DTMF input
         if message_data.get("input_type") == "dtmf" and "dtmf_data" in message_data:
             return self._handle_dtmf_input(conversation_id, message_data, bot_name)
 
-        # Handle event inpu
+        # Handle event input
         if message_data.get("input_type") == "event":
             return self.handle_event(conversation_id, message_data, self.logger)
 
-        # Handle audio inpu
+        # Handle audio input
         if message_data.get("input_type") == "audio":
             return self._handle_audio_input(conversation_id, message_data, bot_id, session_id, bot_name)
 
-        # Handle unrecognized inpu
+        # Handle unrecognized input
         return self.handle_unrecognized_input(conversation_id, message_data, self.logger)
 
     def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any], bot_name: str) -> Dict[str, Any]:
@@ -370,11 +385,11 @@ class AWSLexConnector(IVendorConnector):
 
         Args:
             conversation_id: Conversation identifier
-            message_data: Message data containing DTMF inpu
+            message_data: Message data containing DTMF input
             bot_name: Name of the bo
 
         Returns:
-            Response based on DTMF inpu
+            Response based on DTMF input
         """
         dtmf_data = message_data.get("dtmf_data", {})
         dtmf_events = dtmf_data.get("dtmf_events", [])
@@ -392,7 +407,8 @@ class AWSLexConnector(IVendorConnector):
                     message_type="transfer",
                     text=f"Transferring you from the {bot_name} assistant to a live agent.",
                     audio_content=b"",  # Would need to load transfer audio here
-                    barge_in_enabled=False
+                    barge_in_enabled=False,
+                    response_type="final"
                 )
             elif "6" in dtmf_string:  # Goodbye code
                 self.logger.info(f"DTMF goodbye requested for conversation {conversation_id}")
@@ -400,8 +416,9 @@ class AWSLexConnector(IVendorConnector):
                     conversation_id=conversation_id,
                     message_type="goodbye",
                     text=f"Goodbye from the {bot_name} assistant. Thank you for your time.",
-                    audio_content=b"",  # Would need to load goodbye audio here
-                    barge_in_enabled=False
+                    audio_content=b"",  # Would need to load transfer audio here
+                    barge_in_enabled=False,
+                    response_type="final"
                 )
             else:
                 # For other DTMF digits, send to Lex as tex
@@ -413,7 +430,8 @@ class AWSLexConnector(IVendorConnector):
         # If no DTMF events, just return silence
         return self.create_response(
             conversation_id=conversation_id,
-            message_type="silence"
+            message_type="silence",
+            response_type="final"
         )
 
     def _handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any],
@@ -446,70 +464,23 @@ class AWSLexConnector(IVendorConnector):
                     response_type="final"
                 )
 
-            self.logger.info(f"Sending audio input to Lex for conversation {conversation_id} (size: {len(audio_bytes)} bytes)")
+            # Buffer audio (always enabled for AWS Lex connector)
+            self._process_audio_for_buffering(audio_bytes, conversation_id)
 
             # AWS Lex requires specific audio format
             # We're using linear 16-bit PCM at 16kHz sample rate with a single channel
             # If needed, add audio conversion logic here to ensure compatibility
 
-            # Send audio to Lex
-            try:
-                response = self.lex_runtime.recognize_utterance(
-                    botId=bot_id,
-                    botAliasId=self.bot_alias_id,
-                    localeId='en_US',
-                    sessionId=session_id,
-                    requestContentType='audio/l16; rate=16000; channels=1',  # PCM format with proper specification
-                    responseContentType='audio/pcm',
-                    inputStream=audio_bytes
-                )
+            # TODO: Send audio to AWS Lex here
+            # For now, return a placeholder response
+            return self.create_response(
+                conversation_id=conversation_id,
+                message_type="silence",
+                text="Audio received and buffered. AWS Lex integration pending.",
+                barge_in_enabled=True,
+                response_type="silence"
+            )
 
-                self.logger.info(f"Got response from Lex API for conversation {conversation_id}")
-
-                # Process the response
-                audio_stream = response.get('audioStream')
-                if audio_stream:
-                    audio_response = audio_stream.read()
-                    audio_stream.close()
-
-                    if audio_response:
-                        # Convert Lex audio to WxCC-compatible forma
-                        wav_audio, content_type = convert_aws_lex_audio_to_wxcc(
-                            audio_response,
-                            bit_depth=16
-                        )
-
-                        # Extract response text from Lex if available
-                        response_text = "I heard you"
-                        if hasattr(response, 'messages') and response.messages:
-                            response_text = response.messages[0].get('content', response_text)
-
-                        return self.create_response(
-                            conversation_id=conversation_id,
-                            message_type="speech",
-                            text=response_text,
-                            audio_content=wav_audio,
-                            barge_in_enabled=True,
-                            content_type=content_type
-                        )
-
-                # Fallback if no audio in response
-                return self.create_response(
-                    conversation_id=conversation_id,
-                    message_type="silence",
-                    text="I processed your request.",
-                    barge_in_enabled=True,
-                    response_type="final"
-                )
-            except Exception as e:
-                self.logger.error(f"Error sending audio to Lex: {e}")
-                return self.create_response(
-                    conversation_id=conversation_id,
-                    message_type="error",
-                    text="I'm having trouble processing your request. Please try again.",
-                    barge_in_enabled=True,
-                    response_type="final"
-                )
         except Exception as e:
             self.logger.error(f"Error processing audio input: {e}")
             return self.create_response(
@@ -602,6 +573,18 @@ class AWSLexConnector(IVendorConnector):
         else:
             self.logger.warning(f"Attempted to end non-existent conversation: {conversation_id}")
 
+        # Finalize audio buffering (always enabled for AWS Lex connector)
+        if conversation_id in self.audio_buffers:
+            try:
+                # Finalize the buffering
+                self.audio_buffers[conversation_id].finalize_recording()
+                self.logger.info(f"Finalized audio buffering for conversation {conversation_id}")
+                
+                # Clean up the buffer
+                del self.audio_buffers[conversation_id]
+            except Exception as e:
+                self.logger.error(f"Error finalizing audio buffering for conversation {conversation_id}: {e}")
+
         # No return value needed for normal end_conversation calls
 
     def convert_wxcc_to_vendor(self, wxcc_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -637,3 +620,133 @@ class AWSLexConnector(IVendorConnector):
         self._available_bots = None
         self._bot_name_to_id_map = {}  # Clear the mapping cache too
         self.get_available_agents()
+
+    def _init_audio_buffer(self, conversation_id: str) -> None:
+        """
+        Initialize audio buffer for a conversation.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+        """
+        if conversation_id in self.audio_buffers:
+            self.logger.info(
+                f"Audio buffer already exists for conversation {conversation_id}"
+            )
+            return
+
+        try:
+            # Get audio buffering configuration
+            output_dir = self.audio_buffering_config.get("output_dir", "logs")
+            silence_threshold = self.audio_buffering_config.get(
+                "silence_threshold", 3000
+            )
+            silence_duration = self.audio_buffering_config.get("silence_duration", 2.0)
+            quiet_threshold = self.audio_buffering_config.get("quiet_threshold", 20)
+
+            # Create audio buffer with callback
+            self.audio_buffers[conversation_id] = AudioRecorder(
+                conversation_id=conversation_id,
+                output_dir=output_dir,
+                silence_threshold=silence_threshold,
+                silence_duration=silence_duration,
+                quiet_threshold=quiet_threshold,
+                buffer_only=True,  # We only want to buffer, not save files
+                on_audio_ready=self._on_audio_ready_callback,
+                logger=self.logger,
+            )
+
+            self.logger.info(
+                f"Initialized audio buffer for conversation {conversation_id} "
+                f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, "
+                f"quiet threshold: {quiet_threshold}, output: {output_dir})"
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to initialize audio buffer: {e}")
+            # Don't raise the exception, continue without buffering
+
+    def _on_audio_ready_callback(self, conversation_id: str, audio_data: bytes) -> None:
+        """
+        Callback function called when audio segment is ready.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            audio_data: Audio data bytes that are ready for processing
+        """
+        try:
+            # Log information about the buffered audio
+            buffer_size = len(audio_data)
+            
+            # Calculate estimated duration at different sample rates
+            duration_8khz = buffer_size / 8000
+            duration_16khz = buffer_size / 16000
+            
+            # Detect actual audio encoding using audio utilities
+            from ..utils.audio_utils import AudioConverter
+            audio_converter = AudioConverter(self.logger)
+            detected_encoding = audio_converter.detect_audio_encoding(audio_data)
+            
+            # Log detailed audio format information
+            self.logger.info(
+                f"Audio segment ready for conversation {conversation_id}: "
+                f"Size: {buffer_size} bytes, "
+                f"Duration: ~{duration_8khz:.2f}s (8kHz) / ~{duration_16khz:.2f}s (16kHz), "
+                f"Detected format: {detected_encoding}, "
+                f"Ready to send to AWS Lex"
+            )
+            
+            # Log additional format details
+            self.logger.info(
+                f"Audio format details for conversation {conversation_id}: "
+                f"Raw data length: {buffer_size} bytes, "
+                f"Sample rate compatibility: 8kHz ({duration_8khz:.2f}s) / 16kHz ({duration_16khz:.2f}s), "
+                f"Data type: bytes, "
+                f"Detected encoding: {detected_encoding}"
+            )
+            
+            # TODO: Send audio_data to AWS Lex here
+            # For now, just log that we would send it
+            self.logger.info(
+                f"Would send {buffer_size} bytes of audio to AWS Lex for conversation {conversation_id}"
+            )
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error in audio ready callback for conversation {conversation_id}: {e}"
+            )
+
+    def _process_audio_for_buffering(self, audio_data, conversation_id: str) -> None:
+        """
+        Process audio data for buffering.
+
+        Args:
+            audio_data: Audio data to buffer (bytes, bytearray, or str)
+            conversation_id: Unique identifier for the conversation
+        """
+        if not audio_data:
+            return
+
+        # Initialize buffer if not already done
+        if conversation_id not in self.audio_buffers:
+            self._init_audio_buffer(conversation_id)
+
+        if conversation_id not in self.audio_buffers:
+            # Initialization failed
+            return
+
+        try:
+            # Use the parent class method to extract audio bytes
+            audio_bytes = self.extract_audio_data(audio_data, conversation_id, self.logger)
+
+            # Ensure we have valid audio bytes before proceeding
+            if audio_bytes is None:
+                self.logger.error(f"Failed to extract audio data for conversation {conversation_id}")
+                return
+
+            # Add audio data to the buffer
+            self.audio_buffers[conversation_id].add_audio_data(audio_bytes)
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error buffering audio for conversation {conversation_id}: {e}"
+            )
+            # Don't raise the exception, continue without buffering

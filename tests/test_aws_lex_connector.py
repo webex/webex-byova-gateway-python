@@ -368,30 +368,19 @@ class TestAWSLexConnector:
             "actual_bot_id": "bot123"
         }
         
-        # Mock successful audio processing
-        mock_audio_stream = MagicMock()
-        mock_audio_stream.read.return_value = b"audio_response"
-        mock_audio_stream.close.return_value = None
-        
-        mock_response = {
-            'audioStream': mock_audio_stream
-        }
-        mock_lex_runtime.recognize_utterance.return_value = mock_response
-        connector.lex_runtime = mock_lex_runtime
-        
         message_data = {
             "input_type": "audio",
             "audio_data": b"input_audio",
             "conversation_id": "conv123"
         }
         
-        with patch('src.connectors.aws_lex_connector.convert_aws_lex_audio_to_wxcc') as mock_convert:
-            mock_convert.return_value = (b"converted_audio", "audio/wav")
-            
-            response = connector.send_message("conv123", message_data)
-            
-            assert response["message_type"] == "speech"
-            assert response["audio_content"] == b"converted_audio"
+        response = connector.send_message("conv123", message_data)
+        
+        # Now that we're just buffering audio, expect a silence response
+        assert response["message_type"] == "silence"
+        assert "Audio received and buffered" in response["text"]
+        assert response["barge_in_enabled"] is True
+        assert response["response_type"] == "silence"
 
     def test_send_message_no_session(self, connector):
         """Test handling of message with no active session."""
@@ -578,6 +567,66 @@ class TestAWSLexConnector:
         
         assert response["message_type"] == "silence"
         assert response["conversation_id"] == "conv123"
+
+    def test_audio_buffering_initialization(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
+        """Test that audio buffering is properly initialized."""
+        config = {
+            "region_name": "us-east-1",
+            "audio_recording": {
+                "output_dir": "test_logs",
+                "silence_threshold": 2500,
+                "silence_duration": 1.5,
+                "quiet_threshold": 15
+            }
+        }
+        
+        connector = AWSLexConnector(config)
+        
+        # Check that audio buffering is always enabled
+        assert connector.audio_buffering_config == config["audio_recording"]
+        assert connector.audio_buffers == {}
+
+    def test_audio_buffering_always_enabled(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
+        """Test that audio buffering is always enabled for AWS Lex connector."""
+        config = {"region_name": "us-east-1"}
+        
+        connector = AWSLexConnector(config)
+        
+        # Check that audio buffering is always enabled (no config needed)
+        assert connector.audio_buffering_config == {}
+        assert connector.audio_buffers == {}
+
+    def test_audio_buffer_creation(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
+        """Test that audio buffer is created when needed."""
+        config = {
+            "region_name": "us-east-1",
+            "audio_recording": {
+                "output_dir": "test_logs",
+                "silence_threshold": 3000,
+                "silence_duration": 2.0,
+                "quiet_threshold": 20
+            }
+        }
+        
+        connector = AWSLexConnector(config)
+        
+        # Initially no buffers
+        assert len(connector.audio_buffers) == 0
+        
+        # Create a buffer
+        connector._init_audio_buffer("test_conv_123")
+        
+        # Should have one buffer now
+        assert len(connector.audio_buffers) == 1
+        assert "test_conv_123" in connector.audio_buffers
+        
+        # Check buffer properties
+        buffer = connector.audio_buffers["test_conv_123"]
+        assert buffer.conversation_id == "test_conv_123"
+        assert buffer.buffer_only is True
+        assert buffer.silence_threshold == 3000
+        assert buffer.silence_duration == 2.0
+        assert buffer.quiet_threshold == 20
 
 
 if __name__ == "__main__":
