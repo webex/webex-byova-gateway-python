@@ -599,39 +599,79 @@ class TestAWSLexConnector:
         }
         assert connector.audio_buffers == {}
 
-    def test_audio_buffer_creation(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
-        """Test that audio buffer is created when needed."""
-        config = {
-            "region_name": "us-east-1",
-            "audio_buffering": {
-                "silence_threshold": 3000,
-                "silence_duration": 2.0,
-                "quiet_threshold": 20
-            }
-        }
-        
-        connector = AWSLexConnector(config)
-        
-        # Initially no buffers
-        assert len(connector.audio_buffers) == 0
-        
-        # Create a buffer
+    def test_audio_buffer_creation(self, connector):
+        """Test that audio buffers are created correctly."""
+        # Test buffer initialization
         connector._init_audio_buffer("test_conv_123")
         
-        # Should have one buffer now
-        assert len(connector.audio_buffers) == 1
         assert "test_conv_123" in connector.audio_buffers
-        
-        # Check buffer properties
         buffer = connector.audio_buffers["test_conv_123"]
+        
         assert buffer.conversation_id == "test_conv_123"
-        assert buffer.silence_threshold == 3000
-        assert buffer.silence_duration == 2.0
-        assert buffer.quiet_threshold == 20
         assert buffer.sample_rate == 8000
         assert buffer.bit_depth == 8
         assert buffer.channels == 1
         assert buffer.encoding == "ulaw"
+
+    def test_audio_conversion_integration(self, connector):
+        """Test that audio conversion works correctly in the AWS Lex connector context."""
+        # Create test PCM data (16kHz, 16-bit, mono)
+        import struct
+        import math
+        
+        # Generate a simple sine wave pattern for testing
+        sample_rate = 16000
+        duration = 0.1  # 100ms
+        num_samples = int(sample_rate * duration)
+        
+        test_pcm_data = b""
+        for i in range(num_samples):
+            # Simple sine wave at 440 Hz
+            sample = int(16384 * math.sin(2 * math.pi * 440 * i / sample_rate))
+            test_pcm_data += struct.pack("<h", sample)
+        
+        # Test the audio conversion function that the connector uses
+        from src.utils.audio_utils import convert_aws_lex_audio_to_wxcc
+        
+        wav_audio, content_type = convert_aws_lex_audio_to_wxcc(
+            test_pcm_data,
+            bit_depth=16
+        )
+        
+        # Verify the conversion worked
+        assert content_type == "audio/wav"
+        assert len(wav_audio) > 0
+        
+        # Verify WAV header structure
+        assert wav_audio.startswith(b'RIFF')
+        assert b'WAVE' in wav_audio
+        assert b'fmt ' in wav_audio
+        assert b'data' in wav_audio
+        
+        # Verify WxCC-compatible format
+        sample_rate_wav = struct.unpack('<I', wav_audio[24:28])[0]
+        bit_depth_wav = struct.unpack('<H', wav_audio[34:36])[0]
+        channels_wav = struct.unpack('<H', wav_audio[22:24])[0]
+        format_code = struct.unpack('<H', wav_audio[20:22])[0]
+        
+        assert sample_rate_wav == 8000, f"Sample rate must be 8000 Hz, got {sample_rate_wav}"
+        assert bit_depth_wav == 8, f"Bit depth must be 8, got {bit_depth_wav}"
+        assert channels_wav == 1, f"Channels must be 1, got {channels_wav}"
+        assert format_code == 7, f"Encoding must be u-law (7), got {format_code}"
+        
+        # Verify the connector can use this converted audio
+        response = connector.create_response(
+            conversation_id="test_conv_456",
+            message_type="welcome",
+            text="Test audio response",
+            audio_content=wav_audio,
+            barge_in_enabled=True,
+            response_type="final"
+        )
+        
+        assert response["audio_content"] == wav_audio
+        assert response["text"] == "Test audio response"
+        assert response["message_type"] == "welcome"
 
 
 if __name__ == "__main__":

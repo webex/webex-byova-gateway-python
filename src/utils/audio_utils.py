@@ -157,10 +157,10 @@ class AudioConverter:
         self, pcm_16khz_data: bytes, bit_depth: int = 16
     ) -> bytes:
         """
-        Resample 16kHz PCM audio to 8kHz using simple decimation.
+        Resample 16kHz PCM audio to 8kHz using anti-aliasing filtering.
 
         AWS Lex returns 16kHz, 16-bit PCM, but WxCC expects 8kHz.
-        This method downsamples by taking every other sample (simple decimation).
+        This method uses a simple low-pass filter to prevent aliasing artifacts.
 
         Args:
             pcm_16khz_data: Raw PCM audio data at 16kHz
@@ -176,14 +176,29 @@ class AudioConverter:
                     f"<{len(pcm_16khz_data) // 2}h", pcm_16khz_data
                 )
 
-                # Simple decimation: take every other sample to go from 16kHz to 8kHz
-                samples_8khz = samples_16khz[::2]
+                # Apply simple low-pass filter to prevent aliasing
+                # This is a basic 3-point moving average filter
+                filtered_samples = []
+                for i in range(len(samples_16khz)):
+                    if i == 0:
+                        # First sample: average with next sample
+                        filtered_sample = (samples_16khz[i] + samples_16khz[i + 1]) // 2
+                    elif i == len(samples_16khz) - 1:
+                        # Last sample: average with previous sample
+                        filtered_sample = (samples_16khz[i - 1] + samples_16khz[i]) // 2
+                    else:
+                        # Middle samples: average with neighbors
+                        filtered_sample = (samples_16khz[i - 1] + samples_16khz[i] + samples_16khz[i + 1]) // 3
+                    filtered_samples.append(filtered_sample)
+
+                # Downsample by taking every other sample (now with anti-aliasing)
+                samples_8khz = filtered_samples[::2]
 
                 # Convert back to bytes
                 pcm_8khz_data = struct.pack(f"<{len(samples_8khz)}h", *samples_8khz)
 
                 self.logger.info(
-                    f"Resampled 16kHz to 8kHz: {len(pcm_16khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
+                    f"Resampled 16kHz to 8kHz with anti-aliasing: {len(pcm_16khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
                 )
                 self.logger.info(
                     f"Sample count: {len(samples_16khz)} -> {len(samples_8khz)}"
@@ -192,12 +207,30 @@ class AudioConverter:
                 return pcm_8khz_data
 
             elif bit_depth == 8:
-                # For 8-bit audio, take every other byte
-                samples_8khz = pcm_16khz_data[::2]
+                # For 8-bit audio, apply similar filtering then take every other byte
+                # Convert to signed integers for filtering
+                samples_16khz = struct.unpack(f"<{len(pcm_16khz_data)}B", pcm_16khz_data)
+                signed_samples = [(sample - 128) for sample in samples_16khz]
+                
+                # Apply filtering
+                filtered_samples = []
+                for i in range(len(signed_samples)):
+                    if i == 0:
+                        filtered_sample = (signed_samples[i] + signed_samples[i + 1]) // 2
+                    elif i == len(signed_samples) - 1:
+                        filtered_sample = (signed_samples[i - 1] + signed_samples[i]) // 2
+                    else:
+                        filtered_sample = (signed_samples[i - 1] + signed_samples[i] + signed_samples[i + 1]) // 3
+                    filtered_samples.append(filtered_sample)
+                
+                # Downsample and convert back to unsigned
+                samples_8khz = [filtered_samples[i] + 128 for i in range(0, len(filtered_samples), 2)]
+                pcm_8khz_data = struct.pack(f"<{len(samples_8khz)}B", *samples_8khz)
+                
                 self.logger.info(
-                    f"Resampled 16kHz to 8kHz: {len(pcm_16khz_data)} bytes -> {len(samples_8khz)} bytes"
+                    f"Resampled 16kHz to 8kHz with anti-aliasing: {len(pcm_16khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
                 )
-                return samples_8khz
+                return pcm_8khz_data
 
             else:
                 self.logger.warning(
@@ -262,39 +295,43 @@ class AudioConverter:
 
     def _linear_to_ulaw(self, sample: int) -> int:
         """
-        Convert a linear PCM sample to u-law format.
-
-        This is a simplified u-law encoding implementation.
-        For production use, consider using a more sophisticated algorithm.
+        Convert a 16-bit linear PCM sample to 8-bit u-law.
 
         Args:
-            sample: Linear PCM sample (16-bit signed integer)
+            sample: 16-bit signed PCM sample (-32768 to 32767)
 
         Returns:
-            u-law encoded byte
+            8-bit u-law sample (0 to 255)
         """
-        # Clamp sample to 16-bit range
-        sample = max(-32768, min(32767, sample))
+        # u-law encoding table (accurate implementation)
+        MULAW_BIAS = 0x84
+        MULAW_CLIP = 32635
 
-        # Handle sign
-        sign = 0 if sample >= 0 else 0x80
-        sample = abs(sample)
+        # Clamp the sample
+        if sample > MULAW_CLIP:
+            sample = MULAW_CLIP
+        elif sample < -MULAW_CLIP:
+            sample = -MULAW_CLIP
 
-        # Find exponent (power of 2)
-        if sample == 0:
-            exponent = 0
-        else:
-            exponent = 0
-            temp = sample
-            while temp > 1:
-                temp >>= 1
-                exponent += 1
+        # Add bias
+        sample += MULAW_BIAS
 
-        # Calculate mantissa (4 bits)
-        if exponent > 0:
-            mantissa = (sample >> (exponent - 1)) & 0x0F
-        else:
-            mantissa = sample & 0x0F
+        # Get sign bit
+        sign = (sample >> 8) & 0x80
+        if sign != 0:
+            sample = -sample
+        if sample > MULAW_CLIP:
+            sample = MULAW_CLIP
+
+        # Find exponent
+        exponent = 7
+        mask = 0x4000
+        while (sample & mask) == 0 and exponent > 0:
+            mask >>= 1
+            exponent -= 1
+
+        # Calculate mantissa
+        mantissa = (sample >> (exponent + 3)) & 0x0F
 
         # Combine into u-law byte
         ulaw_byte = ~(sign | (exponent << 4) | mantissa)
@@ -418,66 +455,84 @@ class AudioConverter:
         encoding: str = "ulaw",
     ) -> bytes:
         """
-        Convert PCM audio data to WAV format.
+        Convert raw PCM audio data to WAV format compatible with WxCC.
+
+        WxCC expects: 8kHz, 8-bit u-law, mono audio
+        Avoid: 16kHz, 16-bit PCM (causes 5-second delay and missed caller responses)
 
         Args:
-            pcm_data: Raw PCM audio data
-            sample_rate: Audio sample rate in Hz
-            bit_depth: Audio bit depth
-            channels: Number of audio channels
-            encoding: Audio encoding format ("ulaw" or "pcm")
+            pcm_data: Raw PCM audio data from AWS Lex
+            sample_rate: Audio sample rate in Hz (default: 8000 for WxCC compatibility)
+            bit_depth: Audio bit depth (default: 8 for WxCC compatibility)
+            channels: Number of audio channels (default: 1 for mono)
+            encoding: Audio encoding (default: "ulaw" for WxCC compatibility)
 
         Returns:
-            WAV file data as bytes
+            WAV format audio data as bytes
         """
         try:
-            # Calculate audio parameters
-            bytes_per_sample = bit_depth // 8
-            frame_size = channels * bytes_per_sample
-            n_frames = len(pcm_data) // frame_size
-            data_size = n_frames * frame_size
-            file_size = 36 + data_size
+            # WAV file header constants
+            RIFF_HEADER = b"RIFF"
+            WAVE_FORMAT = b"WAVE"
+            FMT_CHUNK = b"fmt "
+            DATA_CHUNK = b"data"
 
-            # Create WAV file header
-            wav_header = bytearray()
-            
-            # RIFF header
-            wav_header.extend(b'RIFF')
-            wav_header.extend(struct.pack('<I', file_size))
-            wav_header.extend(b'WAVE')
-            
-            # Format chunk
-            wav_header.extend(b'fmt ')
-            wav_header.extend(struct.pack('<I', 16))  # Format chunk size
-            
+            # WxCC-compatible audio format settings
             if encoding.lower() == "ulaw":
-                wav_header.extend(struct.pack('<H', 7))  # Audio format: 7 = u-law
+                # u-law encoding (WxCC preferred)
+                audio_format = 7  # WAVE_FORMAT_MULAW
+                bytes_per_sample = 1  # 8-bit u-law = 1 byte per sample
+            elif encoding.lower() == "pcm":
+                # PCM encoding (fallback)
+                audio_format = 1  # WAVE_FORMAT_PCM
+                bytes_per_sample = bit_depth // 8
             else:
-                wav_header.extend(struct.pack('<H', 1))  # Audio format: 1 = PCM
-                
-            wav_header.extend(struct.pack('<H', channels))  # Number of channels
-            wav_header.extend(struct.pack('<I', sample_rate))  # Sample rate
-            wav_header.extend(struct.pack('<I', sample_rate * frame_size))  # Byte rate
-            wav_header.extend(struct.pack('<H', frame_size))  # Block align
-            wav_header.extend(struct.pack('<H', bit_depth))  # Bits per sample
-            
-            # Data chunk header
-            wav_header.extend(b'data')
-            wav_header.extend(struct.pack('<I', data_size))
-            
+                # Invalid encoding, return original data
+                self.logger.warning(f"Unsupported encoding: {encoding}, returning original data")
+                return pcm_data
+
+            # Calculate sizes
+            block_align = channels * bytes_per_sample
+            byte_rate = sample_rate * block_align
+            data_size = len(pcm_data)
+            file_size = 36 + data_size  # 36 bytes for headers + data size
+
+            # Build WAV header with WxCC-compatible format
+            wav_header = struct.pack(
+                "<4sI4s4sIHHIIHH4sI",
+                RIFF_HEADER,  # RIFF identifier
+                file_size,  # File size - 8
+                WAVE_FORMAT,  # WAVE format
+                FMT_CHUNK,  # Format chunk identifier
+                16,  # Format chunk size
+                audio_format,  # Audio format (7 = u-law, 1 = PCM)
+                channels,  # Number of channels (1 = mono)
+                sample_rate,  # Sample rate (8000 Hz for WxCC)
+                byte_rate,  # Byte rate
+                block_align,  # Block align
+                bit_depth,  # Bits per sample (8 for u-law)
+                DATA_CHUNK,  # Data chunk identifier
+                data_size,  # Data size
+            )
+
             # Combine header and audio data
             wav_data = wav_header + pcm_data
-            
+
             self.logger.info(
-                f"Created WAV file: {sample_rate}Hz, {bit_depth}bit, {channels} channel(s), "
-                f"{encoding} encoding, {len(wav_data)} bytes total"
+                f"Converted PCM to WAV: {len(pcm_data)} bytes PCM -> {len(wav_data)} bytes WAV"
             )
-            
-            return bytes(wav_data)
+            self.logger.info(
+                f"WAV format: {sample_rate}Hz, {bit_depth}bit, {channels} channel(s), encoding: {encoding}"
+            )
+            self.logger.info(
+                f"WxCC compatibility: {'YES' if sample_rate == 8000 and bit_depth == 8 and encoding.lower() == 'ulaw' else 'NO'}"
+            )
+
+            return wav_data
 
         except Exception as e:
-            self.logger.error(f"Error creating WAV file: {e}")
-            # Return original PCM data if WAV creation fails
+            self.logger.error(f"Error converting PCM to WAV: {e}")
+            # Return original PCM data if conversion fails
             return pcm_data
 
     def convert_any_audio_to_wxcc(self, audio_path: Path) -> bytes:
