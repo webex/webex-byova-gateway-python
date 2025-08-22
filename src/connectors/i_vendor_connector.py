@@ -9,7 +9,7 @@ import base64
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Iterator
 
 # Common event type constants for WxCC integration
 class EventTypes:
@@ -63,7 +63,7 @@ class IVendorConnector(ABC):
     @abstractmethod
     def send_message(
         self, conversation_id: str, message_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    ) -> Iterator[Dict[str, Any]]:
         """
         Send a message or audio to the virtual agent.
 
@@ -72,7 +72,7 @@ class IVendorConnector(ABC):
             message_data: Message data including audio bytes, text, or events
 
         Returns:
-            Dictionary containing the virtual agent's response
+            Iterator yielding response dictionaries from the virtual agent
         """
         pass
 

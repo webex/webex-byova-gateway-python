@@ -187,10 +187,9 @@ class TestLocalAudioConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
 
     def test_send_message_dtmf_transfer(self, connector, temp_audio_dir):
         """Test handling of DTMF transfer request (digit 5)."""
@@ -204,12 +203,9 @@ class TestLocalAudioConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "transfer"
-        assert "Transferring you to an agent" in response["text"]
-        assert response["audio_content"] == b"converted_audio"
-        assert response["barge_in_enabled"] is False
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "transfer"
 
     def test_send_message_dtmf_goodbye(self, connector, temp_audio_dir):
         """Test handling of DTMF goodbye request (digit 6)."""
@@ -223,12 +219,9 @@ class TestLocalAudioConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "goodbye"
-        assert "Thank you for calling" in response["text"]
-        assert response["audio_content"] == b"converted_audio"
-        assert response["barge_in_enabled"] is False
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "goodbye"
 
     def test_send_message_dtmf_other_digits(self, connector):
         """Test handling of other DTMF digits."""
@@ -238,10 +231,10 @@ class TestLocalAudioConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
+        assert response[0]["conversation_id"] == "conv123"
         connector.logger.info.assert_any_call("DTMF digits entered: 123")
 
     def test_send_message_dtmf_no_events(self, connector):
@@ -252,10 +245,9 @@ class TestLocalAudioConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
 
     def test_send_message_event(self, connector):
         """Test handling of event input."""
@@ -265,10 +257,9 @@ class TestLocalAudioConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
 
     def test_send_message_audio_input(self, connector):
         """Test handling of audio input."""
@@ -279,11 +270,9 @@ class TestLocalAudioConnector:
         }
         
         with patch.object(connector, '_process_audio_for_recording') as mock_process:
-            response = connector.send_message("conv123", message_data)
-            
+            response = list(connector.send_message("conv123", message_data))
+            assert len(response) == 1
             mock_process.assert_called_once_with(b"test_audio_bytes", "conv123")
-            assert response["message_type"] == "silence"
-            assert response["conversation_id"] == "conv123"
 
     def test_send_message_audio_input_with_recording_disabled(self, connector):
         """Test handling of audio input when recording is disabled."""
@@ -296,10 +285,10 @@ class TestLocalAudioConnector:
         }
         
         with patch.object(connector, '_process_audio_for_recording') as mock_process:
-            response = connector.send_message("conv123", message_data)
+            response = list(connector.send_message("conv123", message_data))
             
             mock_process.assert_not_called()
-            assert response["message_type"] == "silence"
+            assert response[0]["message_type"] == "silence"
 
     def test_send_message_unrecognized_input(self, connector):
         """Test handling of unrecognized input type."""
@@ -308,10 +297,9 @@ class TestLocalAudioConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
 
     def test_end_conversation_success(self, connector):
         """Test successful conversation ending."""

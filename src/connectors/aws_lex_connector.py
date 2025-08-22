@@ -8,7 +8,7 @@ It handles basic agent discovery and conversation initialization.
 import boto3
 import logging
 from botocore.exceptions import ClientError
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Iterator
 
 from .i_vendor_connector import IVendorConnector
 from ..utils.audio_buffer import AudioBuffer
@@ -333,7 +333,7 @@ class AWSLexConnector(IVendorConnector):
                 response_type="final"
             )
 
-    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Dict[str, Any]:
+    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
         """
         Send a message to the AWS Lex bot and get a response.
 
@@ -342,7 +342,7 @@ class AWSLexConnector(IVendorConnector):
             message_data: Message data containing input (audio or text)
 
         Returns:
-            Response from Lex containing audio and tex
+            Iterator yielding responses from Lex containing audio and text
         """
         self.logger.info(f"Processing message for conversation {conversation_id}")
 
@@ -357,7 +357,7 @@ class AWSLexConnector(IVendorConnector):
         # Check if we have a valid session for this conversation
         if conversation_id not in self._sessions:
             self.logger.error(f"No active session found for conversation {conversation_id}")
-            return self.create_response(
+            yield self.create_response(
                 conversation_id=conversation_id,
                 message_type="error",
                 text="No active conversation found. Please start a new conversation.",
@@ -365,6 +365,7 @@ class AWSLexConnector(IVendorConnector):
                 barge_in_enabled=False,
                 response_type="final"
             )
+            return
 
         # Get session info
         session_info = self._sessions[conversation_id]
@@ -374,31 +375,37 @@ class AWSLexConnector(IVendorConnector):
 
         # Handle conversation start events
         if message_data.get("input_type") == "conversation_start":
-            return self.handle_conversation_start(conversation_id, message_data, self.logger)
+            yield self.handle_conversation_start(conversation_id, message_data, self.logger)
+            return
 
         # Handle DTMF input
-        if message_data.get("input_type") == "dtmf" and "dtmf_data" in message_data:
-            return self._handle_dtmf_input(conversation_id, message_data, bot_name)
-
-        # Handle event input
-        if message_data.get("input_type") == "event":
-            return self.handle_event(conversation_id, message_data, self.logger)
+        if message_data.get("input_type") == "dtmf":
+            yield self._handle_dtmf_input(conversation_id, message_data, bot_id, session_id, bot_name)
+            return
 
         # Handle audio input
         if message_data.get("input_type") == "audio":
-            return self._handle_audio_input(conversation_id, message_data, bot_id, session_id, bot_name)
+            yield from self._handle_audio_input(conversation_id, message_data, bot_id, session_id, bot_name)
+            return
 
-        # Handle unrecognized input
-        return self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+        # Handle event input
+        if message_data.get("input_type") == "event":
+            yield self.handle_event(conversation_id, message_data, self.logger)
+            return
 
-    def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any], bot_name: str) -> Dict[str, Any]:
+        # Handle unrecognized input types
+        yield self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+
+    def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any], bot_id: str, session_id: str, bot_name: str) -> Dict[str, Any]:
         """
         Handle DTMF input for the Lex bot.
 
         Args:
             conversation_id: Conversation identifier
             message_data: Message data containing DTMF input
-            bot_name: Name of the bo
+            bot_id: Lex bot ID
+            session_id: Lex session ID
+            bot_name: Name of the bot
 
         Returns:
             Response based on DTMF input
@@ -443,7 +450,7 @@ class AWSLexConnector(IVendorConnector):
         )
 
     def _handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any],
-                          bot_id: str, session_id: str, bot_name: str) -> Dict[str, Any]:
+                          bot_id: str, session_id: str, bot_name: str) -> Iterator[Dict[str, Any]]:
         """
         Handle audio input for the Lex bot.
 
@@ -452,7 +459,7 @@ class AWSLexConnector(IVendorConnector):
             message_data: Message data containing audio input
             bot_id: Lex bot ID
             session_id: Lex session ID
-            bot_name: Name of the bo
+            bot_name: Name of the bot
 
         Returns:
             Response from Lex with processed audio
@@ -463,7 +470,7 @@ class AWSLexConnector(IVendorConnector):
 
             if not audio_bytes:
                 self.logger.error(f"No valid audio data found for conversation {conversation_id}")
-                return self.create_response(
+                yield self.create_response(
                     conversation_id=conversation_id,
                     message_type="error",
                     text="I couldn't hear you. Please try speaking again.",
@@ -471,6 +478,7 @@ class AWSLexConnector(IVendorConnector):
                     barge_in_enabled=True,
                     response_type="final"
                 )
+                return
 
             # Buffer audio (always enabled for AWS Lex connector)
             silence_detected = self._process_audio_for_buffering(audio_bytes, conversation_id)
@@ -478,14 +486,16 @@ class AWSLexConnector(IVendorConnector):
             # Check if silence threshold was detected, if so send END_OF_INPUT event
             if silence_detected:
                 self.logger.info(f"Silence threshold detected, sending END_OF_INPUT event for conversation {conversation_id}")
-                return self.create_end_of_input_response(conversation_id)
+                yield self.create_end_of_input_response(conversation_id)
+                return
 
             # Check if START_OF_INPUT event has been sent, if not send it
             if conversation_id not in self.conversations_with_start_of_input:
                 self.logger.info(f"Sending START_OF_INPUT event for conversation {conversation_id}")
                 self.conversations_with_start_of_input.add(conversation_id)
                 
-                return self.create_start_of_input_response(conversation_id)
+                yield self.create_start_of_input_response(conversation_id)
+                return
 
             # AWS Lex requires specific audio format
             # We're using linear 16-bit PCM at 16kHz sample rate with a single channel
@@ -493,7 +503,7 @@ class AWSLexConnector(IVendorConnector):
 
             # TODO: Send audio to AWS Lex here
             # For now, return a placeholder response
-            return self.create_response(
+            yield self.create_response(
                 conversation_id=conversation_id,
                 message_type="silence",
                 text="Audio received and buffered. AWS Lex integration pending.",
@@ -503,7 +513,7 @@ class AWSLexConnector(IVendorConnector):
 
         except Exception as e:
             self.logger.error(f"Error processing audio input: {e}")
-            return self.create_response(
+            yield self.create_response(
                 conversation_id=conversation_id,
                 message_type="error",
                 text="An error occurred while processing your audio. Please try again.",

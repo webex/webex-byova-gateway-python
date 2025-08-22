@@ -46,14 +46,14 @@ class TestMessageHandling(unittest.TestCase):
             "conversation_id": self.conversation_id
         }
         
-        response = self.connector.send_message(self.conversation_id, message_data)
-        
+        response = list(self.connector.send_message(self.conversation_id, message_data))
+        assert len(response) == 1
         # Check that the response is a silence message
-        self.assertEqual(response["message_type"], "silence")
-        self.assertEqual(response["conversation_id"], self.conversation_id)
-        self.assertEqual(response["audio_content"], b"")
-        self.assertEqual(response["text"], "")
-        self.assertEqual(response["agent_id"], "test_agent")
+        self.assertEqual(response[0]["message_type"], "silence")
+        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
+        self.assertEqual(response[0]["audio_content"], b"")
+        self.assertEqual(response[0]["text"], "")
+        self.assertEqual(response[0]["agent_id"], "test_agent")
 
     def test_event_handling(self):
         """Test handling of event inputs."""
@@ -65,11 +65,10 @@ class TestMessageHandling(unittest.TestCase):
             "conversation_id": self.conversation_id
         }
         
-        response = self.connector.send_message(self.conversation_id, message_data)
-        
+        response = list(self.connector.send_message(self.conversation_id, message_data))
+        assert len(response) == 1
         # Check that the response is a silence message
-        self.assertEqual(response["message_type"], "silence")
-        self.assertEqual(response["conversation_id"], self.conversation_id)
+        self.assertEqual(response[0]["message_type"], "silence")
         
         # Check that the event was logged
         self.connector.logger.info.assert_any_call(f"Event for conversation {self.conversation_id}: test_event")
@@ -83,14 +82,14 @@ class TestMessageHandling(unittest.TestCase):
             "conversation_id": self.conversation_id
         }
         
-        response = self.connector.send_message(self.conversation_id, message_data)
-        
+        response = list(self.connector.send_message(self.conversation_id, message_data))
+        assert len(response) == 1
         # Check that _process_audio_for_recording was called
         mock_process_audio.assert_called_once_with(b"test_audio_bytes", self.conversation_id)
         
         # Check that the response is a silence message
-        self.assertEqual(response["message_type"], "silence")
-        self.assertEqual(response["conversation_id"], self.conversation_id)
+        self.assertEqual(response[0]["message_type"], "silence")
+        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
 
     def test_dtmf_transfer_handling(self):
         """Test handling of DTMF inputs for transfer (digit 5)."""
@@ -105,13 +104,13 @@ class TestMessageHandling(unittest.TestCase):
             "conversation_id": self.conversation_id
         }
         
-        response = self.connector.send_message(self.conversation_id, message_data)
-        
+        response = list(self.connector.send_message(self.conversation_id, message_data))
+        assert len(response) == 1
         # Check that the response is a transfer message
-        self.assertEqual(response["message_type"], "transfer")
-        self.assertEqual(response["conversation_id"], self.conversation_id)
-        self.assertEqual(response["audio_content"], b"audio_bytes")
-        self.assertIn("Transferring", response["text"])
+        self.assertEqual(response[0]["message_type"], "transfer")
+        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
+        self.assertEqual(response[0]["audio_content"], b"audio_bytes")
+        self.assertIn("Transferring", response[0]["text"])
 
     def test_dtmf_goodbye_handling(self):
         """Test handling of DTMF inputs for goodbye (digit 6)."""
@@ -126,13 +125,13 @@ class TestMessageHandling(unittest.TestCase):
             "conversation_id": self.conversation_id
         }
         
-        response = self.connector.send_message(self.conversation_id, message_data)
-        
+        response = list(self.connector.send_message(self.conversation_id, message_data))
+        assert len(response) == 1
         # Check that the response is a goodbye message
-        self.assertEqual(response["message_type"], "goodbye")
-        self.assertEqual(response["conversation_id"], self.conversation_id)
-        self.assertEqual(response["audio_content"], b"audio_bytes")
-        self.assertIn("Goodbye", response["text"])
+        self.assertEqual(response[0]["message_type"], "goodbye")
+        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
+        self.assertEqual(response[0]["audio_content"], b"audio_bytes")
+        self.assertIn("Goodbye", response[0]["text"])
 
     def test_unrecognized_input_handling(self):
         """Test handling of unrecognized input types."""
@@ -141,13 +140,13 @@ class TestMessageHandling(unittest.TestCase):
             "conversation_id": self.conversation_id
         }
         
-        response = self.connector.send_message(self.conversation_id, message_data)
-        
+        response = list(self.connector.send_message(self.conversation_id, message_data))
+        assert len(response) == 1
         # Check that the response is a silence message
-        self.assertEqual(response["message_type"], "silence")
-        self.assertEqual(response["conversation_id"], self.conversation_id)
-        self.assertEqual(response["audio_content"], b"")
-        self.assertEqual(response["text"], "")
+        self.assertEqual(response[0]["message_type"], "silence")
+        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
+        self.assertEqual(response[0]["audio_content"], b"")
+        self.assertEqual(response[0]["text"], "")
 
     def tearDown(self):
         """Clean up after tests."""

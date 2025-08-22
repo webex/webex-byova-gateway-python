@@ -158,13 +158,7 @@ class ConversationProcessor:
                 "conversation_id": self.conversation_id,
                 "virtual_agent_id": self.virtual_agent_id,
                 "input_type": "audio",
-                "audio_data": {
-                    "caller_audio": audio_input.caller_audio,
-                    "encoding": audio_input.encoding,
-                    "sample_rate_hertz": audio_input.sample_rate_hertz,
-                    "language_code": audio_input.language_code,
-                    "is_single_utterance": audio_input.is_single_utterance,
-                },
+                "audio_data": audio_input.caller_audio,
             }
 
             # Route to connector
@@ -175,10 +169,18 @@ class ConversationProcessor:
                 message_data,
             )
 
-            # Convert response to gRPC format
-            grpc_response = self._convert_connector_response_to_grpc(connector_response)
-            if grpc_response is not None:
-                yield grpc_response
+            # Handle the new yield pattern from connectors
+            if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+                # It's a generator/iterator, yield each response
+                for response in connector_response:
+                    grpc_response = self._convert_connector_response_to_grpc(response)
+                    if grpc_response is not None:
+                        yield grpc_response
+            else:
+                # It's a single response (backward compatibility)
+                grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                if grpc_response is not None:
+                    yield grpc_response
 
         except Exception as e:
             self.logger.error(
@@ -207,12 +209,22 @@ class ConversationProcessor:
                 message_data,
             )
 
-            # Convert response to gRPC format
-            grpc_response = self._convert_connector_response_to_grpc(
-                connector_response, response_type=VoiceVAResponse.ResponseType.FINAL
-            )
-            if grpc_response is not None:
-                yield grpc_response
+            # Handle the new yield pattern from connectors
+            if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+                # It's a generator/iterator, yield each response
+                for response in connector_response:
+                    grpc_response = self._convert_connector_response_to_grpc(
+                        response, response_type=VoiceVAResponse.ResponseType.FINAL
+                    )
+                    if grpc_response is not None:
+                        yield grpc_response
+            else:
+                # It's a single response (backward compatibility)
+                grpc_response = self._convert_connector_response_to_grpc(
+                    connector_response, response_type=VoiceVAResponse.ResponseType.FINAL
+                )
+                if grpc_response is not None:
+                    yield grpc_response
 
         except Exception as e:
             self.logger.error(
@@ -272,10 +284,18 @@ class ConversationProcessor:
                 message_data,
             )
 
-            # Convert response to gRPC format
-            grpc_response = self._convert_connector_response_to_grpc(connector_response)
-            if grpc_response is not None:
-                yield grpc_response
+            # Handle the new yield pattern from connectors
+            if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+                # It's a generator/iterator, yield each response
+                for response in connector_response:
+                    grpc_response = self._convert_connector_response_to_grpc(response)
+                    if grpc_response is not None:
+                        yield grpc_response
+            else:
+                # It's a single response (backward compatibility)
+                grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                if grpc_response is not None:
+                    yield grpc_response
 
         except Exception as e:
             self.logger.error(
@@ -304,28 +324,24 @@ class ConversationProcessor:
                 or connector_response.get("message_type") == "silence"
             ):
                 self.logger.info("Handling silence/empty response")
-                # For silence responses, only send a response if explicitly requested (e.g., for session start)
-                # Otherwise, return None to indicate no response should be sent
-                if response_type is not None:
-                    final_response_type = response_type
-                    va_response.response_type = final_response_type
-                    va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-                    va_response.input_handling_config.CopyFrom(
-                        byova__common__pb2.InputHandlingConfig(
-                            dtmf_config=byova__common__pb2.DTMFInputConfig(
-                                dtmf_input_length=1,
-                                inter_digit_timeout_msec=300,
-                                termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
-                            ),
-                            speech_timers=byova__common__pb2.InputSpeechTimers(
-                                complete_timeout_msec=5000
-                            ),
-                        )
+                # For silence responses, always create a response (for generator pattern compatibility)
+                # Use specified response type or default to FINAL
+                final_response_type = response_type if response_type is not None else VoiceVAResponse.ResponseType.FINAL
+                va_response.response_type = final_response_type
+                va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
+                va_response.input_handling_config.CopyFrom(
+                    byova__common__pb2.InputHandlingConfig(
+                        dtmf_config=byova__common__pb2.DTMFInputConfig(
+                            dtmf_input_length=1,
+                            inter_digit_timeout_msec=300,
+                            termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
+                        ),
+                        speech_timers=byova__common__pb2.InputSpeechTimers(
+                            complete_timeout_msec=5000
+                        ),
                     )
-                    return va_response
-                else:
-                    # Return None to indicate no response should be sent for silence
-                    return None
+                )
+                return va_response
 
             # Create prompts
             audio_content = connector_response.get("audio_content")
@@ -376,7 +392,10 @@ class ConversationProcessor:
                 self.can_be_deleted = True
 
             # Set response type
-            va_response.response_type = response_type
+            if response_type is not None:
+                va_response.response_type = response_type
+            else:
+                va_response.response_type = VoiceVAResponse.ResponseType.FINAL
 
             # Set input mode
             va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF

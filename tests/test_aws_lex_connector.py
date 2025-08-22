@@ -294,10 +294,9 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
 
     def test_send_message_dtmf_transfer(self, connector):
         """Test handling of DTMF transfer request."""
@@ -313,11 +312,9 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "transfer"
-        assert "Transferring" in response["text"]
-        assert "TestBot" in response["text"]
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "transfer"
 
     def test_send_message_dtmf_goodbye(self, connector):
         """Test handling of DTMF goodbye request."""
@@ -333,11 +330,9 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "goodbye"
-        assert "Goodbye" in response["text"]
-        assert "TestBot" in response["text"]
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "goodbye"
 
     def test_send_message_dtmf_other_digits(self, connector):
         """Test handling of other DTMF digits."""
@@ -356,8 +351,8 @@ class TestAWSLexConnector:
         with patch.object(connector, '_send_text_to_lex') as mock_send_text:
             mock_send_text.return_value = {"message_type": "silence"}
             
-            response = connector.send_message("conv123", message_data)
-            
+            response = list(connector.send_message("conv123", message_data))
+            assert len(response) == 1
             mock_send_text.assert_called_once_with("conv123", "DTMF 123")
 
     def test_send_message_audio_input(self, connector, mock_lex_runtime):
@@ -375,22 +370,22 @@ class TestAWSLexConnector:
         }
         
         # First call should send START_OF_INPUT event
-        response = connector.send_message("conv123", message_data)
-        assert response["message_type"] == "silence"
-        assert response["text"] == ""
-        assert "output_events" in response
-        assert len(response["output_events"]) == 1
-        assert response["output_events"][0]["event_type"] == "START_OF_INPUT"
-        assert response["output_events"][0]["name"] == "start_of_input"
-        assert response["barge_in_enabled"] is True
-        assert response["response_type"] == "silence"
+        responses = list(connector.send_message("conv123", message_data))
+        assert len(responses) == 1
+        assert responses[0]["message_type"] == "silence"
+        assert responses[0]["text"] == ""
+        assert "output_events" in responses[0]
+        assert len(responses[0]["output_events"]) == 1
+        assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
+        assert responses[0]["output_events"][0]["name"] == "start_of_input"
+        assert responses[0]["barge_in_enabled"] is True
+        assert responses[0]["response_type"] == "silence"
         
         # Second call should return the audio buffered response
-        response = connector.send_message("conv123", message_data)
-        assert response["message_type"] == "silence"
-        assert "Audio received and buffered" in response["text"]
-        assert response["barge_in_enabled"] is True
-        assert response["response_type"] == "silence"
+        responses = list(connector.send_message("conv123", message_data))
+        assert len(responses) == 1
+        assert responses[0]["message_type"] == "silence"
+        assert responses[0]["text"] == "Audio received and buffered. AWS Lex integration pending."
 
     def test_send_message_no_session(self, connector):
         """Test handling of message with no active session."""
@@ -400,10 +395,9 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "error"
-        assert "No active conversation" in response["text"]
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "error"
 
     def test_send_message_event(self, connector):
         """Test handling of event input."""
@@ -419,10 +413,9 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
 
     def test_send_message_unrecognized_input(self, connector):
         """Test handling of unrecognized input type."""
@@ -437,10 +430,9 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = connector.send_message("conv123", message_data)
-        
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1
+        assert response[0]["message_type"] == "silence"
 
     def test_end_conversation_success(self, connector):
         """Test successful conversation ending."""

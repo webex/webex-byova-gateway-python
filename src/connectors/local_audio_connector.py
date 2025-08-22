@@ -7,7 +7,7 @@ It's useful for testing and development purposes.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Iterator
 
 from ..utils.audio_utils import AudioConverter
 from ..utils.audio_buffer import AudioBuffer
@@ -124,18 +124,16 @@ class LocalAudioConnector(IVendorConnector):
             "barge_in_enabled": False,  # Disable barge-in for welcome message
         }
 
-    def send_message(
-        self, conversation_id: str, message_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
         """
-        Send a message to the virtual agent and get response.
+        Send a message to the local audio connector and get a response.
 
         Args:
-            conversation_id: Unique identifier for the conversation
-            message_data: Message data containing text or audio input
+            conversation_id: Active conversation identifier
+            message_data: Message data containing input (audio, text, or events)
 
         Returns:
-            Dictionary containing response message and audio file
+            Iterator yielding responses from the local audio connector
         """
         self.logger.info(f"Processing message for conversation {conversation_id}")
 
@@ -145,129 +143,146 @@ class LocalAudioConnector(IVendorConnector):
             "virtual_agent_id": message_data.get("virtual_agent_id"),
             "input_type": message_data.get("input_type"),
         }
-        self.logger.debug(
-            f"Message data for conversation {conversation_id}: {log_data}"
-        )
+        self.logger.debug(f"Message data for conversation {conversation_id}: {log_data}")
 
-        # Ignore conversation start events - these should be handled by start_conversation method
+        # Handle conversation start events
         if message_data.get("input_type") == "conversation_start":
-            return self.handle_conversation_start(conversation_id, message_data, self.logger)
+            yield self.handle_conversation_start(conversation_id, message_data, self.logger)
+            return
 
-        # Handle DTMF input - check for transfer and log the digits
-        if message_data.get("input_type") == "dtmf" and "dtmf_data" in message_data:
-            dtmf_data = message_data.get("dtmf_data", {})
-            dtmf_events = dtmf_data.get("dtmf_events", [])
-            if dtmf_events:
-                self.logger.info(
-                    f"Received DTMF input for conversation {conversation_id}: {dtmf_events}"
-                )
-                # Convert DTMF events to a string for easier processing
-                dtmf_string = "".join([str(digit) for digit in dtmf_events])
-                self.logger.info(f"DTMF digits entered: {dtmf_string}")
+        # Handle DTMF input
+        if message_data.get("input_type") == "dtmf":
+            yield self._handle_dtmf_input(conversation_id, message_data)
+            return
 
-                # Check if user entered '5' for transfer
-                if len(dtmf_events) == 1 and dtmf_events[0] == 5:  # DTMF_DIGIT_FIVE = 5
-                    self.logger.info(
-                        f"Transfer requested by user for conversation {conversation_id}"
-                    )
+        # Handle event input
+        if message_data.get("input_type") == "event":
+            yield self.handle_event(conversation_id, message_data, self.logger)
+            return
 
-                    # Get transfer audio file
-                    transfer_audio = self.audio_files.get(
-                        "transfer", "transferring.wav"
-                    )
-                    audio_path = self.audio_base_path / transfer_audio
-
-                    # Convert audio file to WXCC-compatible format
-                    try:
-                        audio_bytes = self._convert_audio_to_wxcc_format(audio_path)
-                    except Exception as e:
-                        self.logger.error(
-                            f"Error converting transfer audio file {audio_path}: {e}"
-                        )
-                        audio_bytes = b""
-
-                    # Return transfer response
-                    return self.create_response(
-                        conversation_id=conversation_id,
-                        message_type="transfer",
-                        text="Transferring you to an agent. Please wait.",
-                        audio_content=audio_bytes,
-                        barge_in_enabled=False
-                    )
-
-                # Check if user entered '6' for goodbye
-                elif (
-                    len(dtmf_events) == 1 and dtmf_events[0] == 6
-                ):  # DTMF_DIGIT_SIX = 6
-                    self.logger.info(
-                        f"Goodbye requested by user for conversation {conversation_id}"
-                    )
-
-                    # Get goodbye audio file
-                    goodbye_audio = self.audio_files.get("goodbye", "goodbye.wav")
-                    audio_path = self.audio_base_path / goodbye_audio
-
-                    # Convert audio file to WXCC-compatible format
-                    try:
-                        audio_bytes = self._convert_audio_to_wxcc_format(audio_path)
-                    except Exception as e:
-                        self.logger.error(
-                            f"Error converting goodbye audio file {audio_path}: {e}"
-                        )
-                        audio_bytes = b""
-
-                    # Return goodbye response
-                    return self.create_response(
-                        conversation_id=conversation_id,
-                        message_type="goodbye",
-                        text="Thank you for calling. Goodbye!",
-                        audio_content=audio_bytes,
-                        barge_in_enabled=False
-                    )
-
-            # Check for silence timeout when DTMF inputs are received
-            self.check_silence_timeout(
-                conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
-            )
-
-            # Return silence response for other DTMF inputs (no audio response)
-            return self.create_response(
-                conversation_id=conversation_id,
-                message_type="silence"
-            )
-
-        # Handle event inputs - log start and end of input events
-        if message_data.get("input_type") == "event" and "event_data" in message_data:
-            # Check for silence timeout when events are received
-            self.check_silence_timeout(
-                conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
-            )
-
-            # Return silence response for events (no audio response)
-            return self.handle_event(conversation_id, message_data, self.logger)
-
-        # Handle audio input - return silence (no processing)
+        # Handle audio input
         if message_data.get("input_type") == "audio":
-            # Record audio if enabled
-            if self.record_caller_audio and "audio_data" in message_data:
-                self._process_audio_for_recording(
-                    message_data["audio_data"], conversation_id
+            yield from self._handle_audio_input(conversation_id, message_data)
+            return
+
+        # Handle unrecognized input
+        yield self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+
+    def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle DTMF input for the local audio connector.
+
+        Args:
+            conversation_id: Conversation identifier
+            message_data: Message data containing DTMF input
+
+        Returns:
+            Response based on DTMF input
+        """
+        dtmf_data = message_data.get("dtmf_data", {})
+        dtmf_events = dtmf_data.get("dtmf_events", [])
+        if dtmf_events:
+            self.logger.info(
+                f"Received DTMF input for conversation {conversation_id}: {dtmf_events}"
+            )
+            # Convert DTMF events to a string for easier processing
+            dtmf_string = "".join([str(digit) for digit in dtmf_events])
+            self.logger.info(f"DTMF digits entered: {dtmf_string}")
+
+            # Check if user entered '5' for transfer
+            if len(dtmf_events) == 1 and dtmf_events[0] == 5:  # DTMF_DIGIT_FIVE = 5
+                self.logger.info(
+                    f"Transfer requested by user for conversation {conversation_id}"
                 )
 
-            # Check for silence timeout even when audio data is received
-            self.check_silence_timeout(
-                conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
-            )
+                # Get transfer audio file
+                transfer_audio = self.audio_files.get(
+                    "transfer", "transferring.wav"
+                )
+                audio_path = self.audio_base_path / transfer_audio
 
-            return self.handle_audio_input(conversation_id, message_data, self.logger)
+                # Convert audio file to WXCC-compatible format
+                try:
+                    audio_bytes = self._convert_audio_to_wxcc_format(audio_path)
+                except Exception as e:
+                    self.logger.error(
+                        f"Error converting transfer audio file {audio_path}: {e}"
+                    )
+                    audio_bytes = b""
 
-        # Default: return silence for any other input type
-        # Check for silence timeout for any unhandled input types
+                # Return transfer response
+                return self.create_response(
+                    conversation_id=conversation_id,
+                    message_type="transfer",
+                    text="Transferring you to an agent. Please wait.",
+                    audio_content=audio_bytes,
+                    barge_in_enabled=False
+                )
+
+            # Check if user entered '6' for goodbye
+            elif (
+                len(dtmf_events) == 1 and dtmf_events[0] == 6
+            ):  # DTMF_DIGIT_SIX = 6
+                self.logger.info(
+                    f"Goodbye requested by user for conversation {conversation_id}"
+                )
+
+                # Get goodbye audio file
+                goodbye_audio = self.audio_files.get("goodbye", "goodbye.wav")
+                audio_path = self.audio_base_path / goodbye_audio
+
+                # Convert audio file to WXCC-compatible format
+                try:
+                    audio_bytes = self._convert_audio_to_wxcc_format(audio_path)
+                except Exception as e:
+                    self.logger.error(
+                        f"Error converting goodbye audio file {audio_path}: {e}"
+                    )
+                    audio_bytes = b""
+
+                # Return goodbye response
+                return self.create_response(
+                    conversation_id=conversation_id,
+                    message_type="goodbye",
+                    text="Thank you for calling. Goodbye!",
+                    audio_content=audio_bytes,
+                    barge_in_enabled=False
+                )
+
+        # Check for silence timeout when DTMF inputs are received
         self.check_silence_timeout(
             conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
         )
 
-        return self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+        # Return silence response for other DTMF inputs (no audio response)
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence"
+        )
+
+    def _handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+        """
+        Handle audio input for the local audio connector.
+
+        Args:
+            conversation_id: Conversation identifier
+            message_data: Message data containing audio input
+
+        Returns:
+            Iterator yielding responses for audio input
+        """
+        # Record audio if enabled
+        if self.record_caller_audio and "audio_data" in message_data:
+            self._process_audio_for_recording(
+                message_data["audio_data"], conversation_id
+            )
+
+        # Check for silence timeout even when audio data is received
+        self.check_silence_timeout(
+            conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
+        )
+
+        yield self.handle_audio_input(conversation_id, message_data, self.logger)
 
     def end_conversation(
         self, conversation_id: str, message_data: Dict[str, Any] = None
