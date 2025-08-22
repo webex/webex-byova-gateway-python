@@ -256,7 +256,7 @@ class AWSLexConnector(IVendorConnector):
                             message_type="welcome",
                             text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                             audio_content=wav_audio,
-                            barge_in_enabled=True,
+                            barge_in_enabled=False,
                             content_type=content_type,
                             response_type="final"
                         )
@@ -298,7 +298,7 @@ class AWSLexConnector(IVendorConnector):
                     message_type="welcome",
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
-                    barge_in_enabled=True,
+                    barge_in_enabled=False,
                     response_type="final"
                 )
 
@@ -314,7 +314,7 @@ class AWSLexConnector(IVendorConnector):
                     message_type="welcome",
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
-                    barge_in_enabled=True,
+                    barge_in_enabled=False,
                     response_type="final"
                 )
 
@@ -518,7 +518,7 @@ class AWSLexConnector(IVendorConnector):
                     conversation_id=conversation_id,
                     message_type="error",
                     text="I couldn't process your request. Please try again.",
-                    barge_in_enabled=True,
+                    barge_in_enabled=False,
                     response_type="final"
                 )
             
@@ -533,7 +533,7 @@ class AWSLexConnector(IVendorConnector):
                 conversation_id=conversation_id,
                 message_type="silence",
                 text=f"Processing text input: {text_input}",
-                barge_in_enabled=True,
+                barge_in_enabled=False,
                 response_type="final"
             )
         except Exception as e:
@@ -544,7 +544,7 @@ class AWSLexConnector(IVendorConnector):
                 conversation_id=conversation_id,
                 message_type="error",
                 text="An error occurred while processing your text. Please try again.",
-                barge_in_enabled=True,
+                barge_in_enabled=False,
                 response_type="final"
             )
 
@@ -648,7 +648,7 @@ class AWSLexConnector(IVendorConnector):
                             message_type="response",
                             text=text_response,
                             audio_content=wav_audio,
-                            barge_in_enabled=True,
+                            barge_in_enabled=False,
                             content_type=content_type,
                             response_type="final"
                         )

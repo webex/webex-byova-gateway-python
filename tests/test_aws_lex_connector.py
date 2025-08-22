@@ -232,7 +232,7 @@ class TestAWSLexConnector:
             assert response["message_type"] == "welcome"
             assert "TestBot" in response["text"]
             assert response["audio_content"] == b"converted_audio"
-            assert response["barge_in_enabled"] is True
+            assert response["barge_in_enabled"] is False
 
     def test_start_conversation_bot_not_found(self, connector):
         """Test conversation start with unknown bot."""
