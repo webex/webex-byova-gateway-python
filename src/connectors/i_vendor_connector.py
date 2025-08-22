@@ -318,12 +318,10 @@ class IVendorConnector(ABC):
         """
         event = {
             "event_type": event_type,
-            "name": name
+            "name": name,
+            "metadata": event_data if event_data else None
         }
         
-        if event_data:
-            event["event_data"] = event_data
-            
         return event
     
     def create_response(self, conversation_id: str, message_type: str = "silence",
@@ -470,7 +468,7 @@ class IVendorConnector(ABC):
         """
         start_event = self.create_output_event(
             EventTypes.START_OF_INPUT,
-            "start_of_input"
+            ""  # Empty name for START_OF_INPUT event
         )
         
         return self.create_response(

@@ -324,23 +324,85 @@ class ConversationProcessor:
                 or connector_response.get("message_type") == "silence"
             ):
                 self.logger.info("Handling silence/empty response")
-                # For silence responses, always create a response (for generator pattern compatibility)
-                # Use specified response type or default to FINAL
-                final_response_type = response_type if response_type is not None else VoiceVAResponse.ResponseType.FINAL
-                va_response.response_type = final_response_type
-                va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-                va_response.input_handling_config.CopyFrom(
-                    byova__common__pb2.InputHandlingConfig(
-                        dtmf_config=byova__common__pb2.DTMFInputConfig(
-                            dtmf_input_length=1,
-                            inter_digit_timeout_msec=300,
-                            termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
-                        ),
-                        speech_timers=byova__common__pb2.InputSpeechTimers(
-                            complete_timeout_msec=5000
-                        ),
+                
+                # Check if this is a START_OF_INPUT event
+                has_start_event = False
+                if connector_response is not None:
+                    has_start_event = any(
+                        event.get("event_type") == "START_OF_INPUT" 
+                        for event in connector_response.get("output_events", [])
                     )
-                )
+                
+                # Always set input_handling_config as it's mandatory in the protobuf
+                # For START_OF_INPUT events, we'll set minimal config to satisfy the requirement
+                if has_start_event:
+                    self.logger.info("Detected START_OF_INPUT event, setting minimal input_handling_config")
+                    # Set minimal input_handling_config for START_OF_INPUT events
+                    va_response.input_handling_config.CopyFrom(
+                        byova__common__pb2.InputHandlingConfig(
+                            dtmf_config=byova__common__pb2.DTMFInputConfig(
+                                dtmf_input_length=1,
+                                inter_digit_timeout_msec=300,
+                                termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
+                            ),
+                            speech_timers=byova__common__pb2.InputSpeechTimers(
+                                complete_timeout_msec=5000
+                            ),
+                        )
+                    )
+                else:
+                    # For regular silence responses, use specified response type or default to FINAL
+                    final_response_type = response_type if response_type is not None else VoiceVAResponse.ResponseType.FINAL
+                    va_response.response_type = final_response_type
+                    va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
+                    va_response.input_handling_config.CopyFrom(
+                        byova__common__pb2.InputHandlingConfig(
+                            dtmf_config=byova__common__pb2.DTMFInputConfig(
+                                dtmf_input_length=1,
+                                inter_digit_timeout_msec=300,
+                                termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
+                            ),
+                            speech_timers=byova__common__pb2.InputSpeechTimers(
+                                complete_timeout_msec=5000
+                            ),
+                        )
+                    )
+                
+                # Handle output events for silence responses before returning
+                if connector_response and "output_events" in connector_response:
+                    for event in connector_response["output_events"]:
+                        event_type = event.get("event_type")
+                        if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT"]:
+                            output_event = byova__common__pb2.OutputEvent()
+                            
+                            # Convert event_type string to protobuf enum
+                            if event_type == "END_OF_INPUT":
+                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.END_OF_INPUT
+                            elif event_type == "START_OF_INPUT":
+                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.START_OF_INPUT
+                            elif event_type == "NO_MATCH":
+                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_MATCH
+                            elif event_type == "NO_INPUT":
+                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_INPUT
+                            elif event_type == "CUSTOM_EVENT":
+                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
+                            
+                            # Set event name
+                            output_event.name = event.get("name", "")
+                            
+                            # Convert metadata dict to google.protobuf.Struct if present
+                            if event.get("metadata"):
+                                try:
+                                    from google.protobuf import struct_pb2
+                                    metadata_struct = struct_pb2.Struct()
+                                    metadata_struct.update(event["metadata"])
+                                    output_event.metadata.CopyFrom(metadata_struct)
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to convert metadata for event {event_type}: {e}")
+                            
+                            va_response.output_events.append(output_event)
+                            self.logger.debug(f"Added {event_type} event to silence response")
+                
                 return va_response
 
             # Create prompts
@@ -390,6 +452,41 @@ class ConversationProcessor:
                 output_event.name = "transfer_requested"
                 va_response.output_events.append(output_event)
                 self.can_be_deleted = True
+
+            # Handle generic output events from connector responses
+            if "output_events" in connector_response:
+                for event in connector_response["output_events"]:
+                    event_type = event.get("event_type")
+                    if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT"]:
+                        output_event = byova__common__pb2.OutputEvent()
+                        
+                        # Convert event_type string to protobuf enum
+                        if event_type == "END_OF_INPUT":
+                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.END_OF_INPUT
+                        elif event_type == "START_OF_INPUT":
+                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.START_OF_INPUT
+                        elif event_type == "NO_MATCH":
+                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_MATCH
+                        elif event_type == "NO_INPUT":
+                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_INPUT
+                        elif event_type == "CUSTOM_EVENT":
+                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
+                        
+                        # Set event name
+                        output_event.name = event.get("name", "")
+                        
+                        # Convert metadata dict to google.protobuf.Struct if present
+                        if event.get("metadata"):
+                            try:
+                                from google.protobuf import struct_pb2
+                                metadata_struct = struct_pb2.Struct()
+                                metadata_struct.update(event["metadata"])
+                                output_event.metadata.CopyFrom(metadata_struct)
+                            except Exception as e:
+                                self.logger.warning(f"Failed to convert metadata for event {event_type}: {e}")
+                        
+                        va_response.output_events.append(output_event)
+                        self.logger.debug(f"Added {event_type} event to gRPC response")
 
             # Set response type
             if response_type is not None:

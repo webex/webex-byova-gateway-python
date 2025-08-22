@@ -418,7 +418,8 @@ class TestLocalAudioConnector:
         result = connector.convert_vendor_to_wxcc(vendor_data)
         
         assert result["output_events"][0]["event_type"] == "CONVERSATION_END"
-        assert result["output_events"][0]["event_data"]["reason"] == "user_requested_end"
+        assert result["output_events"][0]["name"] == "conversation_ended"
+        assert result["output_events"][0]["metadata"]["reason"] == "user_requested_end"
 
     def test_convert_vendor_to_wxcc_transfer(self, connector):
         """Test conversion from vendor to WxCC format for transfer message."""
@@ -431,7 +432,8 @@ class TestLocalAudioConnector:
         result = connector.convert_vendor_to_wxcc(vendor_data)
         
         assert result["output_events"][0]["event_type"] == "TRANSFER_TO_HUMAN"
-        assert result["output_events"][0]["event_data"]["reason"] == "user_requested_transfer"
+        assert result["output_events"][0]["name"] == "transfer_requested"
+        assert result["output_events"][0]["metadata"]["reason"] == "user_requested_transfer"
 
     def test_convert_vendor_to_wxcc_not_dict(self, connector):
         """Test conversion from vendor to WxCC format when input is not a dict."""

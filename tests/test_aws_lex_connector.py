@@ -377,15 +377,14 @@ class TestAWSLexConnector:
         assert "output_events" in responses[0]
         assert len(responses[0]["output_events"]) == 1
         assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
-        assert responses[0]["output_events"][0]["name"] == "start_of_input"
+        assert responses[0]["output_events"][0]["name"] == ""  # Empty name for START_OF_INPUT
         assert responses[0]["barge_in_enabled"] is True
         assert responses[0]["response_type"] == "silence"
         
-        # Second call should return the audio buffered response
+        # Second call should return no response since no silence detected
+        # (audio is just being buffered)
         responses = list(connector.send_message("conv123", message_data))
-        assert len(responses) == 1
-        assert responses[0]["message_type"] == "silence"
-        assert responses[0]["text"] == "Audio received and buffered. AWS Lex integration pending."
+        assert len(responses) == 0  # No response when just buffering audio
 
     def test_send_message_no_session(self, connector):
         """Test handling of message with no active session."""

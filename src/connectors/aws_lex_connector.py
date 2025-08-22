@@ -344,7 +344,7 @@ class AWSLexConnector(IVendorConnector):
         Returns:
             Iterator yielding responses from Lex containing audio and text
         """
-        self.logger.info(f"Processing message for conversation {conversation_id}")
+        self.logger.info(f"Processing message for conversation {conversation_id}, input_type: {message_data.get('input_type')}")
 
         # Log relevant parts of message_data without audio bytes
         log_data = {
@@ -468,16 +468,16 @@ class AWSLexConnector(IVendorConnector):
             # Extract audio data from the message
             audio_bytes = self.extract_audio_data(message_data.get("audio_data"), conversation_id, self.logger)
 
+            # Check if START_OF_INPUT event has been sent, if not send it
+            if conversation_id not in self.conversations_with_start_of_input:
+                self.logger.info(f"Sending START_OF_INPUT event for conversation {conversation_id}")
+                self.conversations_with_start_of_input.add(conversation_id)
+                
+                yield self.create_start_of_input_response(conversation_id)
+                return  # Return after sending START_OF_INPUT event
+            
             if not audio_bytes:
                 self.logger.error(f"No valid audio data found for conversation {conversation_id}")
-                yield self.create_response(
-                    conversation_id=conversation_id,
-                    message_type="error",
-                    text="I couldn't hear you. Please try speaking again.",
-                    audio_content=b"",
-                    barge_in_enabled=True,
-                    response_type="final"
-                )
                 return
 
             # Buffer audio (always enabled for AWS Lex connector)
@@ -487,39 +487,13 @@ class AWSLexConnector(IVendorConnector):
             if silence_detected:
                 self.logger.info(f"Silence threshold detected, sending END_OF_INPUT event for conversation {conversation_id}")
                 yield self.create_end_of_input_response(conversation_id)
+
+                # TODO: Send audio to AWS Lex here
+
                 return
-
-            # Check if START_OF_INPUT event has been sent, if not send it
-            if conversation_id not in self.conversations_with_start_of_input:
-                self.logger.info(f"Sending START_OF_INPUT event for conversation {conversation_id}")
-                self.conversations_with_start_of_input.add(conversation_id)
-                
-                yield self.create_start_of_input_response(conversation_id)
-                return
-
-            # AWS Lex requires specific audio format
-            # We're using linear 16-bit PCM at 16kHz sample rate with a single channel
-            # If needed, add audio conversion logic here to ensure compatibility
-
-            # TODO: Send audio to AWS Lex here
-            # For now, return a placeholder response
-            yield self.create_response(
-                conversation_id=conversation_id,
-                message_type="silence",
-                text="Audio received and buffered. AWS Lex integration pending.",
-                barge_in_enabled=True,
-                response_type="silence"
-            )
 
         except Exception as e:
             self.logger.error(f"Error processing audio input: {e}")
-            yield self.create_response(
-                conversation_id=conversation_id,
-                message_type="error",
-                text="An error occurred while processing your audio. Please try again.",
-                barge_in_enabled=True,
-                response_type="final"
-            )
 
     def _send_text_to_lex(self, conversation_id: str, text_input: str) -> Dict[str, Any]:
         """

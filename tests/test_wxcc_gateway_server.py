@@ -501,3 +501,82 @@ class TestConversationProcessor:
         call_args = mock_router.route_request.call_args
         message_data = call_args[0][3]
         assert message_data["audio_data"] == b"linear16_audio"
+
+    def test_end_of_input_event_conversion(self, processor, mock_router, mock_audio_input):
+        """Test that END_OF_INPUT events are properly converted to protobuf format."""
+        # Mock connector returning response with END_OF_INPUT event
+        mock_response = {
+            "message_type": "silence",
+            "text": "",
+            "audio_content": b"",
+            "barge_in_enabled": True,
+            "output_events": [
+                {
+                    "event_type": "END_OF_INPUT",
+                    "name": "end_of_input",
+                    "metadata": {"silence_duration": 5000, "buffer_size": 1024}
+                }
+            ]
+        }
+        mock_router.route_request.return_value = mock_response
+
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        # Verify response was processed
+        assert len(responses) == 1
+        response = responses[0]
+        
+        # Verify output events were converted
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        
+        # Verify event type is correct protobuf enum
+        assert event.event_type == 5  # END_OF_INPUT = 5
+        
+        # Verify event name
+        assert event.name == "end_of_input"
+        
+        # Verify metadata was converted to protobuf Struct
+        assert event.metadata is not None
+        assert event.metadata["silence_duration"] == 5000
+        assert event.metadata["buffer_size"] == 1024
+
+    def test_start_of_input_event_conversion(self, processor, mock_router, mock_audio_input):
+        """Test that START_OF_INPUT events are properly converted to protobuf format."""
+        # Mock connector returning response with START_OF_INPUT event
+        mock_response = {
+            "message_type": "silence",
+            "text": "",
+            "audio_content": b"",
+            "barge_in_enabled": True,
+            "output_events": [
+                {
+                    "event_type": "START_OF_INPUT",
+                    "name": "",
+                    "metadata": None
+                }
+            ]
+        }
+        mock_router.route_request.return_value = mock_response
+
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        # Verify response was processed
+        assert len(responses) == 1
+        response = responses[0]
+        
+        # Verify output events were converted
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        
+        # Verify event type is correct protobuf enum
+        assert event.event_type == 4  # START_OF_INPUT = 4
+        
+        # Verify event name is empty string
+        assert event.name == ""
+        
+        # Verify metadata is empty protobuf Struct (protobuf default for message fields)
+        assert event.metadata is not None
+        # In protobuf, message fields can't be None, they default to empty message
