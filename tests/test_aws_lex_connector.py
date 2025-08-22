@@ -674,6 +674,432 @@ class TestAWSLexConnector:
         assert response["text"] == "Test audio response"
         assert response["message_type"] == "welcome"
 
+    def test_reset_conversation_for_next_input_success(self, connector):
+        """Test successful reset of conversation state for next audio input cycle."""
+        conversation_id = "test_conv_789"
+        
+        # Set up initial state - conversation has START_OF_INPUT tracking
+        connector.conversations_with_start_of_input.add(conversation_id)
+        assert conversation_id in connector.conversations_with_start_of_input
+        
+        # Call the reset method
+        connector._reset_conversation_for_next_input(conversation_id)
+        
+        # Verify conversation was removed from START_OF_INPUT tracking
+        assert conversation_id not in connector.conversations_with_start_of_input
+        assert len(connector.conversations_with_start_of_input) == 0
+
+    def test_reset_conversation_for_next_input_not_tracked(self, connector):
+        """Test reset when conversation is not in START_OF_INPUT tracking."""
+        conversation_id = "test_conv_790"
+        
+        # Ensure conversation is not in tracking
+        connector.conversations_with_start_of_input.discard(conversation_id)
+        assert conversation_id not in connector.conversations_with_start_of_input
+        
+        # Call the reset method
+        connector._reset_conversation_for_next_input(conversation_id)
+        
+        # Verify conversation still not in tracking
+        assert conversation_id not in connector.conversations_with_start_of_input
+
+    def test_reset_conversation_for_next_input_error_handling(self, connector):
+        """Test that reset method handles errors gracefully."""
+        conversation_id = "test_conv_791"
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Mock the logger to capture error calls
+        connector.logger.error = MagicMock()
+        
+        # Create a custom set-like object that raises an exception on remove
+        class ExceptionRaisingSet(set):
+            def remove(self, item):
+                raise Exception("Test error")
+        
+        # Replace the set with our custom one
+        original_set = connector.conversations_with_start_of_input
+        connector.conversations_with_start_of_input = ExceptionRaisingSet([conversation_id])
+        
+        try:
+            # Call the reset method - should not raise exception
+            connector._reset_conversation_for_next_input(conversation_id)
+            
+            # Verify error was logged
+            connector.logger.error.assert_called_with(
+                f"Error resetting conversation {conversation_id} for next input: Test error"
+            )
+        finally:
+            # Restore the original set
+            connector.conversations_with_start_of_input = original_set
+
+    def test_multiple_audio_input_cycles_success(self, connector, mock_lex_runtime):
+        """Test that multiple audio input cycles work correctly with reset functionality."""
+        conversation_id = "test_conv_792"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        
+        # Add some audio data to the buffer so it's not empty
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        assert audio_buffer.get_buffer_size() > 0
+        
+        # Mock Lex response
+        mock_audio_stream = MagicMock()
+        mock_audio_stream.read.return_value = b"mock_audio_response"
+        mock_audio_stream.close.return_value = None
+        
+        mock_response = {
+            'audioStream': mock_audio_stream,
+            'messages': 'gAAAAABk...',  # Mock encoded messages
+            'inputTranscript': 'gAAAAABk...'  # Mock encoded transcript
+        }
+        
+        # Mock the decode method to return test data
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = [
+                "What type of room would you like?",  # inputTranscript
+                [{'content': 'What type of room would you like? king, queen, or deluxe?', 'contentType': 'PlainText'}]  # messages
+            ]
+            
+            # Mock audio conversion
+            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
+                mock_convert.return_value = (b"converted_audio", "audio/wav")
+                
+                # Mock Lex runtime call
+                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                    
+                    # First cycle: Send audio to Lex and get response
+                    responses = list(connector._send_audio_to_lex(conversation_id))
+                    
+                    # Verify response was generated
+                    assert len(responses) == 1
+                    response = responses[0]
+                    assert response["conversation_id"] == conversation_id
+                    assert response["message_type"] == "response"
+                    assert response["response_type"] == "final"
+                    
+                    # Verify conversation state was reset
+                    assert conversation_id not in connector.conversations_with_start_of_input
+                    
+                    # Verify audio buffer was reset
+                    assert audio_buffer.get_buffer_size() == 0
+                    
+                    # Second cycle: Should be able to send START_OF_INPUT again
+                    message_data = {"input_type": "audio", "audio_data": b"new_audio_input"}
+                    
+                    # Mock audio extraction
+                    with patch.object(connector, 'extract_audio_data', return_value=b"new_audio_input"):
+                        # Mock audio buffering
+                        with patch.object(connector, '_process_audio_for_buffering', return_value=False):
+                            responses = list(connector._handle_audio_input(conversation_id, message_data, bot_id, session_id, "TestBot"))
+                            
+                            # Should send START_OF_INPUT since conversation was reset
+                            assert len(responses) == 1
+                            start_response = responses[0]
+                            assert "output_events" in start_response
+                            assert len(start_response["output_events"]) == 1
+                            assert start_response["output_events"][0]["event_type"] == "START_OF_INPUT"
+
+    def test_reset_integration_with_dtmf_transfer(self, connector):
+        """Test that conversation reset works correctly with DTMF transfer."""
+        conversation_id = "test_conv_793"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Create DTMF message with transfer code (5)
+        message_data = {
+            "input_type": "dtmf",
+            "dtmf_data": {"dtmf_events": [5]}
+        }
+        
+        # Process DTMF input
+        response = connector._handle_dtmf_input(conversation_id, message_data, bot_id, session_id, "TestBot")
+        
+        # Verify transfer response
+        assert response["message_type"] == "transfer"
+        assert "output_events" in response
+        assert response["output_events"][0]["event_type"] == "TRANSFER_TO_HUMAN"
+        
+        # Verify conversation state was reset
+        assert conversation_id not in connector.conversations_with_start_of_input
+
+    def test_reset_integration_with_dtmf_goodbye(self, connector):
+        """Test that conversation reset works correctly with DTMF goodbye."""
+        conversation_id = "test_conv_794"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Create DTMF message with goodbye code (6)
+        message_data = {
+            "input_type": "dtmf",
+            "dtmf_data": {"dtmf_events": [6]}
+        }
+        
+        # Process DTMF input
+        response = connector._handle_dtmf_input(conversation_id, message_data, bot_id, session_id, "TestBot")
+        
+        # Verify goodbye response
+        assert response["message_type"] == "goodbye"
+        assert "output_events" in response
+        assert response["output_events"][0]["event_type"] == "CONVERSATION_END"
+        
+        # Verify conversation state was reset
+        assert conversation_id not in connector.conversations_with_start_of_input
+
+    def test_reset_integration_with_text_input(self, connector):
+        """Test that conversation reset works correctly with text input."""
+        conversation_id = "test_conv_795"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": "session_123",
+            "actual_bot_id": "test_bot_123",
+            "bot_name": "TestBot"
+        }
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Process text input
+        response = connector._send_text_to_lex(conversation_id, "Hello")
+        
+        # Verify response
+        assert response["message_type"] == "silence"
+        assert "Processing text input: Hello" in response["text"]
+        
+        # Verify conversation state was reset
+        assert conversation_id not in connector.conversations_with_start_of_input
+
+    def test_reset_integration_with_audio_processing_errors(self, connector, mock_lex_runtime):
+        """Test that conversation reset works correctly even when audio processing errors occur."""
+        conversation_id = "test_conv_796"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        
+        # Add some audio data to buffer
+        audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
+        assert audio_buffer.get_buffer_size() > 0
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Mock Lex runtime to raise an error
+        with patch.object(connector.lex_runtime, 'recognize_utterance', side_effect=ClientError(
+            {'Error': {'Code': 'ValidationException', 'Message': 'Test error'}}, 'recognize_utterance'
+        )):
+            # Process audio - should handle error gracefully
+            responses = list(connector._send_audio_to_lex(conversation_id))
+            
+            # No responses should be yielded due to error
+            assert len(responses) == 0
+            
+            # Verify conversation state was reset despite error
+            assert conversation_id not in connector.conversations_with_start_of_input
+            
+            # Verify audio buffer was reset
+            assert audio_buffer.get_buffer_size() == 0
+
+    def test_reset_integration_with_empty_audio_response(self, connector, mock_lex_runtime):
+        """Test that conversation reset works correctly when Lex returns empty audio."""
+        conversation_id = "test_conv_797"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        
+        # Add some audio data to buffer
+        audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
+        assert audio_buffer.get_buffer_size() > 0
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Mock Lex response with empty audio stream
+        mock_audio_stream = MagicMock()
+        mock_audio_stream.read.return_value = b""  # Empty audio
+        mock_audio_stream.close.return_value = None
+        
+        mock_response = {
+            'audioStream': mock_audio_stream,
+            'messages': 'gAAAAABk...',
+            'inputTranscript': 'gAAAAABk...'
+        }
+        
+        # Mock the decode method
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = ["Test input", [{'content': 'Test response', 'contentType': 'PlainText'}]]
+            
+            # Mock Lex runtime call
+            with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                # Process audio
+                responses = list(connector._send_audio_to_lex(conversation_id))
+                
+                # No responses should be yielded due to empty audio
+                assert len(responses) == 0
+                
+                # Verify conversation state was reset
+                assert conversation_id not in connector.conversations_with_start_of_input
+                
+                # Verify audio buffer was reset
+                assert audio_buffer.get_buffer_size() == 0
+
+    def test_reset_integration_with_no_audio_stream(self, connector, mock_lex_runtime):
+        """Test that conversation reset works correctly when Lex response has no audio stream."""
+        conversation_id = "test_conv_798"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        
+        # Add some audio data to buffer
+        audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
+        assert audio_buffer.get_buffer_size() > 0
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Mock Lex response with no audio stream
+        mock_response = {
+            'messages': 'gAAAAABk...',
+            'inputTranscript': 'gAAAAABk...'
+            # No audioStream field
+        }
+        
+        # Mock the decode method
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = ["Test input", [{'content': 'Test response', 'contentType': 'PlainText'}]]
+            
+            # Mock Lex runtime call
+            with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                # Process audio
+                responses = list(connector._send_audio_to_lex(conversation_id))
+                
+                # No responses should be yielded due to missing audio stream
+                assert len(responses) == 0
+                
+                # Verify conversation state was reset
+                assert conversation_id not in connector.conversations_with_start_of_input
+                
+                # Verify audio buffer was reset
+                assert audio_buffer.get_buffer_size() == 0
+
+    def test_reset_integration_with_unexpected_errors(self, connector, mock_lex_runtime):
+        """Test that conversation reset works correctly when unexpected errors occur."""
+        conversation_id = "test_conv_799"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        
+        # Add some audio data to buffer
+        audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
+        assert audio_buffer.get_buffer_size() > 0
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Mock Lex runtime to raise an unexpected error
+        with patch.object(connector.lex_runtime, 'recognize_utterance', side_effect=Exception("Unexpected error")):
+            # Process audio - should handle error gracefully
+            responses = list(connector._send_audio_to_lex(conversation_id))
+            
+            # No responses should be yielded due to error
+            assert len(responses) == 0
+            
+            # Verify conversation state was reset despite error
+            assert conversation_id not in connector.conversations_with_start_of_input
+            
+            # Verify audio buffer was reset
+            assert audio_buffer.get_buffer_size() == 0
+
+    def test_reset_logging_verification(self, connector):
+        """Test that reset method logs appropriate messages for debugging."""
+        conversation_id = "test_conv_800"
+        
+        # Set up initial state
+        connector.conversations_with_start_of_input.add(conversation_id)
+        
+        # Call the reset method
+        connector._reset_conversation_for_next_input(conversation_id)
+        
+        # Verify appropriate logging occurred
+        connector.logger.info.assert_any_call(
+            f"Reset START_OF_INPUT tracking for conversation {conversation_id} - ready for next audio input cycle"
+        )
+        connector.logger.info.assert_any_call(
+            f"Conversation {conversation_id} reset for next audio input cycle"
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

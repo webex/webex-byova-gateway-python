@@ -420,6 +420,8 @@ class AWSLexConnector(IVendorConnector):
             # Process special DTMF codes
             if "5" in dtmf_string:  # Transfer code
                 self.logger.info(f"DTMF transfer requested for conversation {conversation_id}")
+                # Reset conversation state for next audio input cycle
+                self._reset_conversation_for_next_input(conversation_id)
                 return self.create_transfer_response(
                     conversation_id=conversation_id,
                     text=f"Transferring you from the {bot_name} assistant to a live agent.",
@@ -428,6 +430,8 @@ class AWSLexConnector(IVendorConnector):
                 )
             elif "6" in dtmf_string:  # Goodbye code
                 self.logger.info(f"DTMF goodbye requested for conversation {conversation_id}")
+                # Reset conversation state for next audio input cycle
+                self._reset_conversation_for_next_input(conversation_id)
                 return self.create_goodbye_response(
                     conversation_id=conversation_id,
                     text=f"Goodbye from the {bot_name} assistant. Thank you for your time.",
@@ -508,8 +512,7 @@ class AWSLexConnector(IVendorConnector):
         """
         try:
             # Extract session info
-            session_info = self._get_session_info(conversation_id)
-            if not session_info:
+            if conversation_id not in self._sessions:
                 self.logger.error(f"No session found for conversation {conversation_id}")
                 return self.create_response(
                     conversation_id=conversation_id,
@@ -518,11 +521,13 @@ class AWSLexConnector(IVendorConnector):
                     barge_in_enabled=True,
                     response_type="final"
                 )
-
+            
             self.logger.info(f"Sending text '{text_input}' to Lex for conversation {conversation_id}")
 
             # This is a placeholder for the actual Lex text implementation
             self.logger.info(f"Text functionality not yet fully implemented: {text_input}")
+            # Reset conversation state for next audio input cycle
+            self._reset_conversation_for_next_input(conversation_id)
             # Return a placeholder response until full implementation is complete
             return self.create_response(
                 conversation_id=conversation_id,
@@ -533,6 +538,8 @@ class AWSLexConnector(IVendorConnector):
             )
         except Exception as e:
             self.logger.error(f"Error processing text input: {e}")
+            # Reset conversation state for next audio input cycle
+            self._reset_conversation_for_next_input(conversation_id)
             return self.create_response(
                 conversation_id=conversation_id,
                 message_type="error",
@@ -636,7 +643,7 @@ class AWSLexConnector(IVendorConnector):
                         audio_buffer.reset_buffer()
 
                         # Yield the Lex response
-                        yield self.create_response(
+                        response = self.create_response(
                             conversation_id=conversation_id,
                             message_type="response",
                             text=text_response,
@@ -645,15 +652,24 @@ class AWSLexConnector(IVendorConnector):
                             content_type=content_type,
                             response_type="final"
                         )
+                        
+                        # Reset conversation state for next audio input cycle
+                        self._reset_conversation_for_next_input(conversation_id)
+                        
+                        yield response
                     else:
                         self.logger.warning("Audio stream was empty from Lex")
                         # Reset buffer and log the issue
                         audio_buffer.reset_buffer()
+                        # Reset conversation state for next audio input cycle
+                        self._reset_conversation_for_next_input(conversation_id)
                         self.logger.info("Audio processing completed but no response generated")
                 else:
                     self.logger.error("No audio stream in Lex response")
                     # Reset buffer and log the issue
                     audio_buffer.reset_buffer()
+                    # Reset conversation state for next audio input cycle
+                    self._reset_conversation_for_next_input(conversation_id)
                     self.logger.info("Audio processing completed but no response generated")
 
             except ClientError as e:
@@ -663,6 +679,8 @@ class AWSLexConnector(IVendorConnector):
                 
                 # Reset buffer and log the error
                 audio_buffer.reset_buffer()
+                # Reset conversation state for next audio input cycle
+                self._reset_conversation_for_next_input(conversation_id)
                 self.logger.info("Audio processing failed due to Lex API error, buffer reset")
 
             except Exception as e:
@@ -672,6 +690,8 @@ class AWSLexConnector(IVendorConnector):
                 
                 # Reset buffer and log the error
                 audio_buffer.reset_buffer()
+                # Reset conversation state for next audio input cycle
+                self._reset_conversation_for_next_input(conversation_id)
                 self.logger.info("Audio processing failed due to unexpected error, buffer reset")
 
         except Exception as e:
@@ -908,3 +928,28 @@ class AWSLexConnector(IVendorConnector):
             )
             # Don't raise the exception, continue without buffering
             return False
+
+    def _reset_conversation_for_next_input(self, conversation_id: str) -> None:
+        """
+        Reset the conversation state to prepare for the next audio input cycle.
+        
+        This method should be called after successfully sending a final response to WxCC
+        to prepare the conversation for handling the next round of audio input.
+        
+        Args:
+            conversation_id: Conversation identifier to reset
+        """
+        try:
+            # Remove from START_OF_INPUT tracking to allow new audio input cycle
+            if conversation_id in self.conversations_with_start_of_input:
+                self.conversations_with_start_of_input.remove(conversation_id)
+                self.logger.info(f"Reset START_OF_INPUT tracking for conversation {conversation_id} - ready for next audio input cycle")
+            else:
+                self.logger.debug(f"Conversation {conversation_id} was not in START_OF_INPUT tracking")
+            
+            # Log the successful reset
+            self.logger.info(f"Conversation {conversation_id} reset for next audio input cycle")
+            
+        except Exception as e:
+            self.logger.error(f"Error resetting conversation {conversation_id} for next input: {e}")
+            # Don't raise the exception, continue with conversation
