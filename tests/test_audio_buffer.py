@@ -51,7 +51,7 @@ class TestAudioBuffer:
         assert buffer.bit_depth == 8
         assert buffer.channels == 1
         assert buffer.encoding == "ulaw"
-        assert buffer.on_audio_ready is None
+
         assert buffer.audio_buffer == bytearray()
         assert not buffer.buffering
         assert buffer.waiting_for_speech
@@ -59,7 +59,6 @@ class TestAudioBuffer:
 
     def test_initialization_custom_values(self, temp_dir):
         """Test AudioBuffer initialization with custom values."""
-        mock_callback = Mock()
         buffer = AudioBuffer(
             conversation_id="test_conv",
             max_buffer_size=512*1024,  # 512KB
@@ -70,7 +69,6 @@ class TestAudioBuffer:
             bit_depth=16,
             channels=2,
             encoding="pcm",
-            on_audio_ready=mock_callback,
             logger=Mock()
         )
         
@@ -83,7 +81,7 @@ class TestAudioBuffer:
         assert buffer.bit_depth == 16
         assert buffer.channels == 2
         assert buffer.encoding == "pcm"
-        assert buffer.on_audio_ready == mock_callback
+
 
     def test_start_buffering(self, basic_buffer):
         """Test starting a buffering session."""
@@ -177,8 +175,8 @@ class TestAudioBuffer:
         basic_buffer.clear_buffer()
         assert len(basic_buffer.audio_buffer) == 0
 
-    def test_reset_after_callback(self, basic_buffer):
-        """Test resetting the buffer after a callback."""
+    def test_reset_buffer(self, basic_buffer):
+        """Test resetting the buffer after processing audio."""
         # Manually set the buffer to buffering state to test the reset functionality
         basic_buffer.start_buffering()
         basic_buffer.audio_buffer.extend(b"test data")
@@ -188,8 +186,8 @@ class TestAudioBuffer:
         assert basic_buffer.waiting_for_speech  # start_buffering puts us in waiting mode
         assert basic_buffer.get_buffer_size() > 0
         
-        # Reset after callback
-        basic_buffer.reset_after_callback()
+        # Reset buffer
+        basic_buffer.reset_buffer()
         
         # Verify we're back to waiting for speech state
         assert not basic_buffer.is_buffering()
@@ -236,33 +234,7 @@ class TestAudioBuffer:
         assert "channels" in stats
         assert "encoding" in stats
 
-    def test_trigger_audio_ready_callback_manually_no_callback(self, basic_buffer):
-        """Test manual callback trigger when no callback is set."""
-        basic_buffer.audio_buffer.extend(b"test data")
-        result = basic_buffer.trigger_audio_ready_callback_manually()
-        
-        assert result is False
 
-    def test_trigger_audio_ready_callback_manually_with_callback(self, basic_buffer):
-        """Test manual callback trigger when callback is set."""
-        mock_callback = Mock()
-        basic_buffer.on_audio_ready = mock_callback
-        basic_buffer.audio_buffer.extend(b"test data")
-        
-        result = basic_buffer.trigger_audio_ready_callback_manually()
-        
-        assert result is True
-        mock_callback.assert_called_once_with("test_conv_123", b"test data")
-
-    def test_trigger_audio_ready_callback_manually_empty_buffer(self, basic_buffer):
-        """Test manual callback trigger when buffer is empty."""
-        mock_callback = Mock()
-        basic_buffer.on_audio_ready = mock_callback
-        
-        result = basic_buffer.trigger_audio_ready_callback_manually()
-        
-        assert result is False
-        mock_callback.assert_not_called()
 
     def test_get_frame_size_ulaw(self, basic_buffer):
         """Test frame size calculation for u-law encoding."""
@@ -353,8 +325,6 @@ class TestAudioBuffer:
 
     def test_check_silence_timeout_silence_exceeded(self, basic_buffer):
         """Test silence timeout check when silence duration is exceeded."""
-        mock_callback = Mock()
-        basic_buffer.on_audio_ready = mock_callback
         basic_buffer.start_buffering()
         basic_buffer.audio_buffer.extend(b"test data")
         
@@ -365,7 +335,6 @@ class TestAudioBuffer:
         
         assert result["silence_detected"] is True
         assert result["buffering_continues"] is False
-        mock_callback.assert_called_once()
 
     def test_check_silence_timeout_silence_not_exceeded(self, basic_buffer):
         """Test silence timeout check when silence duration is not exceeded."""
@@ -380,17 +349,15 @@ class TestAudioBuffer:
         assert result["silence_detected"] is False
         assert result["buffering_continues"] is True
 
-    def test_add_audio_data_with_callback_trigger(self, basic_buffer):
-        """Test that adding audio data can trigger callback when silence is detected."""
-        mock_callback = Mock()
-        basic_buffer.on_audio_ready = mock_callback
+    def test_add_audio_data_with_silence_detection(self, basic_buffer):
+        """Test that adding audio data can detect silence when threshold is reached."""
         basic_buffer.start_buffering()
         
         # Add some speech data first (enough to meet frame size requirement)
         speech_data = bytes([0, 50, 100, 150, 200, 250, 1, 99] * 20)  # 160 bytes
         basic_buffer.add_audio_data(speech_data, "ulaw")
         
-        # Now add silence data that should trigger callback
+        # Now add silence data that should trigger silence detection
         silence_data = bytes([0xFF, 127, 0xFF, 126, 0xFF, 128, 0xFF, 127] * 20)  # 160 bytes
         
         # Set last_audio_time to a value that will exceed silence_duration when time.time() is called
@@ -398,6 +365,5 @@ class TestAudioBuffer:
         
         result = basic_buffer.add_audio_data(silence_data, "ulaw")
         
-        # Should return False and trigger callback
+        # Should detect silence
         assert result["silence_detected"] is True
-        mock_callback.assert_called_once()

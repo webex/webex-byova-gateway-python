@@ -96,8 +96,7 @@ class AWSLexConnector(IVendorConnector):
             "quiet_threshold": 20        # Moderate quiet detection
         })
 
-        # Track which conversations have already triggered callbacks to prevent duplicates
-        self.conversations_with_callbacks = set()
+
 
         # Track which conversations have already sent START_OF_INPUT event
         self.conversations_with_start_of_input = set()
@@ -589,10 +588,7 @@ class AWSLexConnector(IVendorConnector):
             except Exception as e:
                 self.logger.error(f"Error stopping audio buffering for conversation {conversation_id}: {e}")
 
-        # Clean up callback tracking
-        if conversation_id in self.conversations_with_callbacks:
-            del self.conversations_with_callbacks[conversation_id]
-            self.logger.debug(f"Cleaned up callback tracking for conversation {conversation_id}")
+
 
         # Clean up START_OF_INPUT tracking
         if conversation_id in self.conversations_with_start_of_input:
@@ -656,7 +652,7 @@ class AWSLexConnector(IVendorConnector):
             silence_duration = self.audio_buffering_config.get("silence_duration", 2.0)
             quiet_threshold = self.audio_buffering_config.get("quiet_threshold", 20)
 
-            # Create audio buffer with callback
+            # Create audio buffer
             self.audio_buffers[conversation_id] = AudioBuffer(
                 conversation_id=conversation_id,
                 silence_threshold=silence_threshold,
@@ -666,7 +662,7 @@ class AWSLexConnector(IVendorConnector):
                 bit_depth=8,       # WxCC compatible bit depth
                 channels=1,        # WxCC compatible channels
                 encoding="ulaw",   # WxCC compatible encoding
-                on_audio_ready=self._on_audio_ready_callback,
+
                 logger=self.logger,
             )
 
@@ -679,56 +675,7 @@ class AWSLexConnector(IVendorConnector):
             self.logger.error(f"Failed to initialize audio buffer: {e}")
             # Don't raise the exception, continue without buffering
 
-    def _on_audio_ready_callback(self, conversation_id: str, audio_data: bytes) -> None:
-        # Prevent multiple callbacks for the same conversation
-        if conversation_id in self.conversations_with_callbacks:
-            self.logger.warning(f"Callback already triggered for conversation {conversation_id}, ignoring duplicate")
-            return
-            
-        # Mark this conversation as having triggered a callback
-        self.conversations_with_callbacks.add(conversation_id)
-        self.logger.info(f"🎯 AUDIO READY CALLBACK TRIGGERED for conversation {conversation_id}!")
-        try:
-            # Log information about the buffered audio
-            buffer_size = len(audio_data)
-            
-            # Calculate estimated duration at different sample rates
-            duration_8khz = buffer_size / 8000
-            duration_16khz = buffer_size / 16000
-            
-            # Detect actual audio encoding using audio utilities
-            from ..utils.audio_utils import AudioConverter
-            audio_converter = AudioConverter(self.logger)
-            detected_encoding = audio_converter.detect_audio_encoding(audio_data)
-            
-            # Log detailed audio format information
-            self.logger.info(
-                f"Audio segment ready for conversation {conversation_id}: "
-                f"Size: {buffer_size} bytes, "
-                f"Duration: ~{duration_8khz:.2f}s (8kHz) / ~{duration_16khz:.2f}s (16kHz), "
-                f"Detected format: {detected_encoding}, "
-                f"Ready to send to AWS Lex"
-            )
-            
-            # Log additional format details
-            self.logger.info(
-                f"Audio format details for conversation {conversation_id}: "
-                f"Raw data length: {buffer_size} bytes, "
-                f"Sample rate compatibility: 8kHz ({duration_8khz:.2f}s) / 16kHz ({duration_16khz:.2f}s), "
-                f"Data type: bytes, "
-                f"Detected encoding: {detected_encoding}"
-            )
-            
-            # TODO: Send audio_data to AWS Lex here
-            # For now, just log that we would send it
-            self.logger.info(
-                f"Would send {buffer_size} bytes of audio to AWS Lex for conversation {conversation_id}"
-            )
-            
-        except Exception as e:
-            self.logger.error(
-                f"Error in audio ready callback for conversation {conversation_id}: {e}"
-            )
+
 
 
 

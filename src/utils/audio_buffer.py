@@ -33,7 +33,6 @@ class AudioBuffer:
         bit_depth: int = 8,
         channels: int = 1,
         encoding: str = "ulaw",
-        on_audio_ready: Optional[callable] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         """
@@ -43,13 +42,12 @@ class AudioBuffer:
             conversation_id: Unique identifier for the conversation
             max_buffer_size: Maximum buffer size in bytes (default: 1MB)
             silence_threshold: Amplitude threshold for silence detection
-            silence_duration: Amount of silence (in seconds) before triggering callback
+            silence_duration: Amount of silence (in seconds) before considering audio ready
             quiet_threshold: How far from 127 (quiet background) to consider "silence" (default: 20)
             sample_rate: Audio sample rate in Hz
             bit_depth: Audio bit depth
             channels: Number of audio channels
             encoding: Audio encoding format
-            on_audio_ready: Callback function called when silence threshold is reached
             logger: Optional logger instance
         """
         self.logger = logger or logging.getLogger(__name__)
@@ -62,7 +60,7 @@ class AudioBuffer:
         self.bit_depth = bit_depth
         self.channels = channels
         self.encoding = encoding
-        self.on_audio_ready = on_audio_ready
+
 
         # Internal state
         self.audio_buffer = bytearray()
@@ -215,18 +213,20 @@ class AudioBuffer:
                             f"triggering audio ready callback"
                         )
                         
-                        # Get the audio data before clearing (make a copy)
-                        audio_data = bytes(self.audio_buffer) if self.audio_buffer else None
+                        # Silence threshold reached - audio is ready for processing
+                        # The caller should check silence_detected and call get_buffered_audio()
+                        self.logger.info(
+                            f"Silence threshold reached for conversation {self.conversation_id}, "
+                            f"audio ready for processing"
+                        )
                         
-                        # Clear the buffer before triggering callback (to prevent double-processing)
-                        self.clear_buffer()
-                        
-                        # Trigger the callback
-                        if audio_data:
-                            self._trigger_audio_ready_callback(audio_data)
-                        
-                        # Reset the buffer to waiting for speech state after callback
-                        self.reset_after_callback()
+                        return {
+                            "buffering_continues": False,
+                            "silence_detected": True,
+                            "buffer_size": len(self.audio_buffer),
+                            "speech_detected": self.speech_detected,
+                            "waiting_for_speech": False
+                        }
                         
                         return {
                             "buffering_continues": False,
@@ -295,18 +295,20 @@ class AudioBuffer:
                 f"triggering audio ready callback"
             )
             
-            # Get the audio data before clearing (make a copy)
-            audio_data = bytes(self.audio_buffer) if self.audio_buffer else None
+            # Silence timeout reached - audio is ready for processing
+            # The caller should check silence_detected and call get_buffered_audio()
+            self.logger.info(
+                f"Silence timeout reached for conversation {self.conversation_id}, "
+                f"audio ready for processing"
+            )
             
-            # Clear the buffer
-            self.clear_buffer()
-            
-            # Trigger the callback
-            if audio_data:
-                self._trigger_audio_ready_callback(audio_data)
-            
-            # Reset the buffer to waiting for speech state after callback
-            self.reset_after_callback()
+            return {
+                "buffering_continues": False,
+                "silence_detected": True,
+                "buffer_size": len(self.audio_buffer),
+                "speech_detected": self.speech_detected,
+                "waiting_for_speech": False
+            }
             
             return {
                 "buffering_continues": False,
@@ -431,21 +433,6 @@ class AudioBuffer:
         # TODO: Implement proper PCM silence detection if needed
         return False
 
-    def _trigger_audio_ready_callback(self, audio_data: bytes) -> None:
-        """
-        Internal method to trigger the audio ready callback.
-        
-        Args:
-            audio_data: The audio data that is ready for processing
-        """
-        if self.on_audio_ready and audio_data:
-            try:
-                self.on_audio_ready(self.conversation_id, audio_data)
-                self.logger.debug(
-                    f"Successfully triggered audio ready callback for conversation {self.conversation_id}"
-                )
-            except Exception as e:
-                self.logger.error(f"Error in on_audio_ready callback: {e}")
 
     def get_buffered_audio(self) -> Optional[bytes]:
         """
@@ -480,16 +467,16 @@ class AudioBuffer:
         """
         Clear the audio buffer.
         
-        This method is useful for resetting the buffer without triggering callbacks.
+        This method is useful for resetting the buffer without changing buffering state.
         """
         self.audio_buffer = bytearray()
         self.logger.debug(f"Cleared audio buffer for conversation {self.conversation_id}")
 
-    def reset_after_callback(self) -> None:
+    def reset_buffer(self) -> None:
         """
-        Reset the buffer to its initial state after a callback has been triggered.
+        Reset the buffer to its initial state after processing audio.
         
-        This method should be called after the audio ready callback to prepare
+        This method should be called after processing the buffered audio to prepare
         the buffer for detecting the next speech segment.
         """
         self.buffering = False
@@ -547,22 +534,4 @@ class AudioBuffer:
             "encoding": self.encoding
         }
 
-    def trigger_audio_ready_callback_manually(self) -> bool:
-        """
-        Manually trigger the audio ready callback with current buffer data.
-        
-        This is useful when you want to process audio immediately without waiting
-        for silence detection.
-        
-        Returns:
-            True if callback was triggered, False if no callback or no data
-        """
-        if self.on_audio_ready and self.audio_buffer:
-            audio_data = self.get_buffered_audio()
-            if audio_data:
-                try:
-                    self.on_audio_ready(self.conversation_id, audio_data)
-                    return True
-                except Exception as e:
-                    self.logger.error(f"Error in on_audio_ready callback: {e}")
-        return False
+
