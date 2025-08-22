@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Iterator
 
 from .i_vendor_connector import IVendorConnector
 from ..utils.audio_buffer import AudioBuffer
-from ..utils.audio_utils import convert_aws_lex_audio_to_wxcc
+from ..utils.audio_utils import convert_aws_lex_audio_to_wxcc, convert_wxcc_audio_to_lex_format
 
 
 class AWSLexConnector(IVendorConnector):
@@ -487,7 +487,8 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.info(f"Silence threshold detected, sending END_OF_INPUT event for conversation {conversation_id}")
                 yield self.create_end_of_input_response(conversation_id)
 
-                # TODO: Send audio to AWS Lex here
+                # Send buffered audio to AWS Lex
+                yield from self._send_audio_to_lex(conversation_id)
 
                 return
 
@@ -539,6 +540,182 @@ class AWSLexConnector(IVendorConnector):
                 barge_in_enabled=True,
                 response_type="final"
             )
+
+    def _send_audio_to_lex(self, conversation_id: str) -> Iterator[Dict[str, Any]]:
+        """
+        Send buffered audio to AWS Lex and process the response.
+
+        Args:
+            conversation_id: Conversation identifier
+
+        Yields:
+            Responses from Lex containing audio and text
+        """
+        try:
+            # Get session info
+            if conversation_id not in self._sessions:
+                self.logger.error(f"No session found for conversation {conversation_id}")
+                return
+
+            session_info = self._sessions[conversation_id]
+
+            # Get the audio buffer for this conversation
+            if conversation_id not in self.audio_buffers:
+                self.logger.error(f"No audio buffer found for conversation {conversation_id}")
+                return
+
+            audio_buffer = self.audio_buffers[conversation_id]
+            buffered_audio = audio_buffer.get_buffered_audio()
+
+            if not buffered_audio:
+                self.logger.warning(f"No audio data in buffer for conversation {conversation_id}")
+                return
+
+            self.logger.info(f"Processing {len(buffered_audio)} bytes of audio for conversation {conversation_id}")
+
+            # Extract session details
+            bot_id = session_info.get("actual_bot_id")
+            session_id = session_info.get("session_id")
+
+            # Send audio to AWS Lex
+            try:
+                # Convert WxCC u-law audio to 16-bit PCM at 16kHz for AWS Lex
+                pcm_audio = convert_wxcc_audio_to_lex_format(buffered_audio)
+                
+                self.logger.info(f"Converted {len(buffered_audio)} bytes u-law to {len(pcm_audio)} bytes 16-bit PCM at 16kHz")
+
+                response = self.lex_runtime.recognize_utterance(
+                    botId=bot_id,
+                    botAliasId=self.bot_alias_id,
+                    localeId='en_US',
+                    sessionId=session_id,
+                    requestContentType='audio/l16; rate=16000; channels=1',  # 16-bit PCM, 16kHz, little-endian
+                    responseContentType='audio/pcm',
+                    inputStream=pcm_audio
+                )
+
+                self.logger.info(f"Lex API response received for audio input: {type(response)}")
+
+                # Log decoded input transcript and messages for debugging
+                input_transcript_data = self._decode_lex_response('inputTranscript', response)
+                if input_transcript_data is None:
+                    self.logger.warning("No input transcript generated - audio may have quality issues")
+
+                messages_data = self._decode_lex_response('messages', response)
+                if messages_data is None:
+                    self.logger.info("No messages in response")
+
+                # Extract audio response
+                audio_stream = response.get('audioStream')
+                if audio_stream:
+                    self.logger.info(f"Audio stream found: {type(audio_stream)}")
+                    audio_response = audio_stream.read()
+                    audio_stream.close()
+                    self.logger.info(f"Received audio response from Lex (size: {len(audio_response)} bytes)")
+
+                    if audio_response:
+                        self.logger.info("Audio content is valid, processing Lex response")
+
+                        # Convert AWS Lex audio to WxCC-compatible format
+                        wav_audio, content_type = convert_aws_lex_audio_to_wxcc(
+                            audio_response,
+                            bit_depth=16  # Lex returns 16-bit PCM
+                        )
+
+                        # Extract text from response if available
+                        text_response = "I heard your audio input and processed it."
+                        if messages_data and len(messages_data) > 0:
+                            first_message = messages_data[0]
+                            if 'content' in first_message:
+                                text_response = first_message['content']
+                                self.logger.info(f"Extracted text response: {text_response}")
+                        else:
+                            self.logger.info("No text content found in messages, using generic response")
+
+                        # Reset the buffer after successful processing
+                        audio_buffer.reset_buffer()
+
+                        # Yield the Lex response
+                        yield self.create_response(
+                            conversation_id=conversation_id,
+                            message_type="response",
+                            text=text_response,
+                            audio_content=wav_audio,
+                            barge_in_enabled=True,
+                            content_type=content_type,
+                            response_type="final"
+                        )
+                    else:
+                        self.logger.warning("Audio stream was empty from Lex")
+                        # Reset buffer and log the issue
+                        audio_buffer.reset_buffer()
+                        self.logger.info("Audio processing completed but no response generated")
+                else:
+                    self.logger.error("No audio stream in Lex response")
+                    # Reset buffer and log the issue
+                    audio_buffer.reset_buffer()
+                    self.logger.info("Audio processing completed but no response generated")
+
+            except ClientError as e:
+                error_code = e.response['Error']['Code']
+                error_message = e.response['Error']['Message']
+                self.logger.error(f"Lex API error during audio processing: {error_code} - {error_message}")
+                
+                # Reset buffer and log the error
+                audio_buffer.reset_buffer()
+                self.logger.info("Audio processing failed due to Lex API error, buffer reset")
+
+            except Exception as e:
+                self.logger.error(f"Unexpected error during audio processing: {e}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                
+                # Reset buffer and log the error
+                audio_buffer.reset_buffer()
+                self.logger.info("Audio processing failed due to unexpected error, buffer reset")
+
+        except Exception as e:
+            self.logger.error(f"Error in _send_audio_to_lex: {e}")
+            self.logger.info("Audio processing failed, no response generated")
+
+    def _decode_lex_response(self, field_name: str, response) -> any:
+        """
+        Decode a compressed field from AWS Lex response.
+        
+        Args:
+            field_name: Name of the field to decode (e.g., 'inputTranscript', 'messages')
+            response: AWS Lex response object or dictionary
+        
+        Returns:
+            Decoded data or None if field doesn't exist or decoding fails
+        """
+        try:
+            import base64
+            import gzip
+            import json
+            
+            # Try to get the field value from both formats
+            field_value = None
+            if hasattr(response, field_name) and getattr(response, field_name):
+                field_value = getattr(response, field_name)
+            elif isinstance(response, dict) and response.get(field_name):
+                field_value = response[field_name]
+            
+            if not field_value:
+                return None
+            
+            # Decode the compressed field
+            decoded_bytes = base64.b64decode(field_value)
+            decompressed = gzip.decompress(decoded_bytes)
+            decoded_data = json.loads(decompressed)
+            
+            self.logger.info(f"Decoded {field_name}: {decoded_data}")
+            return decoded_data
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to decode {field_name}: {e}")
+            self.logger.info(f"Raw {field_name}: {field_value}")
+            return None
 
     def end_conversation(self, conversation_id: str, message_data: Dict[str, Any] = None) -> None:
         """
