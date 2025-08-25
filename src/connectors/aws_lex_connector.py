@@ -343,7 +343,7 @@ class AWSLexConnector(IVendorConnector):
         Returns:
             Iterator yielding responses from Lex containing audio and text
         """
-        self.logger.info(f"Processing message for conversation {conversation_id}, input_type: {message_data.get('input_type')}")
+        self.logger.debug(f"Processing message for conversation {conversation_id}, input_type: {message_data.get('input_type')}")
 
         # Log relevant parts of message_data without audio bytes
         log_data = {
@@ -611,6 +611,38 @@ class AWSLexConnector(IVendorConnector):
                 messages_data = self._decode_lex_response('messages', response)
                 if messages_data is None:
                     self.logger.info("No messages in response")
+
+                # Log key Lex V2 response fields for conversation state monitoring
+                interpretations_data = self._decode_lex_response('interpretations', response)
+                if interpretations_data is None:
+                    self.logger.info("No interpretations in response")
+                else:
+                    self.logger.info(f"Interpretations found: {len(interpretations_data)} interpretation(s)")
+                    for i, interpretation in enumerate(interpretations_data):
+                        intent = interpretation.get('intent', {})
+                        intent_name = intent.get('name', 'unknown')
+                        intent_state = intent.get('state', 'unknown')
+                        confidence = interpretation.get('nluConfidence', {}).get('score', 'unknown')
+                        self.logger.info(f"  Interpretation {i+1}: Intent='{intent_name}', State='{intent_state}', Confidence={confidence}")
+
+                session_state_data = self._decode_lex_response('sessionState', response)
+                if session_state_data is None:
+                    self.logger.info("No session state in response")
+                else:
+                    self.logger.info(f"Session state: {session_state_data}")
+                    # Extract key session state info
+                    dialog_action = session_state_data.get('dialogAction', {})
+                    if dialog_action:
+                        action_type = dialog_action.get('type', 'unknown')
+                        self.logger.info(f"Dialog action type: {action_type}")
+                    
+                    # Log active contexts if any
+                    active_contexts = session_state_data.get('activeContexts', [])
+                    if active_contexts:
+                        self.logger.info(f"Active contexts: {len(active_contexts)} context(s)")
+                        for context in active_contexts:
+                            context_name = context.get('name', 'unknown')
+                            self.logger.info(f"  Context: {context_name}")
 
                 # Extract audio response
                 audio_stream = response.get('audioStream')
