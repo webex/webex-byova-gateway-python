@@ -101,11 +101,11 @@ class AWSLexConnector(IVendorConnector):
         # Track which conversations have already sent START_OF_INPUT event
         self.conversations_with_start_of_input = set()
 
-        self.logger.info("Caller audio buffering is enabled")
+        self.logger.debug("Caller audio buffering is enabled")
 
         self.logger.info(f"AWSLexConnector initialized for region: {self.region_name}")
         self.logger.info(f"Bot alias ID: {self.bot_alias_id}")
-        self.logger.info("Audio conversion to WAV format: Always enabled (WxCC requirement)")
+        self.logger.debug("Audio conversion to WAV format: Always enabled (WxCC requirement)")
 
     def _init_aws_clients(self) -> None:
         """Initialize AWS Lex clients."""
@@ -117,17 +117,17 @@ class AWSLexConnector(IVendorConnector):
                     aws_secret_access_key=self.aws_secret_access_key,
                     region_name=self.region_name
                 )
-                self.logger.info("Using explicit AWS credentials")
+                self.logger.debug("Using explicit AWS credentials")
             else:
                 # Use default credential chain
                 session = boto3.Session(region_name=self.region_name)
-                self.logger.info("Using default AWS credential chain")
+                self.logger.debug("Using default AWS credential chain")
 
             # Initialize clients
             self.lex_client = session.client('lexv2-models')  # For bot managemen
             self.lex_runtime = session.client('lexv2-runtime')  # For conversations
 
-            self.logger.info("AWS Lex clients initialized successfully")
+            self.logger.debug("AWS Lex clients initialized successfully")
 
         except Exception as e:
             self.logger.error(f"Failed to initialize AWS clients: {e}")
@@ -142,7 +142,7 @@ class AWSLexConnector(IVendorConnector):
         """
         if self._available_bots is None:
             try:
-                self.logger.info("Fetching available Lex bots...")
+                self.logger.debug("Fetching available Lex bots...")
 
                 # List all bots in the region
                 response = self.lex_client.list_bots()
@@ -162,7 +162,7 @@ class AWSLexConnector(IVendorConnector):
 
                 self._available_bots = bot_identifiers
                 self.logger.info(f"Found {len(bot_identifiers)} available Lex bots: {bot_identifiers}")
-                self.logger.info(f"Bot mappings: {self._bot_name_to_id_map}")
+                self.logger.debug(f"Bot mappings: {self._bot_name_to_id_map}")
 
             except ClientError as e:
                 error_code = e.response['Error']['Code']
@@ -210,7 +210,7 @@ class AWSLexConnector(IVendorConnector):
             }
 
             self.logger.info(f"Started Lex conversation: {conversation_id} with bot: {bot_name} (ID: {actual_bot_id})")
-            self.logger.info(f"Using bot alias: {self.bot_alias_id}")
+            self.logger.debug(f"Using bot alias: {self.bot_alias_id}")
 
             # Send initial text to Lex and get audio response
             try:
@@ -218,7 +218,7 @@ class AWSLexConnector(IVendorConnector):
                 text_input = "I need to book a hotel room"
                 text_bytes = text_input.encode('utf-8')
 
-                self.logger.info(f"Sending initial text to Lex: '{text_input}'")
+                self.logger.debug(f"Sending initial text to Lex: '{text_input}'")
 
                 response = self.lex_runtime.recognize_utterance(
                     botId=actual_bot_id,
@@ -230,19 +230,19 @@ class AWSLexConnector(IVendorConnector):
                     inputStream=text_bytes
                 )
 
-                self.logger.info(f"Lex API response received: {type(response)}")
-                self.logger.info(f"Lex API response keys: {list(response.keys()) if hasattr(response, 'keys') else 'No keys'}")
+                self.logger.debug(f"Lex API response received: {type(response)}")
+                self.logger.debug(f"Lex API response keys: {list(response.keys()) if hasattr(response, 'keys') else 'No keys'}")
 
                 # Extract audio response
                 audio_stream = response.get('audioStream')
                 if audio_stream:
-                    self.logger.info(f"Audio stream found: {type(audio_stream)}")
+                    self.logger.debug(f"Audio stream found: {type(audio_stream)}")
                     audio_response = audio_stream.read()
                     audio_stream.close()
-                    self.logger.info(f"Received audio response from Lex (size: {len(audio_response)} bytes)")
+                    self.logger.info(f"Received audio response: {len(audio_response)} bytes")
 
                     if audio_response:
-                        self.logger.info("Audio content is valid, returning response with audio")
+                        self.logger.debug("Audio content is valid, returning response with audio")
 
                         # Use the audio utility to convert AWS Lex audio to WxCC-compatible forma
                         # AWS Lex returns 16kHz, 16-bit PCM, but WxCC expects 8kHz, 8-bit u-law
@@ -274,7 +274,7 @@ class AWSLexConnector(IVendorConnector):
                     self.logger.error("No audio stream in Lex response")
                     # Check if there are other fields in the response
                     if hasattr(response, 'messages'):
-                        self.logger.info(f"Lex messages: {response.messages}")
+                        self.logger.debug(f"Lex messages: {response.messages}")
                     if hasattr(response, 'intentName'):
                         self.logger.info(f"Lex intent: {response.intentName}")
 
@@ -440,7 +440,7 @@ class AWSLexConnector(IVendorConnector):
                 )
             else:
                 # For other DTMF digits, send to Lex as tex
-                self.logger.info(f"Sending DTMF {dtmf_string} to Lex for conversation {conversation_id}")
+                self.logger.debug(f"Sending DTMF {dtmf_string} to Lex for conversation {conversation_id}")
                 # Convert DTMF to a more meaningful input for Lex
                 text_input = f"DTMF {dtmf_string}"
                 return self._send_text_to_lex(conversation_id, text_input)
@@ -473,7 +473,7 @@ class AWSLexConnector(IVendorConnector):
 
             # Check if START_OF_INPUT event has been sent, if not send it
             if conversation_id not in self.conversations_with_start_of_input:
-                self.logger.info(f"Sending START_OF_INPUT event for conversation {conversation_id}")
+                self.logger.debug(f"Sending START_OF_INPUT event for conversation {conversation_id}")
                 self.conversations_with_start_of_input.add(conversation_id)
                 
                 yield self.create_start_of_input_response(conversation_id)
@@ -488,7 +488,7 @@ class AWSLexConnector(IVendorConnector):
 
             # Check if silence threshold was detected, if so send END_OF_INPUT event
             if silence_detected:
-                self.logger.info(f"Silence threshold detected, sending END_OF_INPUT event for conversation {conversation_id}")
+                self.logger.debug(f"Silence threshold detected, sending END_OF_INPUT event for next audio input cycle")
                 yield self.create_end_of_input_response(conversation_id)
 
                 # Send buffered audio to AWS Lex
@@ -522,10 +522,10 @@ class AWSLexConnector(IVendorConnector):
                     response_type="final"
                 )
             
-            self.logger.info(f"Sending text '{text_input}' to Lex for conversation {conversation_id}")
+            self.logger.debug(f"Sending text '{text_input}' to Lex for conversation {conversation_id}")
 
             # This is a placeholder for the actual Lex text implementation
-            self.logger.info(f"Text functionality not yet fully implemented: {text_input}")
+            self.logger.debug(f"Text functionality not yet fully implemented: {text_input}")
             # Reset conversation state for next audio input cycle
             self._reset_conversation_for_next_input(conversation_id)
             # Return a placeholder response until full implementation is complete
@@ -578,7 +578,7 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.warning(f"No audio data in buffer for conversation {conversation_id}")
                 return
 
-            self.logger.info(f"Processing {len(buffered_audio)} bytes of audio for conversation {conversation_id}")
+            self.logger.debug(f"Processing {len(buffered_audio)} bytes of audio for conversation {conversation_id}")
 
             # Extract session details
             bot_id = session_info.get("actual_bot_id")
@@ -589,7 +589,7 @@ class AWSLexConnector(IVendorConnector):
                 # Convert WxCC u-law audio to 16-bit PCM at 16kHz for AWS Lex
                 pcm_audio = convert_wxcc_audio_to_lex_format(buffered_audio)
                 
-                self.logger.info(f"Converted {len(buffered_audio)} bytes u-law to {len(pcm_audio)} bytes 16-bit PCM at 16kHz")
+                self.logger.debug(f"Converted {len(buffered_audio)} bytes u-law to {len(pcm_audio)} bytes 16-bit PCM at 16kHz")
 
                 response = self.lex_runtime.recognize_utterance(
                     botId=bot_id,
@@ -601,7 +601,7 @@ class AWSLexConnector(IVendorConnector):
                     inputStream=pcm_audio
                 )
 
-                self.logger.info(f"Lex API response received for audio input: {type(response)}")
+                self.logger.debug(f"Lex API response received for audio input: {type(response)}")
 
                 # Log decoded input transcript and messages for debugging
                 input_transcript_data = self._decode_lex_response('inputTranscript', response)
@@ -610,50 +610,56 @@ class AWSLexConnector(IVendorConnector):
 
                 messages_data = self._decode_lex_response('messages', response)
                 if messages_data is None:
-                    self.logger.info("No messages in response")
+                    self.logger.debug("No messages in response")
 
                 # Log key Lex V2 response fields for conversation state monitoring
                 interpretations_data = self._decode_lex_response('interpretations', response)
                 if interpretations_data is None:
-                    self.logger.info("No interpretations in response")
+                    self.logger.debug("No interpretations in response")
                 else:
-                    self.logger.info(f"Interpretations found: {len(interpretations_data)} interpretation(s)")
-                    for i, interpretation in enumerate(interpretations_data):
+                    # Consolidate interpretation logging into a single INFO log with summary
+                    interpretation_summary = []
+                    for interpretation in interpretations_data:
                         intent = interpretation.get('intent', {})
                         intent_name = intent.get('name', 'unknown')
                         intent_state = intent.get('state', 'unknown')
                         confidence = interpretation.get('nluConfidence', {}).get('score', 'unknown')
-                        self.logger.info(f"  Interpretation {i+1}: Intent='{intent_name}', State='{intent_state}', Confidence={confidence}")
+                        interpretation_summary.append(f"{intent_name}({intent_state}, conf:{confidence})")
+                    
+                    self.logger.info(f"Lex response: {len(interpretations_data)} interpretation(s) - {', '.join(interpretation_summary)}")
+                    self.logger.debug(f"Full interpretation details: {interpretations_data}")
 
                 session_state_data = self._decode_lex_response('sessionState', response)
                 if session_state_data is None:
-                    self.logger.info("No session state in response")
+                    self.logger.debug("No session state in response")
                 else:
-                    self.logger.info(f"Session state: {session_state_data}")
-                    # Extract key session state info
+                    # Extract key session state info for INFO level logging
                     dialog_action = session_state_data.get('dialogAction', {})
-                    if dialog_action:
-                        action_type = dialog_action.get('type', 'unknown')
-                        self.logger.info(f"Dialog action type: {action_type}")
+                    action_type = dialog_action.get('type', 'unknown') if dialog_action else 'none'
                     
-                    # Log active contexts if any
+                    # Log active contexts count
                     active_contexts = session_state_data.get('activeContexts', [])
+                    
+                    # Provide summary at INFO level, full details at DEBUG level
+                    self.logger.info(f"Session state: dialog_action={action_type}, contexts={len(active_contexts)}")
+                    self.logger.debug(f"Full session state: {session_state_data}")
+                    
+                    # Log individual context names at DEBUG level
                     if active_contexts:
-                        self.logger.info(f"Active contexts: {len(active_contexts)} context(s)")
                         for context in active_contexts:
                             context_name = context.get('name', 'unknown')
-                            self.logger.info(f"  Context: {context_name}")
+                            self.logger.debug(f"  Context: {context_name}")
 
                 # Extract audio response
                 audio_stream = response.get('audioStream')
                 if audio_stream:
-                    self.logger.info(f"Audio stream found: {type(audio_stream)}")
+                    self.logger.debug(f"Audio stream found: {type(audio_stream)}")
                     audio_response = audio_stream.read()
                     audio_stream.close()
-                    self.logger.info(f"Received audio response from Lex (size: {len(audio_response)} bytes)")
+                    self.logger.info(f"Received audio response: {len(audio_response)} bytes")
 
                     if audio_response:
-                        self.logger.info("Audio content is valid, processing Lex response")
+                        self.logger.debug("Audio content is valid, processing Lex response")
 
                         # Convert AWS Lex audio to WxCC-compatible format
                         wav_audio, content_type = convert_aws_lex_audio_to_wxcc(
@@ -667,9 +673,9 @@ class AWSLexConnector(IVendorConnector):
                             first_message = messages_data[0]
                             if 'content' in first_message:
                                 text_response = first_message['content']
-                                self.logger.info(f"Extracted text response: {text_response}")
+                                self.logger.debug(f"Extracted text response: {text_response}")
                         else:
-                            self.logger.info("No text content found in messages, using generic response")
+                            self.logger.debug("No text content found in messages, using generic response")
 
                         # Reset the buffer after successful processing
                         audio_buffer.reset_buffer()
@@ -695,14 +701,14 @@ class AWSLexConnector(IVendorConnector):
                         audio_buffer.reset_buffer()
                         # Reset conversation state for next audio input cycle
                         self._reset_conversation_for_next_input(conversation_id)
-                        self.logger.info("Audio processing completed but no response generated")
+                        self.logger.debug("Audio processing completed but no response generated")
                 else:
                     self.logger.error("No audio stream in Lex response")
                     # Reset buffer and log the issue
                     audio_buffer.reset_buffer()
                     # Reset conversation state for next audio input cycle
                     self._reset_conversation_for_next_input(conversation_id)
-                    self.logger.info("Audio processing completed but no response generated")
+                    self.logger.debug("Audio processing completed but no response generated")
 
             except ClientError as e:
                 error_code = e.response['Error']['Code']
@@ -713,7 +719,7 @@ class AWSLexConnector(IVendorConnector):
                 audio_buffer.reset_buffer()
                 # Reset conversation state for next audio input cycle
                 self._reset_conversation_for_next_input(conversation_id)
-                self.logger.info("Audio processing failed due to Lex API error, buffer reset")
+                self.logger.debug("Audio processing failed due to Lex API error, buffer reset")
 
             except Exception as e:
                 self.logger.error(f"Unexpected error during audio processing: {e}")
@@ -724,11 +730,11 @@ class AWSLexConnector(IVendorConnector):
                 audio_buffer.reset_buffer()
                 # Reset conversation state for next audio input cycle
                 self._reset_conversation_for_next_input(conversation_id)
-                self.logger.info("Audio processing failed due to unexpected error, buffer reset")
+                self.logger.debug("Audio processing failed due to unexpected error, buffer reset")
 
         except Exception as e:
             self.logger.error(f"Error in _send_audio_to_lex: {e}")
-            self.logger.info("Audio processing failed, no response generated")
+            self.logger.debug("Audio processing failed, no response generated")
 
     def _decode_lex_response(self, field_name: str, response) -> any:
         """
@@ -761,12 +767,12 @@ class AWSLexConnector(IVendorConnector):
             decompressed = gzip.decompress(decoded_bytes)
             decoded_data = json.loads(decompressed)
             
-            self.logger.info(f"Decoded {field_name}: {decoded_data}")
+            self.logger.debug(f"Decoded {field_name}: {decoded_data}")
             return decoded_data
             
         except Exception as e:
             self.logger.warning(f"Failed to decode {field_name}: {e}")
-            self.logger.info(f"Raw {field_name}: {field_value}")
+            self.logger.debug(f"Raw {field_name}: {field_value}")
             return None
 
     def end_conversation(self, conversation_id: str, message_data: Dict[str, Any] = None) -> None:
@@ -810,7 +816,7 @@ class AWSLexConnector(IVendorConnector):
             try:
                 # Stop the buffering
                 self.audio_buffers[conversation_id].stop_buffering()
-                self.logger.info(f"Stopped audio buffering for conversation {conversation_id}")
+                self.logger.debug(f"Stopped audio buffering for conversation {conversation_id}")
                 
                 # Clean up the buffer
                 del self.audio_buffers[conversation_id]
@@ -975,12 +981,12 @@ class AWSLexConnector(IVendorConnector):
             # Remove from START_OF_INPUT tracking to allow new audio input cycle
             if conversation_id in self.conversations_with_start_of_input:
                 self.conversations_with_start_of_input.remove(conversation_id)
-                self.logger.info(f"Reset START_OF_INPUT tracking for conversation {conversation_id} - ready for next audio input cycle")
+                self.logger.debug(f"Reset START_OF_INPUT tracking for conversation {conversation_id} - ready for next audio input cycle")
             else:
                 self.logger.debug(f"Conversation {conversation_id} was not in START_OF_INPUT tracking")
             
             # Log the successful reset
-            self.logger.info(f"Conversation {conversation_id} reset for next audio input cycle")
+            self.logger.debug(f"Conversation {conversation_id} reset for next audio input cycle")
             
         except Exception as e:
             self.logger.error(f"Error resetting conversation {conversation_id} for next input: {e}")

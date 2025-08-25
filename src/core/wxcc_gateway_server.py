@@ -97,7 +97,7 @@ class ConversationProcessor:
                 "input_type": "conversation_start",
             }
 
-            self.logger.info(f"Starting conversation with message_data: {message_data}")
+            self.logger.debug(f"Starting conversation with message_data: {message_data}")
 
             # Route to connector
             connector_response = self.router.route_request(
@@ -107,19 +107,19 @@ class ConversationProcessor:
                 message_data,
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Start Conversation Connector response received for {self.conversation_id}"
             )
-            self.logger.info(f"Connector response type: {type(connector_response)}")
+            self.logger.debug(f"Connector response type: {type(connector_response)}")
             if isinstance(connector_response, dict):
-                self.logger.info(
+                self.logger.debug(
                     f"Connector response keys: {list(connector_response.keys())}"
                 )
-                self.logger.info(
+                self.logger.debug(
                     f"Audio content present: {connector_response.get('audio_content') is not None}"
                 )
                 if connector_response.get("audio_content"):
-                    self.logger.info(
+                    self.logger.debug(
                         f"Audio content size: {len(connector_response.get('audio_content'))}"
                     )
 
@@ -130,12 +130,12 @@ class ConversationProcessor:
                 barge_in_enabled=False,  # Enable barge-in for conversation start (until server bug is resolved)
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Start Conversation Connector response converted to gRPC format for {self.conversation_id}"
             )
             self.logger.debug(f"Connector gRPC response created: {grpc_response}")
             if grpc_response and hasattr(grpc_response, "prompts"):
-                self.logger.info(
+                self.logger.debug(
                     f"gRPC response has {len(grpc_response.prompts)} prompts"
                 )
 
@@ -239,7 +239,7 @@ class ConversationProcessor:
             event_type_name = self.EVENT_TYPE_NAMES.get(
                 event_input.event_type, f"UNKNOWN({event_input.event_type})"
             )
-            self.logger.info(
+            self.logger.debug(
                 f"Received event input for conversation {self.conversation_id}: "
                 f"event_type={event_type_name}, "
                 f"name='{event_input.name}', "
@@ -252,7 +252,7 @@ class ConversationProcessor:
                 == byova__common__pb2.EventInput.EventType.SESSION_START
             ):
                 if not self.session_started:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Processing SESSION_START event for conversation {self.conversation_id}"
                     )
                     yield from self._start_conversation()
@@ -311,7 +311,7 @@ class ConversationProcessor:
     ) -> VoiceVAResponse:
         """Convert connector response to gRPC format with optional response type and barge-in settings."""
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"Converting connector response to gRPC format for {self.conversation_id}"
             )
             self.logger.debug(f"Connector response: {connector_response}")
@@ -323,7 +323,7 @@ class ConversationProcessor:
                 not connector_response
                 or connector_response.get("message_type") == "silence"
             ):
-                self.logger.info("Handling silence/empty response")
+                self.logger.debug("Handling silence/empty response")
                 
                 # Check if this is a START_OF_INPUT event
                 has_start_event = False
@@ -336,7 +336,7 @@ class ConversationProcessor:
                 # Always set input_handling_config as it's mandatory in the protobuf
                 # For START_OF_INPUT events, we'll set minimal config to satisfy the requirement
                 if has_start_event:
-                    self.logger.info("Detected START_OF_INPUT event, setting minimal input_handling_config")
+                    self.logger.debug("Detected START_OF_INPUT event, setting minimal input_handling_config")
                     # Set minimal input_handling_config for START_OF_INPUT events
                     va_response.input_handling_config.CopyFrom(
                         byova__common__pb2.InputHandlingConfig(
@@ -407,7 +407,7 @@ class ConversationProcessor:
 
             # Create prompts
             audio_content = connector_response.get("audio_content")
-            self.logger.info(
+            self.logger.debug(
                 f"Audio content present: {audio_content is not None}, size: {len(audio_content) if audio_content else 0}"
             )
 
@@ -422,7 +422,7 @@ class ConversationProcessor:
                         "barge_in_enabled", True
                     )
 
-                self.logger.info(
+                self.logger.debug(
                     f"Creating prompt with audio content, barge_in_enabled: {final_barge_in_enabled}"
                 )
                 prompt = Prompt()
@@ -511,7 +511,7 @@ class ConversationProcessor:
                 )
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Final gRPC response created with {len(va_response.prompts)} prompts"
             )
             return va_response
@@ -559,7 +559,7 @@ class ConversationProcessor:
             )
         )
 
-        self.logger.info(
+        self.logger.debug(
             f"Sending error response for conversation {self.conversation_id}"
         )
         return va_response
@@ -585,7 +585,7 @@ class ConversationProcessor:
             )
 
         duration = time.time() - self.start_time
-        self.logger.info(
+        self.logger.debug(
             f"Cleaned up conversation {self.conversation_id} (duration: {duration:.2f}s)"
         )
 
@@ -712,7 +712,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             ListVAResponse containing all available virtual agents
         """
         try:
-            self.logger.info("ListVirtualAgents called")
+            self.logger.debug("ListVirtualAgents called")
 
             # Get all available agents from the router
             available_agents = self.router.get_all_available_agents()
@@ -737,7 +737,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
 
             response = byova__common__pb2.ListVAResponse(virtual_agents=virtual_agents)
 
-            self.logger.info(
+            self.logger.debug(
                 f"ListVirtualAgents: Returning {len(virtual_agents)} agents"
             )
             return response
@@ -784,7 +784,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                             agent_id = available_agents[
                                 0
                             ]  # Use first available agent as default
-                            self.logger.info(
+                            self.logger.debug(
                                 f"No agent_id specified, using default: {agent_id}"
                             )
                         else:
@@ -808,12 +808,12 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                         )
                         self.conversations[conversation_id] = processor
                         self.add_connection_event("start", conversation_id, agent_id)
-                        self.logger.info(
+                        self.logger.debug(
                             f"Created new conversation processor for {conversation_id}"
                         )
                     else:
                         processor = self.conversations[conversation_id]
-                        self.logger.info(
+                        self.logger.debug(
                             f"Using existing conversation processor for {conversation_id}"
                         )
 
@@ -831,7 +831,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                         request.event_input.event_type,
                         f"UNKNOWN({request.event_input.event_type})",
                     )
-                    self.logger.info(
+                    self.logger.debug(
                         f"Processing event input for conversation {conversation_id}: {event_type_name}"
                     )
                 else:
@@ -859,7 +859,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             if conversation_id and conversation_id in self.conversations:
                 processor = self.conversations[conversation_id]
                 if processor.can_be_deleted:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Cleaning up completed conversation {conversation_id}"
                     )
                     self._cleanup_conversation(conversation_id)
@@ -867,6 +867,6 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                         "end", conversation_id, agent_id, reason="completed"
                     )
                 else:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Keeping conversation {conversation_id} active for potential reconnection"
                     )

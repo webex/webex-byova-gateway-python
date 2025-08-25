@@ -197,10 +197,10 @@ class AudioConverter:
                 # Convert back to bytes
                 pcm_8khz_data = struct.pack(f"<{len(samples_8khz)}h", *samples_8khz)
 
-                self.logger.info(
+                self.logger.debug(
                     f"Resampled 16kHz to 8kHz with anti-aliasing: {len(pcm_16khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
                 )
-                self.logger.info(
+                self.logger.debug(
                     f"Sample count: {len(samples_16khz)} -> {len(samples_8khz)}"
                 )
 
@@ -227,7 +227,7 @@ class AudioConverter:
                 samples_8khz = [filtered_samples[i] + 128 for i in range(0, len(filtered_samples), 2)]
                 pcm_8khz_data = struct.pack(f"<{len(samples_8khz)}B", *samples_8khz)
                 
-                self.logger.info(
+                self.logger.debug(
                     f"Resampled 16kHz to 8kHz with anti-aliasing: {len(pcm_16khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
                 )
                 return pcm_8khz_data
@@ -283,7 +283,7 @@ class AudioConverter:
                 ulaw_samples.append(ulaw_byte)
 
             ulaw_data = bytes(ulaw_samples)
-            self.logger.info(
+            self.logger.debug(
                 f"Converted {len(pcm_data)} bytes of {bit_depth}-bit PCM to u-law: {len(ulaw_data)} bytes"
             )
             return ulaw_data
@@ -379,7 +379,7 @@ class AudioConverter:
                 self.logger.warning(f"Unsupported bit depth: {bit_depth}, using 16-bit")
                 pcm_bytes = struct.pack(f"<{len(pcm_samples)}h", *pcm_samples)
 
-            self.logger.info(
+            self.logger.debug(
                 f"Converted {len(ulaw_data)} bytes u-law to {len(pcm_bytes)} bytes {bit_depth}-bit PCM at {sample_rate}Hz"
             )
             return pcm_bytes
@@ -469,7 +469,7 @@ class AudioConverter:
                 encoding="ulaw",  # WxCC expects u-law
             )
 
-            self.logger.info(
+            self.logger.debug(
                 "Converted 16kHz PCM to WxCC-compatible WAV format (8kHz, 8-bit u-law)"
             )
             return wav_audio, "audio/wav"
@@ -613,13 +613,13 @@ class AudioConverter:
             # Combine header and audio data
             wav_data = wav_header + pcm_data
 
-            self.logger.info(
+            self.logger.debug(
                 f"Converted PCM to WAV: {len(pcm_data)} bytes PCM -> {len(wav_data)} bytes WAV"
             )
-            self.logger.info(
+            self.logger.debug(
                 f"WAV format: {sample_rate}Hz, {bit_depth}bit, {channels} channel(s), encoding: {encoding}"
             )
-            self.logger.info(
+            self.logger.debug(
                 f"WxCC compatibility: {'YES' if sample_rate == 8000 and bit_depth == 8 and encoding.lower() == 'ulaw' else 'NO'}"
             )
 
@@ -653,7 +653,7 @@ class AudioConverter:
             
             # Check if already WXCC-compatible
             if audio_info.get("is_wxcc_compatible", False):
-                self.logger.info(f"Audio file {audio_path} is already WXCC-compatible")
+                self.logger.debug(f"Audio file {audio_path} is already WXCC-compatible")
                 # Read the file and return as-is
                 with open(audio_path, 'rb') as f:
                     return f.read()
