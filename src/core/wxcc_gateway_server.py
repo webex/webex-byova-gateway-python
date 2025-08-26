@@ -11,7 +11,17 @@ from typing import Any, Dict, Iterator
 
 import grpc
 
-from src.generated import byova_common_pb2 as byova__common__pb2
+from src.generated.byova_common_pb2 import (
+    DTMFDigits,
+    DTMFInputConfig,
+    EventInput,
+    InputHandlingConfig,
+    InputSpeechTimers,
+    ListVARequest,
+    ListVAResponse,
+    OutputEvent,
+    VirtualAgentInfo,
+)
 from src.generated.voicevirtualagent_pb2 import (
     Prompt,
     VoiceVAInputMode,
@@ -249,7 +259,7 @@ class ConversationProcessor:
             # Handle SESSION_START event explicitly
             if (
                 event_input.event_type
-                == byova__common__pb2.EventInput.EventType.SESSION_START
+                == EventInput.EventType.SESSION_START
             ):
                 if not self.session_started:
                     self.logger.debug(
@@ -339,13 +349,13 @@ class ConversationProcessor:
                     self.logger.debug("Detected START_OF_INPUT event, setting minimal input_handling_config")
                     # Set minimal input_handling_config for START_OF_INPUT events
                     va_response.input_handling_config.CopyFrom(
-                        byova__common__pb2.InputHandlingConfig(
-                            dtmf_config=byova__common__pb2.DTMFInputConfig(
+                        InputHandlingConfig(
+                            dtmf_config=DTMFInputConfig(
                                 dtmf_input_length=1,
                                 inter_digit_timeout_msec=300,
-                                termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
+                                termchar=DTMFDigits.DTMF_DIGIT_POUND,
                             ),
-                            speech_timers=byova__common__pb2.InputSpeechTimers(
+                            speech_timers=InputSpeechTimers(
                                 complete_timeout_msec=5000
                             ),
                         )
@@ -356,13 +366,13 @@ class ConversationProcessor:
                     va_response.response_type = final_response_type
                     va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
                     va_response.input_handling_config.CopyFrom(
-                        byova__common__pb2.InputHandlingConfig(
-                            dtmf_config=byova__common__pb2.DTMFInputConfig(
+                        InputHandlingConfig(
+                            dtmf_config=DTMFInputConfig(
                                 dtmf_input_length=1,
                                 inter_digit_timeout_msec=300,
-                                termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
+                                termchar=DTMFDigits.DTMF_DIGIT_POUND,
                             ),
-                            speech_timers=byova__common__pb2.InputSpeechTimers(
+                            speech_timers=InputSpeechTimers(
                                 complete_timeout_msec=5000
                             ),
                         )
@@ -373,19 +383,19 @@ class ConversationProcessor:
                     for event in connector_response["output_events"]:
                         event_type = event.get("event_type")
                         if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT"]:
-                            output_event = byova__common__pb2.OutputEvent()
+                            output_event = OutputEvent()
                             
                             # Convert event_type string to protobuf enum
                             if event_type == "END_OF_INPUT":
-                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.END_OF_INPUT
+                                output_event.event_type = OutputEvent.EventType.END_OF_INPUT
                             elif event_type == "START_OF_INPUT":
-                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.START_OF_INPUT
+                                output_event.event_type = OutputEvent.EventType.START_OF_INPUT
                             elif event_type == "NO_MATCH":
-                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_MATCH
+                                output_event.event_type = OutputEvent.EventType.NO_MATCH
                             elif event_type == "NO_INPUT":
-                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_INPUT
+                                output_event.event_type = OutputEvent.EventType.NO_INPUT
                             elif event_type == "CUSTOM_EVENT":
-                                output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
+                                output_event.event_type = OutputEvent.EventType.CUSTOM_EVENT
                             
                             # Set event name
                             output_event.name = event.get("name", "")
@@ -446,25 +456,25 @@ class ConversationProcessor:
             message_type = connector_response.get("message_type", "")
 
             if message_type == "goodbye":
-                output_event = byova__common__pb2.OutputEvent()
+                output_event = OutputEvent()
                 output_event.event_type = (
-                    byova__common__pb2.OutputEvent.EventType.SESSION_END
+                    OutputEvent.EventType.SESSION_END
                 )
                 output_event.name = "session_ended"
                 va_response.output_events.append(output_event)
                 self.can_be_deleted = True
             elif message_type == "transfer":
-                output_event = byova__common__pb2.OutputEvent()
+                output_event = OutputEvent()
                 output_event.event_type = (
-                    byova__common__pb2.OutputEvent.EventType.TRANSFER_TO_AGENT
+                    OutputEvent.EventType.TRANSFER_TO_AGENT
                 )
                 output_event.name = "transfer_requested"
                 va_response.output_events.append(output_event)
                 self.can_be_deleted = True
             elif message_type == "session_end":
-                output_event = byova__common__pb2.OutputEvent()
+                output_event = OutputEvent()
                 output_event.event_type = (
-                    byova__common__pb2.OutputEvent.EventType.SESSION_END
+                    OutputEvent.EventType.SESSION_END
                 )
                 output_event.name = "session_ended"
                 va_response.output_events.append(output_event)
@@ -475,23 +485,23 @@ class ConversationProcessor:
                 for event in connector_response["output_events"]:
                     event_type = event.get("event_type")
                     if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT", "SESSION_END", "TRANSFER_TO_AGENT"]:
-                        output_event = byova__common__pb2.OutputEvent()
+                        output_event = OutputEvent()
                         
                         # Convert event_type string to protobuf enum
                         if event_type == "END_OF_INPUT":
-                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.END_OF_INPUT
+                            output_event.event_type = OutputEvent.EventType.END_OF_INPUT
                         elif event_type == "START_OF_INPUT":
-                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.START_OF_INPUT
+                            output_event.event_type = OutputEvent.EventType.START_OF_INPUT
                         elif event_type == "NO_MATCH":
-                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_MATCH
+                            output_event.event_type = OutputEvent.EventType.NO_MATCH
                         elif event_type == "NO_INPUT":
-                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_INPUT
+                            output_event.event_type = OutputEvent.EventType.NO_INPUT
                         elif event_type == "CUSTOM_EVENT":
-                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
+                            output_event.event_type = OutputEvent.EventType.CUSTOM_EVENT
                         elif event_type == "SESSION_END":
-                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.SESSION_END
+                            output_event.event_type = OutputEvent.EventType.SESSION_END
                         elif event_type == "TRANSFER_TO_AGENT":
-                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.TRANSFER_TO_AGENT
+                            output_event.event_type = OutputEvent.EventType.TRANSFER_TO_AGENT
                         
                         # Set event name
                         output_event.name = event.get("name", "")
@@ -520,13 +530,13 @@ class ConversationProcessor:
 
             # Set input handling configuration
             va_response.input_handling_config.CopyFrom(
-                byova__common__pb2.InputHandlingConfig(
-                    dtmf_config=byova__common__pb2.DTMFInputConfig(
+                InputHandlingConfig(
+                    dtmf_config=DTMFInputConfig(
                         dtmf_input_length=1,
                         inter_digit_timeout_msec=300,
-                        termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
+                        termchar=DTMFDigits.DTMF_DIGIT_POUND,
                     ),
-                    speech_timers=byova__common__pb2.InputSpeechTimers(
+                    speech_timers=InputSpeechTimers(
                         complete_timeout_msec=5000
                     ),
                 )
@@ -555,8 +565,8 @@ class ConversationProcessor:
         va_response.prompts.append(prompt)
 
         # Create output event
-        output_event = byova__common__pb2.OutputEvent()
-        output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
+        output_event = OutputEvent()
+        output_event.event_type = OutputEvent.EventType.CUSTOM_EVENT
         output_event.name = "error_occurred"
         va_response.output_events.append(output_event)
 
@@ -568,13 +578,13 @@ class ConversationProcessor:
 
         # Set input handling configuration
         va_response.input_handling_config.CopyFrom(
-            byova__common__pb2.InputHandlingConfig(
-                dtmf_config=byova__common__pb2.DTMFInputConfig(
+            InputHandlingConfig(
+                dtmf_config=DTMFInputConfig(
                     dtmf_input_length=1,
                     inter_digit_timeout_msec=300,
-                    termchar=byova__common__pb2.DTMFDigits.DTMF_DIGIT_POUND,
+                    termchar=DTMFDigits.DTMF_DIGIT_POUND,
                 ),
-                speech_timers=byova__common__pb2.InputSpeechTimers(
+                speech_timers=InputSpeechTimers(
                     complete_timeout_msec=5000
                 ),
             )
@@ -717,8 +727,8 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         return active_conversations
 
     def ListVirtualAgents(
-        self, request: byova__common__pb2.ListVARequest, context: grpc.ServicerContext
-    ) -> byova__common__pb2.ListVAResponse:
+        self, request: ListVARequest, context: grpc.ServicerContext
+    ) -> ListVAResponse:
         """
         List all available virtual agents.
 
@@ -748,7 +758,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 else:
                     agent_name = full_agent_id
 
-                agent_info = byova__common__pb2.VirtualAgentInfo(
+                agent_info = VirtualAgentInfo(
                     virtual_agent_id=full_agent_id,  # Use the full agent ID for routing
                     virtual_agent_name=agent_name,  # Use the extracted name for display
                     is_default=(i == 0),  # First agent is default
@@ -756,7 +766,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 )
                 virtual_agents.append(agent_info)
 
-            response = byova__common__pb2.ListVAResponse(virtual_agents=virtual_agents)
+            response = ListVAResponse(virtual_agents=virtual_agents)
 
             self.logger.debug(
                 f"ListVirtualAgents: Returning {len(virtual_agents)} agents"
@@ -767,7 +777,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             self.logger.error(f"Error in ListVirtualAgents: {e}")
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Internal server error: {str(e)}")
-            return byova__common__pb2.ListVAResponse()
+            return ListVAResponse()
 
     def ProcessCallerInput(
         self,
