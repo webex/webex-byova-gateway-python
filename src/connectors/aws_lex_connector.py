@@ -8,11 +8,12 @@ It handles basic agent discovery and conversation initialization.
 import boto3
 import logging
 from botocore.exceptions import ClientError
-from typing import Any, Dict, List, Iterator
+from typing import Any, Dict, List, Iterator, Optional
 
 from .i_vendor_connector import IVendorConnector
 from ..utils.audio_buffer import AudioBuffer
 from ..utils.audio_utils import convert_aws_lex_audio_to_wxcc, convert_wxcc_audio_to_lex_format
+from ..utils.audio_logger import AudioLogger
 
 
 class AWSLexConnector(IVendorConnector):
@@ -50,6 +51,7 @@ class AWSLexConnector(IVendorConnector):
                 - aws_access_key_id: AWS access key (optional, uses default chain)
                 - aws_secret_access_key: AWS secret key (optional, uses default chain)
                 - bot_alias_id: Bot alias ID to use for conversations (default: TSTALIASID)
+                - audio_logging: Audio logging configuration (optional)
 
         Note: WxCC requires 8kHz, 8-bit u-law, mono audio to avoid 5-second delays.
         AWS Lex returns 16kHz, 16-bit PCM, which this connector automatically converts
@@ -96,7 +98,8 @@ class AWSLexConnector(IVendorConnector):
             "quiet_threshold": 20        # Moderate quiet detection
         })
 
-
+        # Initialize audio logging if configured
+        self._init_audio_logging(config)
 
         # Track which conversations have already sent START_OF_INPUT event
         self.conversations_with_start_of_input = set()
@@ -242,6 +245,9 @@ class AWSLexConnector(IVendorConnector):
                     self.logger.info(f"Received audio response: {len(audio_response)} bytes")
 
                     if audio_response:
+                        # Log outgoing AWS Lex audio if audio logging is enabled
+                        self._log_aws_audio(conversation_id, audio_response)
+                        
                         self.logger.debug("Audio content is valid, returning response with audio")
 
                         # Use the audio utility to convert AWS Lex audio to WxCC-compatible forma
@@ -580,6 +586,9 @@ class AWSLexConnector(IVendorConnector):
 
             self.logger.debug(f"Processing {len(buffered_audio)} bytes of audio for conversation {conversation_id}")
 
+            # Log the buffered audio that gets sent to AWS Lex (this is what actually matters for debugging)
+            self._log_wxcc_audio(conversation_id, buffered_audio)
+
             # Extract session details
             bot_id = session_info.get("actual_bot_id")
             session_id = session_info.get("session_id")
@@ -760,6 +769,9 @@ class AWSLexConnector(IVendorConnector):
                     self.logger.info(f"Received audio response: {len(audio_response)} bytes")
 
                     if audio_response:
+                        # Log outgoing AWS Lex audio if audio logging is enabled
+                        self._log_aws_audio(conversation_id, audio_response)
+                        
                         self.logger.debug("Audio content is valid, processing Lex response")
 
                         # Convert AWS Lex audio to WxCC-compatible format
@@ -925,6 +937,13 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.error(f"Error stopping audio buffering for conversation {conversation_id}: {e}")
 
 
+
+        # Clean up audio logging resources
+        if hasattr(self, 'audio_logger') and self.audio_logger:
+            try:
+                self.audio_logger.cleanup(conversation_id)
+            except Exception as e:
+                self.logger.error(f"Error cleaning up audio logging for conversation {conversation_id}: {e}")
 
         # Clean up START_OF_INPUT tracking
         if conversation_id in self.conversations_with_start_of_input:
@@ -1092,3 +1111,119 @@ class AWSLexConnector(IVendorConnector):
         except Exception as e:
             self.logger.error(f"Error resetting conversation {conversation_id} for next input: {e}")
             # Don't raise the exception, continue with conversation
+
+    def _init_audio_logging(self, config: Dict[str, Any]) -> None:
+        """
+        Initialize audio logging functionality if configured.
+
+        Args:
+            config: Configuration dictionary
+        """
+        audio_logging_config = config.get('audio_logging', {})
+        
+        if audio_logging_config.get('enabled', False):
+            try:
+                # Set default values for missing configuration
+                default_config = {
+                    'output_dir': 'logs/audio_recordings',
+                    'filename_format': '{conversation_id}_{timestamp}_{source}.wav',
+                    'max_file_size': 10485760,  # 10MB
+                    'sample_rate': 8000,
+                    'bit_depth': 8,
+                    'channels': 1,
+                    'encoding': 'ulaw',
+                    'log_all_audio': True  # Generic flag to enable/disable all audio logging
+                }
+                
+                # Merge user config with defaults
+                for key, value in default_config.items():
+                    if key not in audio_logging_config:
+                        audio_logging_config[key] = value
+                
+                # Initialize AudioLogger
+                self.audio_logger = AudioLogger(audio_logging_config, self.logger)
+                self.audio_logging_config = audio_logging_config
+                
+                self.logger.info("Audio logging initialized and enabled")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to initialize audio logging: {e}")
+                self.logger.warning("Audio logging will be disabled due to initialization failure")
+                # Don't set any audio logging attributes when disabled
+        else:
+            # Don't set any audio logging attributes when disabled
+            self.logger.debug("Audio logging not configured or disabled")
+
+
+
+
+
+
+
+
+
+
+    def _log_wxcc_audio(self, conversation_id: str, audio_data: bytes) -> Optional[str]:
+        """
+        Log incoming WxCC audio if audio logging is enabled.
+
+        Args:
+            conversation_id: Conversation identifier
+            audio_data: Raw audio data
+
+        Returns:
+            Path to the logged file, or None if logging failed or disabled
+        """
+        if not hasattr(self, 'audio_logging_config') or not self.audio_logging_config.get('enabled', False):
+            return None
+            
+        if not self.audio_logging_config.get('log_all_audio', True):
+            return None
+            
+        if not hasattr(self, 'audio_logger') or not self.audio_logger:
+            return None
+
+        try:
+            return self.audio_logger.log_audio(
+                conversation_id=conversation_id,
+                audio_data=audio_data,
+                source='wxcc',
+                encoding='ulaw'
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to log WxCC audio for conversation {conversation_id}: {e}")
+            return None
+
+    def _log_aws_audio(self, conversation_id: str, audio_data: bytes) -> Optional[str]:
+        """
+        Log outgoing AWS Lex audio if audio logging is enabled.
+
+        Args:
+            conversation_id: Conversation identifier
+            audio_data: Raw audio data
+
+        Returns:
+            Path to the logged file, or None if logging failed or disabled
+        """
+        if not hasattr(self, 'audio_logging_config') or not self.audio_logging_config.get('enabled', False):
+            return None
+            
+        if not self.audio_logging_config.get('log_all_audio', True):
+            return None
+            
+        if not hasattr(self, 'audio_logger') or not self.audio_logger:
+            return None
+
+        try:
+            return self.audio_logger.log_audio(
+                conversation_id=conversation_id,
+                audio_data=audio_data,
+                source='aws',
+                encoding='pcm',
+                sample_rate=16000,  # AWS Lex uses 16kHz
+                bit_depth=16,       # AWS Lex uses 16-bit
+                channels=1          # Mono
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to log AWS audio for conversation {conversation_id}: {e}")
+            return None

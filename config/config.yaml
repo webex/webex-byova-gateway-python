@@ -1,79 +1,50 @@
 # Webex Contact Center BYOVA Gateway Configuration
-# This file defines the connectors and their configurations for the VirtualAgentRouter
 
-# Global gateway configuration
+# Gateway settings
 gateway:
-  name: "BYOVA Gateway"
-  version: "1.0.0"
   host: "0.0.0.0"
   port: 50051
 
-# Connector configurations
+# Connectors configuration
 connectors:
-  my_local_test_agent:
+  # Local Audio Connector
+  local_audio_connector:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
     config:
-      agent_id: "Local Playback"
-      audio_base_path: "audio"
-      # Audio recording configuration
-      record_caller_audio: true  # Set to true to enable recording of caller audio
-      audio_recording:
-        output_dir: "logs/audio_recordings"  # Directory to save audio recordings
-        silence_threshold: 3000  # Amplitude threshold for silence detection
-        silence_duration: 1.0  # Amount of silence in seconds before stopping recording
-        quiet_threshold: 20  # How far from 127 (quiet background) to consider "silence"
-      # Audio file mappings (matching your actual files)
       audio_files:
         welcome: "welcome.wav"
         transfer: "transferring.wav"
         goodbye: "goodbye.wav"
         error: "error.wav"
         default: "default_response.wav"
-    agents:
-      - "Local Playback"
+      agents:
+        - "Local Playback"
 
+  # AWS Lex Connector
   aws_lex_connector:
     type: "aws_lex_connector"
     class: "AWSLexConnector"
     module: "connectors.aws_lex_connector"
     config:
-      region_name: "us-east-1"  # AWS region where your Lex bots are located
-      # Optional: Bot alias ID to use for conversations (default: TSTALIASID)
+      region_name: "us-east-1"
       bot_alias_id: "TSTALIASID"
-      # Optional: Explicit AWS credentials (will use default credentials if not provided)
-      # aws_access_key_id: "${AWS_ACCESS_KEY_ID}"
-      # aws_secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
-      # aws_session_token: "${AWS_SESSION_TOKEN}"  # For temporary credentials
-    agents: []  # Will be populated automatically from Lex bots in the region
+      
+      # Audio logging configuration
+      audio_logging:
+        enabled: true
+        output_dir: "logs/audio_recordings"
+        filename_format: "{conversation_id}_{timestamp}_{source}.wav"
+        log_all_audio: true
+        max_file_size: 10485760
+        sample_rate: 8000
+        bit_depth: 8
+        channels: 1
+        encoding: "ulaw"
+      agents: []
 
-#  - name: "vendor_x_connector"
-#    type: "vendor_x_connector"
-#    class: "VendorXConnector"
-#    module: "connectors.vendor_x_connector"
-#    config:
-#      api_key: "${VENDOR_X_API_KEY}"
-#      endpoint: "https://api.vendorx.com"
-#      timeout: 30
-#      retry_attempts: 3
-#    agents:
-#      - "Vendor X Agent 1"
-#      - "Vendor X Agent 2"
-
-#  - name: "openai_connector"
-#    type: "openai_connector"
-#    class: "OpenAIConnector"
-#    module: "connectors.openai_connector"
-#    config:
-#      api_key: "${OPENAI_API_KEY}"
-#      model: "gpt-4"
-#      max_tokens: 150
-#      temperature: 0.7
-#    agents:
-#      - "OpenAI Assistant"
-
-# Monitoring configuration
+# Monitoring interface
 monitoring:
   enabled: true
   host: "0.0.0.0"
@@ -83,37 +54,32 @@ monitoring:
 
 # Logging configuration
 logging:
-  # Gateway logging (gRPC server, connectors, etc.)
   gateway:
-    level: "DEBUG"
+    level: "INFO"
     format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file: "logs/gateway.log"
     max_size: "10MB"
     backup_count: 5
   
-  # Web interface logging (Flask, werkzeug, etc.)
   web:
-    level: "WARNING"  # Reduce web interface verbosity
+    level: "WARNING"
     format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file: "logs/web.log"
     max_size: "5MB"
     backup_count: 3
 
-# Session management configuration
+# Session management
 sessions:
-  timeout: 600  # 10 minutes - increased for better call handling
+  timeout: 600
   max_sessions: 1000
-  cleanup_interval: 60  # seconds
+  cleanup_interval: 60
   enable_auto_cleanup: true
-  max_session_duration: 3600  # 1 hour maximum session duration
+  max_session_duration: 3600
 
-# Audio processing configuration
+# Audio processing
 audio:
   supported_formats:
     - "wav"
     - "mp3"
     - "flac"
-    - "ogg"
-  default_sample_rate: 16000
-  default_channels: 1
-  max_audio_size: "10MB" 
+    - "ogg" 
