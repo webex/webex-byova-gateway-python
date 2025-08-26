@@ -619,16 +619,86 @@ class AWSLexConnector(IVendorConnector):
                 else:
                     # Consolidate interpretation logging into a single INFO log with summary
                     interpretation_summary = []
+                    primary_intent_state = None
+                    primary_intent_name = None
+                    
                     for interpretation in interpretations_data:
                         intent = interpretation.get('intent', {})
                         intent_name = intent.get('name', 'unknown')
                         intent_state = intent.get('state', 'unknown')
                         confidence = interpretation.get('nluConfidence', {}).get('score', 'unknown')
                         interpretation_summary.append(f"{intent_name}({intent_state}, conf:{confidence})")
+                        
+                        # Track the primary interpretation (first one)
+                        if primary_intent_state is None:
+                            primary_intent_state = intent_state
+                            primary_intent_name = intent_name
                     
                     self.logger.info(f"Lex response: {len(interpretations_data)} interpretation(s) - {', '.join(interpretation_summary)}")
                     self.logger.debug(f"Full interpretation details: {interpretations_data}")
+                    
+                    # Check if primary intent indicates conversation completion or failure
+                    if primary_intent_state == 'Fulfilled':
+                        self.logger.info(f"Primary intent '{primary_intent_name}' is fulfilled - conversation complete")
+                        # Create a SESSION_END response for fulfilled intent
+                        session_end_response = self.create_response(
+                            conversation_id=conversation_id,
+                            message_type="session_end",
+                            text="I've successfully completed your request. Thank you for calling!",
+                            audio_content=b"",
+                            barge_in_enabled=False,
+                            response_type="final"
+                        )
+                        
+                        # Add SESSION_END output event
+                        session_end_response["output_events"] = [{
+                            "event_type": "SESSION_END",
+                            "name": "lex_intent_fulfilled",
+                            "metadata": {
+                                "reason": "intent_fulfilled",
+                                "intent_name": primary_intent_name,
+                                "bot_name": session_info.get("bot_name", "unknown"),
+                                "conversation_id": conversation_id
+                            }
+                        }]
+                        
+                        # Reset audio buffer and conversation state
+                        audio_buffer.reset_buffer()
+                        self._reset_conversation_for_next_input(conversation_id)
+                        yield session_end_response
+                        return
+                        
+                    elif primary_intent_state == 'Failed':
+                        self.logger.info(f"Primary intent '{primary_intent_name}' failed - escalation needed")
+                        # Create a TRANSFER_TO_AGENT response
+                        transfer_response = self.create_response(
+                            conversation_id=conversation_id,
+                            message_type="transfer",
+                            text="I'm having trouble with your request. Let me transfer you to a human agent.",
+                            audio_content=b"",
+                            barge_in_enabled=False,
+                            response_type="final"
+                        )
+                        
+                        # Add TRANSFER_TO_AGENT output event
+                        transfer_response["output_events"] = [{
+                            "event_type": "TRANSFER_TO_AGENT",
+                            "name": "lex_intent_failed",
+                            "metadata": {
+                                "reason": "intent_failed",
+                                "intent_name": primary_intent_name,
+                                "bot_name": session_info.get("bot_name", "unknown"),
+                                "conversation_id": conversation_id
+                            }
+                        }]
+                        
+                        # Reset audio buffer and conversation state
+                        audio_buffer.reset_buffer()
+                        self._reset_conversation_for_next_input(conversation_id)
+                        yield transfer_response
+                        return
 
+                # Check session state and dialog actions BEFORE audio processing
                 session_state_data = self._decode_lex_response('sessionState', response)
                 if session_state_data is None:
                     self.logger.debug("No session state in response")
@@ -649,6 +719,37 @@ class AWSLexConnector(IVendorConnector):
                         for context in active_contexts:
                             context_name = context.get('name', 'unknown')
                             self.logger.debug(f"  Context: {context_name}")
+
+                    # Check if Lex is closing the conversation and handle accordingly
+                    if action_type == 'Close':
+                        self.logger.info(f"Lex dialog action is 'Close' - ending conversation {conversation_id}")
+                        
+                        # Create a SESSION_END response
+                        session_end_response = self.create_response(
+                            conversation_id=conversation_id,
+                            message_type="session_end",
+                            text="Thank you for calling. Have a great day!",
+                            audio_content=b"",  # No audio for session end
+                            barge_in_enabled=False,
+                            response_type="final"
+                        )
+                        
+                        # Add SESSION_END output event
+                        session_end_response["output_events"] = [{
+                            "event_type": "SESSION_END",
+                            "name": "lex_conversation_ended",
+                            "metadata": {
+                                "reason": "lex_dialog_closed",
+                                "bot_name": session_info.get("bot_name", "unknown"),
+                                "conversation_id": conversation_id
+                            }
+                        }]
+                        
+                        # Reset audio buffer and conversation state
+                        audio_buffer.reset_buffer()
+                        self._reset_conversation_for_next_input(conversation_id)
+                        yield session_end_response
+                        return
 
                 # Extract audio response
                 audio_stream = response.get('audioStream')

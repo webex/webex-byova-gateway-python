@@ -99,6 +99,144 @@ class TestConversationProcessor:
         assert responses[0].prompts[0].text == "Hello, how can I help you?"
         assert responses[0].prompts[0].audio_content == b"audio_response_bytes"
 
+    def test_process_audio_input_with_session_end_event(self, processor, mock_router, mock_audio_input):
+        """Test processing audio input with SESSION_END event from connector."""
+        # Mock connector returning session end response
+        mock_response = {
+            "message_type": "session_end",
+            "text": "Thank you for calling. Have a great day!",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+            "response_type": "final"
+        }
+        mock_router.route_request.return_value = mock_response
+
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        # Verify response was processed
+        assert len(responses) == 1
+        response = responses[0]
+        assert response.prompts[0].text == "Thank you for calling. Have a great day!"
+        
+        # Verify SESSION_END event was created
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        assert event.event_type == 1  # SESSION_END
+        assert event.name == "session_ended"
+
+    def test_process_audio_input_with_transfer_to_agent_event(self, processor, mock_router, mock_audio_input):
+        """Test processing audio input with TRANSFER_TO_AGENT event from connector."""
+        # Mock connector returning transfer response
+        mock_response = {
+            "message_type": "transfer",
+            "text": "Let me transfer you to a human agent.",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+            "response_type": "final"
+        }
+        mock_router.route_request.return_value = mock_response
+
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        # Verify response was processed
+        assert len(responses) == 1
+        response = responses[0]
+        assert response.prompts[0].text == "Let me transfer you to a human agent."
+        
+        # Verify TRANSFER_TO_AGENT event was created
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        assert event.event_type == 2  # TRANSFER_TO_AGENT
+        assert event.name == "transfer_requested"
+
+    def test_process_audio_input_with_output_events(self, processor, mock_router, mock_audio_input):
+        """Test processing audio input with custom output events from connector."""
+        # Mock connector returning response with output events
+        mock_response = {
+            "message_type": "response",
+            "text": "Processing your request...",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+            "response_type": "final",
+            "output_events": [
+                {
+                    "event_type": "SESSION_END",
+                    "name": "lex_conversation_ended",
+                    "metadata": {
+                        "reason": "lex_dialog_closed",
+                        "bot_name": "TestBot",
+                        "conversation_id": "test_conv_123"
+                    }
+                }
+            ]
+        }
+        mock_router.route_request.return_value = mock_response
+
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        # Verify response was processed
+        assert len(responses) == 1
+        response = responses[0]
+        assert response.prompts[0].text == "Processing your request..."
+        
+        # Verify SESSION_END event was created from output_events
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        assert event.event_type == 1  # SESSION_END
+        assert event.name == "lex_conversation_ended"
+        
+        # Verify metadata was properly converted
+        assert event.metadata["reason"] == "lex_dialog_closed"
+        assert event.metadata["bot_name"] == "TestBot"
+        assert event.metadata["conversation_id"] == "test_conv_123"
+
+    def test_process_audio_input_with_transfer_to_agent_output_event(self, processor, mock_router, mock_audio_input):
+        """Test processing audio input with TRANSFER_TO_AGENT output event from connector."""
+        # Mock connector returning response with TRANSFER_TO_AGENT output event
+        mock_response = {
+            "message_type": "response",
+            "text": "I need to transfer you.",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+            "response_type": "final",
+            "output_events": [
+                {
+                    "event_type": "TRANSFER_TO_AGENT",
+                    "name": "lex_intent_failed",
+                    "metadata": {
+                        "reason": "intent_failed",
+                        "intent_name": "ComplexRequest",
+                        "bot_name": "TestBot",
+                        "conversation_id": "test_conv_123"
+                    }
+                }
+            ]
+        }
+        mock_router.route_request.return_value = mock_response
+
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        # Verify response was processed
+        assert len(responses) == 1
+        response = responses[0]
+        assert response.prompts[0].text == "I need to transfer you."
+        
+        # Verify TRANSFER_TO_AGENT event was created from output_events
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        assert event.event_type == 2  # TRANSFER_TO_AGENT
+        assert event.name == "lex_intent_failed"
+        
+        # Verify metadata was properly converted
+        assert event.metadata["reason"] == "intent_failed"
+        assert event.metadata["intent_name"] == "ComplexRequest"
+        assert event.metadata["bot_name"] == "TestBot"
+        assert event.metadata["conversation_id"] == "test_conv_123"
+
     def test_process_audio_input_generator_response(self, processor, mock_router, mock_audio_input):
         """Test processing audio input with a generator response from connector."""
         # Mock connector returning generator with multiple responses

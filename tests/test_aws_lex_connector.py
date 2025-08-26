@@ -769,8 +769,10 @@ class TestAWSLexConnector:
         # Mock the decode method to return test data
         with patch.object(connector, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
-                "What type of room would you like?",  # inputTranscript
-                [{'content': 'What type of room would you like? king, queen, or deluxe?', 'contentType': 'PlainText'}]  # messages
+                "What type of room would you like?",  # inputTranscript (called first)
+                [{'content': 'What type of room would you like? king, queen, or deluxe?', 'contentType': 'PlainText'}],  # messages (called second)
+                [{'intent': {'name': 'BookRoom', 'state': 'InProgress'}}],  # interpretations (called third)
+                {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}  # sessionState (called fourth)
             ]
             
             # Mock audio conversion
@@ -847,6 +849,419 @@ class TestAWSLexConnector:
 
     def test_reset_integration_with_dtmf_goodbye(self, connector):
         """Test that conversation reset works correctly with DTMF goodbye."""
+        
+    def test_session_end_on_dialog_action_close(self, connector):
+        """Test that SESSION_END event is sent when Lex returns dialog_action=Close."""
+        conversation_id = "test_conv_session_end"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock Lex response with dialog_action=Close
+        mock_response = {
+            'interpretations': 'gAAAAABk...',  # Mock encoded interpretations
+            'sessionState': 'gAAAAABk...',    # Mock encoded session state
+            'messages': 'gAAAAABk...',        # Mock encoded messages
+            'inputTranscript': 'gAAAAABk...'  # Mock encoded transcript
+        }
+        
+        # Mock audio stream for the response (required for normal flow)
+        mock_audio_stream = MagicMock()
+        mock_audio_stream.read.return_value = b"mock_audio_response"
+        mock_audio_stream.close.return_value = None
+        mock_response['audioStream'] = mock_audio_stream
+        
+        # Mock the decode method to return test data
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = [
+                "Goodbye",  # inputTranscript (called first)
+                [{'content': 'Goodbye message', 'contentType': 'PlainText'}],  # messages (called second)
+                [{'intent': {'name': 'Goodbye', 'state': 'ReadyForFulfillment'}}],  # interpretations (called third)
+                {'dialogAction': {'type': 'Close'}, 'activeContexts': []}  # sessionState (called fourth)
+            ]
+            
+            # Mock audio conversion
+            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
+                mock_convert.return_value = (b"converted_audio", "audio/wav")
+                
+                # Mock Lex runtime call
+                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                    
+                    # Process audio input
+                    responses = list(connector._send_audio_to_lex(conversation_id))
+                
+                # Verify SESSION_END response was generated
+                assert len(responses) == 1
+                response = responses[0]
+                assert response["conversation_id"] == conversation_id
+                assert response["message_type"] == "session_end"
+                assert response["text"] == "Thank you for calling. Have a great day!"
+                assert response["response_type"] == "final"
+                assert response["barge_in_enabled"] == False
+                
+                # Verify SESSION_END output event
+                assert "output_events" in response
+                assert len(response["output_events"]) == 1
+                event = response["output_events"][0]
+                assert event["event_type"] == "SESSION_END"
+                assert event["name"] == "lex_conversation_ended"
+                assert event["metadata"]["reason"] == "lex_dialog_closed"
+                assert event["metadata"]["bot_name"] == "TestBot"
+                assert event["metadata"]["conversation_id"] == conversation_id
+                
+                # Verify conversation state was reset
+                assert conversation_id not in connector.conversations_with_start_of_input
+                assert audio_buffer.get_buffer_size() == 0
+
+    def test_session_end_on_intent_fulfilled(self, connector):
+        """Test that SESSION_END event is sent when Lex returns intent.state=Fulfilled."""
+        conversation_id = "test_conv_intent_fulfilled"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock Lex response with intent.state=Fulfilled
+        mock_response = {
+            'interpretations': 'gAAAAABk...',  # Mock encoded interpretations
+            'sessionState': 'gAAAAABk...',    # Mock encoded session state
+            'messages': 'gAAAAABk...',        # Mock encoded messages
+            'inputTranscript': 'gAAAAABk...'  # Mock encoded transcript
+        }
+        
+        # No audio stream for dialog_action=Close test - this should trigger the session end path
+        # mock_response['audioStream'] = None
+        
+        # Mock the decode method to return test data
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = [
+                "Book appointment",  # inputTranscript (called first)
+                [{'content': 'Appointment booked successfully', 'contentType': 'PlainText'}],  # messages (called second)
+                [{'intent': {'name': 'BookAppointment', 'state': 'Fulfilled'}, 'nluConfidence': {'score': 0.95}}],  # interpretations (called third)
+                {'dialogAction': {'type': 'Delegate'}, 'activeContexts': []}  # sessionState (called fourth)
+            ]
+            
+            # Mock audio conversion
+            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
+                mock_convert.return_value = (b"converted_audio", "audio/wav")
+                
+                # Mock Lex runtime call
+                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                    
+                    # Process audio input
+                    responses = list(connector._send_audio_to_lex(conversation_id))
+                
+                # Verify SESSION_END response was generated
+                assert len(responses) == 1
+                response = responses[0]
+                assert response["conversation_id"] == conversation_id
+                assert response["message_type"] == "session_end"
+                assert response["text"] == "I've successfully completed your request. Thank you for calling!"
+                assert response["response_type"] == "final"
+                assert response["barge_in_enabled"] == False
+                
+                # Verify SESSION_END output event
+                assert "output_events" in response
+                assert len(response["output_events"]) == 1
+                event = response["output_events"][0]
+                assert event["event_type"] == "SESSION_END"
+                assert event["name"] == "lex_intent_fulfilled"
+                assert event["metadata"]["reason"] == "intent_fulfilled"
+                assert event["metadata"]["intent_name"] == "BookAppointment"
+                assert event["metadata"]["bot_name"] == "TestBot"
+                assert event["metadata"]["conversation_id"] == conversation_id
+                
+                # Verify conversation state was reset
+                assert conversation_id not in connector.conversations_with_start_of_input
+                assert audio_buffer.get_buffer_size() == 0
+
+    def test_transfer_to_agent_on_intent_failed(self, connector):
+        """Test that TRANSFER_TO_AGENT event is sent when Lex returns intent.state=Failed."""
+        conversation_id = "test_conv_intent_failed"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock Lex response with intent.state=Failed
+        mock_response = {
+            'interpretations': 'gAAAAABk...',  # Mock encoded interpretations
+            'sessionState': 'gAAAAABk...',    # Mock encoded session state
+            'messages': 'gAAAAABk...',        # Mock encoded messages
+            'inputTranscript': 'gAAAAABk...'  # Mock encoded transcript
+        }
+        
+        # Mock audio stream for the response (required for normal flow)
+        mock_audio_stream = MagicMock()
+        mock_audio_stream.read.return_value = b"mock_audio_response"
+        mock_audio_stream.close.return_value = None
+        mock_response['audioStream'] = mock_audio_stream
+        
+        # Mock the decode method to return test data
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = [
+                "Complex request",  # inputTranscript (called first)
+                [{'content': 'I cannot process this request', 'contentType': 'PlainText'}],  # messages (called second)
+                [{'intent': {'name': 'ComplexRequest', 'state': 'Failed'}, 'nluConfidence': {'score': 0.3}}],  # interpretations (called third)
+                {'dialogAction': {'type': 'ElicitIntent'}, 'activeContexts': []}  # sessionState (called fourth)
+            ]
+            
+            # Mock audio conversion
+            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
+                mock_convert.return_value = (b"converted_audio", "audio/wav")
+                
+                # Mock Lex runtime call
+                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                    
+                    # Process audio input
+                    responses = list(connector._send_audio_to_lex(conversation_id))
+                
+                # Verify TRANSFER_TO_AGENT response was generated
+                assert len(responses) == 1
+                response = responses[0]
+                assert response["conversation_id"] == conversation_id
+                assert response["message_type"] == "transfer"
+                assert response["text"] == "I'm having trouble with your request. Let me transfer you to a human agent."
+                assert response["response_type"] == "final"
+                assert response["barge_in_enabled"] == False
+                
+                # Verify TRANSFER_TO_AGENT output event
+                assert "output_events" in response
+                assert len(response["output_events"]) == 1
+                event = response["output_events"][0]
+                assert event["event_type"] == "TRANSFER_TO_AGENT"
+                assert event["name"] == "lex_intent_failed"
+                assert event["metadata"]["reason"] == "intent_failed"
+                assert event["metadata"]["intent_name"] == "ComplexRequest"
+                assert event["metadata"]["bot_name"] == "TestBot"
+                assert event["metadata"]["conversation_id"] == conversation_id
+                
+                # Verify conversation state was reset
+                assert conversation_id not in connector.conversations_with_start_of_input
+                assert audio_buffer.get_buffer_size() == 0
+
+    def test_multiple_interpretations_primary_intent_handling(self, connector):
+        """Test that primary interpretation (first) is used for intent state decisions."""
+        conversation_id = "test_conv_multiple_intents"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock Lex response with multiple interpretations
+        mock_response = {
+            'interpretations': 'gAAAAABk...',  # Mock encoded interpretations
+            'sessionState': 'gAAAAABk...',    # Mock encoded session state
+            'messages': 'gAAAAABk...',        # Mock encoded messages
+            'inputTranscript': 'gAAAAABk...'  # Mock encoded transcript
+        }
+        
+        # Mock audio stream for the response (required for normal flow)
+        mock_audio_stream = MagicMock()
+        mock_audio_stream.read.return_value = b"mock_audio_response"
+        mock_audio_stream.close.return_value = None
+        mock_response['audioStream'] = mock_audio_stream
+        
+        # Mock the decode method to return test data with multiple interpretations
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = [
+                "Primary intent",  # inputTranscript (called first)
+                [{'content': 'Primary intent fulfilled', 'contentType': 'PlainText'}],  # messages (called second)
+                [
+                    {'intent': {'name': 'PrimaryIntent', 'state': 'Fulfilled'}, 'nluConfidence': {'score': 0.9}},  # Primary (first)
+                    {'intent': {'name': 'SecondaryIntent', 'state': 'InProgress'}, 'nluConfidence': {'score': 0.7}},  # Secondary
+                    {'intent': {'name': 'TertiaryIntent', 'state': 'Failed'}, 'nluConfidence': {'score': 0.5}}   # Tertiary
+                ],  # interpretations (called third)
+                {'dialogAction': {'type': 'Delegate'}, 'activeContexts': []}  # sessionState (called fourth)
+            ]
+            
+            # Mock audio conversion
+            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
+                mock_convert.return_value = (b"converted_audio", "audio/wav")
+                
+                # Mock Lex runtime call
+                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                    
+                    # Process audio input
+                    responses = list(connector._send_audio_to_lex(conversation_id))
+                
+                # Verify SESSION_END response was generated based on primary intent
+                assert len(responses) == 1
+                response = responses[0]
+                assert response["message_type"] == "session_end"
+                
+                # Verify the primary intent was used
+                event = response["output_events"][0]
+                assert event["metadata"]["intent_name"] == "PrimaryIntent"
+                assert event["metadata"]["reason"] == "intent_fulfilled"
+
+    def test_no_interpretations_continues_normal_processing(self, connector):
+        """Test that normal processing continues when no interpretations are present."""
+        conversation_id = "test_conv_no_interpretations"
+        bot_id = "test_bot_123"
+        session_id = "session_id_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock Lex response with no interpretations
+        mock_response = {
+            'interpretations': 'gAAAAABk...',  # Mock encoded interpretations
+            'sessionState': 'gAAAAABk...',    # Mock encoded session state
+            'messages': 'gAAAAABk...',        # Mock encoded messages
+            'inputTranscript': 'gAAAAABk...'  # Mock encoded transcript
+        }
+        
+        # Mock the decode method to return test data
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = [
+                "User input",  # inputTranscript (called first)
+                [{'content': 'Please provide more information', 'contentType': 'PlainText'}],  # messages (called second)
+                None,  # No interpretations (called third)
+                {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}  # sessionState (called fourth)
+            ]
+            
+            # Mock audio stream for normal processing
+            mock_audio_stream = MagicMock()
+            mock_audio_stream.read.return_value = b"mock_audio_response"
+            mock_audio_stream.close.return_value = None
+            mock_response['audioStream'] = mock_audio_stream
+            
+            # Mock audio conversion
+            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
+                mock_convert.return_value = (b"converted_audio", "audio/wav")
+                
+                # Mock Lex runtime call
+                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                    
+                    # Process audio input
+                    responses = list(connector._send_audio_to_lex(conversation_id))
+                    
+                    # Verify normal response was generated (not session end)
+                    assert len(responses) == 1
+                    response = responses[0]
+                    assert response["message_type"] == "response"  # Normal response, not session_end
+                    # Normal responses may have output events, so we don't check for their absence
+
+    def test_session_end_metadata_structure(self, connector):
+        """Test that SESSION_END events include proper metadata structure."""
+        conversation_id = "test_conv_metadata"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        # Set up session
+        connector._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        # Set up audio buffer
+        connector._init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock Lex response with dialog_action=Close
+        mock_response = {
+            'interpretations': 'gAAAAABk...',
+            'sessionState': 'gAAAAABk...',
+            'messages': 'gAAAAABk...',
+            'inputTranscript': 'gAAAAABk...'
+        }
+        
+        # Mock audio stream for the response (required for normal flow)
+        mock_audio_stream = MagicMock()
+        mock_audio_stream.read.return_value = b"mock_audio_response"
+        mock_audio_stream.close.return_value = None
+        mock_response['audioStream'] = mock_audio_stream
+        
+        # Mock the decode method
+        with patch.object(connector, '_decode_lex_response') as mock_decode:
+            mock_decode.side_effect = [
+                "Goodbye",  # inputTranscript (called first)
+                [{'content': 'Goodbye', 'contentType': 'PlainText'}],  # messages (called second)
+                [{'intent': {'name': 'Goodbye', 'state': 'InProgress'}}],  # interpretations (called third)
+                {'dialogAction': {'type': 'Close'}, 'activeContexts': []}  # sessionState (called fourth)
+            ]
+            
+            # Mock audio conversion
+            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
+                mock_convert.return_value = (b"converted_audio", "audio/wav")
+                
+                # Mock Lex runtime call
+                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
+                    
+                    # Process audio input
+                    responses = list(connector._send_audio_to_lex(conversation_id))
+                
+                # Verify metadata structure
+                response = responses[0]
+                event = response["output_events"][0]
+                metadata = event["metadata"]
+                
+                # Check required metadata fields
+                assert "reason" in metadata
+                assert "bot_name" in metadata
+                assert "conversation_id" in metadata
+                
+                # Check metadata values
+                assert metadata["reason"] == "lex_dialog_closed"
+                assert metadata["bot_name"] == "TestBot"
+                assert metadata["conversation_id"] == conversation_id
+                
+                # Verify metadata is a dictionary (not a string or other type)
+                assert isinstance(metadata, dict)
+                assert len(metadata) == 3  # Should have exactly 3 fields
         conversation_id = "test_conv_794"
         bot_id = "test_bot_123"
         session_id = "session_123"
@@ -1028,7 +1443,12 @@ class TestAWSLexConnector:
         
         # Mock the decode method
         with patch.object(connector, '_decode_lex_response') as mock_decode:
-            mock_decode.side_effect = ["Test input", [{'content': 'Test response', 'contentType': 'PlainText'}]]
+            mock_decode.side_effect = [
+                "Test input",  # inputTranscript (called first)
+                [{'content': 'Test response', 'contentType': 'PlainText'}],  # messages (called second)
+                [{'intent': {'name': 'TestIntent', 'state': 'InProgress'}}],  # interpretations (called third)
+                {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}  # sessionState (called fourth)
+            ]
             
             # Mock Lex runtime call
             with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
@@ -1093,10 +1513,10 @@ class TestAWSLexConnector:
         connector._reset_conversation_for_next_input(conversation_id)
         
         # Verify appropriate logging occurred
-        connector.logger.info.assert_any_call(
+        connector.logger.debug.assert_any_call(
             f"Reset START_OF_INPUT tracking for conversation {conversation_id} - ready for next audio input cycle"
         )
-        connector.logger.info.assert_any_call(
+        connector.logger.debug.assert_any_call(
             f"Conversation {conversation_id} reset for next audio input cycle"
         )
 

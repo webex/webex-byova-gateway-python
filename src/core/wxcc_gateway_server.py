@@ -431,7 +431,16 @@ class ConversationProcessor:
                 prompt.is_barge_in_enabled = final_barge_in_enabled
                 va_response.prompts.append(prompt)
             else:
-                self.logger.warning("No audio content found in connector response")
+                # For responses without audio content, still create a text prompt
+                # This is important for session_end and transfer responses
+                if connector_response.get("text"):
+                    self.logger.debug("Creating text-only prompt")
+                    prompt = Prompt()
+                    prompt.text = connector_response["text"]
+                    prompt.is_barge_in_enabled = connector_response.get("barge_in_enabled", False)
+                    va_response.prompts.append(prompt)
+                else:
+                    self.logger.warning("No audio content or text found in connector response")
 
             # Create output events
             message_type = connector_response.get("message_type", "")
@@ -452,12 +461,20 @@ class ConversationProcessor:
                 output_event.name = "transfer_requested"
                 va_response.output_events.append(output_event)
                 self.can_be_deleted = True
+            elif message_type == "session_end":
+                output_event = byova__common__pb2.OutputEvent()
+                output_event.event_type = (
+                    byova__common__pb2.OutputEvent.EventType.SESSION_END
+                )
+                output_event.name = "session_ended"
+                va_response.output_events.append(output_event)
+                self.can_be_deleted = True
 
             # Handle generic output events from connector responses
             if "output_events" in connector_response:
                 for event in connector_response["output_events"]:
                     event_type = event.get("event_type")
-                    if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT"]:
+                    if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT", "SESSION_END", "TRANSFER_TO_AGENT"]:
                         output_event = byova__common__pb2.OutputEvent()
                         
                         # Convert event_type string to protobuf enum
@@ -471,6 +488,10 @@ class ConversationProcessor:
                             output_event.event_type = byova__common__pb2.OutputEvent.EventType.NO_INPUT
                         elif event_type == "CUSTOM_EVENT":
                             output_event.event_type = byova__common__pb2.OutputEvent.EventType.CUSTOM_EVENT
+                        elif event_type == "SESSION_END":
+                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.SESSION_END
+                        elif event_type == "TRANSFER_TO_AGENT":
+                            output_event.event_type = byova__common__pb2.OutputEvent.EventType.TRANSFER_TO_AGENT
                         
                         # Set event name
                         output_event.name = event.get("name", "")
