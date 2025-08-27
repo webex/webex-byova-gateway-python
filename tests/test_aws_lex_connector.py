@@ -221,7 +221,7 @@ class TestAWSLexConnector:
         connector.lex_runtime = mock_lex_runtime
         
         # Mock audio conversion
-        with patch('src.connectors.aws_lex_connector.convert_aws_lex_audio_to_wxcc') as mock_convert:
+        with patch('src.connectors.aws_lex_connector.AWSLexAudioProcessor.convert_lex_audio_to_wxcc_format') as mock_convert:
             mock_convert.return_value = (b"converted_audio", "audio/wav")
             
             response = connector.start_conversation("conv123", {
@@ -583,8 +583,8 @@ class TestAWSLexConnector:
         connector = AWSLexConnector(config)
 
         # Check that audio buffering is properly configured
-        assert connector.audio_buffering_config == config["audio_buffering"]
-        assert connector.audio_buffers == {}
+        assert connector.audio_processor.audio_buffering_config == config["audio_buffering"]
+        assert connector.audio_processor.audio_buffers == {}
 
     def test_audio_buffering_always_enabled(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
         """Test that audio buffering is always enabled for AWS Lex connector."""
@@ -593,20 +593,20 @@ class TestAWSLexConnector:
         connector = AWSLexConnector(config)
         
         # Check that audio buffering uses default values when no config provided
-        assert connector.audio_buffering_config == {
+        assert connector.audio_processor.audio_buffering_config == {
             "silence_threshold": 2000,
             "silence_duration": 2.5,
             "quiet_threshold": 20
         }
-        assert connector.audio_buffers == {}
+        assert connector.audio_processor.audio_buffers == {}
 
     def test_audio_buffer_creation(self, connector):
         """Test that audio buffers are created correctly."""
         # Test buffer initialization
-        connector._init_audio_buffer("test_conv_123")
+        connector.audio_processor.init_audio_buffer("test_conv_123")
         
-        assert "test_conv_123" in connector.audio_buffers
-        buffer = connector.audio_buffers["test_conv_123"]
+        assert "test_conv_123" in connector.audio_processor.audio_buffers
+        buffer = connector.audio_processor.audio_buffers["test_conv_123"]
         
         assert buffer.conversation_id == "test_conv_123"
         assert buffer.sample_rate == 8000
@@ -748,8 +748,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to the buffer so it's not empty
         audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
@@ -804,7 +804,7 @@ class TestAWSLexConnector:
                     # Mock audio extraction
                     with patch.object(connector, 'extract_audio_data', return_value=b"new_audio_input"):
                         # Mock audio buffering
-                        with patch.object(connector, '_process_audio_for_buffering', return_value=False):
+                        with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value=False):
                             responses = list(connector._handle_audio_input(conversation_id, message_data, bot_id, session_id, "TestBot"))
                             
                             # Should send START_OF_INPUT since conversation was reset
@@ -864,8 +864,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
         
         # Mock Lex response with dialog_action=Close
@@ -938,8 +938,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
         
         # Mock Lex response with intent.state=Fulfilled
@@ -1010,8 +1010,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
         
         # Mock Lex response with intent.state=Failed
@@ -1085,8 +1085,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
         
         # Mock Lex response with multiple interpretations
@@ -1150,8 +1150,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
         
         # Mock Lex response with no interpretations
@@ -1207,8 +1207,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
         
         # Mock Lex response with dialog_action=Close
@@ -1321,7 +1321,7 @@ class TestAWSLexConnector:
         """Test that conversation reset works correctly even when audio processing errors occur."""
         conversation_id = "test_conv_796"
         bot_id = "test_bot_123"
-        session_id = "session_123"
+        session_id = "session_id_123"
         
         # Set up session
         connector._sessions[conversation_id] = {
@@ -1331,8 +1331,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to buffer
         audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
@@ -1371,8 +1371,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to buffer
         audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
@@ -1424,8 +1424,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to buffer
         audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
@@ -1478,8 +1478,8 @@ class TestAWSLexConnector:
         }
         
         # Set up audio buffer
-        connector._init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_buffers[conversation_id]
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to buffer
         audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
