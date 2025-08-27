@@ -684,7 +684,7 @@ class TestAWSLexConnector:
         assert conversation_id in connector.session_manager.conversations_with_start_of_input
         
         # Call the reset method
-        connector._reset_conversation_for_next_input(conversation_id)
+        connector.session_manager.reset_conversation_for_next_input(conversation_id)
         
         # Verify conversation was removed from START_OF_INPUT tracking
         assert conversation_id not in connector.session_manager.conversations_with_start_of_input
@@ -699,7 +699,7 @@ class TestAWSLexConnector:
         assert conversation_id not in connector.session_manager.conversations_with_start_of_input
         
         # Call the reset method
-        connector._reset_conversation_for_next_input(conversation_id)
+        connector.session_manager.reset_conversation_for_next_input(conversation_id)
         
         # Verify conversation still not in tracking
         assert conversation_id not in connector.session_manager.conversations_with_start_of_input
@@ -725,7 +725,7 @@ class TestAWSLexConnector:
         
         try:
             # Call the reset method - should not raise exception
-            connector._reset_conversation_for_next_input(conversation_id)
+            connector.session_manager.reset_conversation_for_next_input(conversation_id)
             
             # Verify error was logged
             connector.session_manager.logger.error.assert_called_with(
@@ -768,7 +768,7 @@ class TestAWSLexConnector:
         }
         
         # Mock the decode method to return test data
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "What type of room would you like?",  # inputTranscript (called first)
                 [{'content': 'What type of room would you like? king, queen, or deluxe?', 'contentType': 'PlainText'}],  # messages (called second)
@@ -884,7 +884,7 @@ class TestAWSLexConnector:
         mock_response['audioStream'] = mock_audio_stream
         
         # Mock the decode method to return test data
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "Goodbye",  # inputTranscript (called first)
                 [{'content': 'Goodbye message', 'contentType': 'PlainText'}],  # messages (called second)
@@ -955,7 +955,7 @@ class TestAWSLexConnector:
         # mock_response['audioStream'] = None
         
         # Mock the decode method to return test data
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "Book appointment",  # inputTranscript (called first)
                 [{'content': 'Appointment booked successfully', 'contentType': 'PlainText'}],  # messages (called second)
@@ -1030,7 +1030,7 @@ class TestAWSLexConnector:
         mock_response['audioStream'] = mock_audio_stream
         
         # Mock the decode method to return test data
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "Complex request",  # inputTranscript (called first)
                 [{'content': 'I cannot process this request', 'contentType': 'PlainText'}],  # messages (called second)
@@ -1105,7 +1105,7 @@ class TestAWSLexConnector:
         mock_response['audioStream'] = mock_audio_stream
         
         # Mock the decode method to return test data with multiple interpretations
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "Primary intent",  # inputTranscript (called first)
                 [{'content': 'Primary intent fulfilled', 'contentType': 'PlainText'}],  # messages (called second)
@@ -1164,7 +1164,7 @@ class TestAWSLexConnector:
         }
         
         # Mock the decode method to return test data
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "User input",  # inputTranscript (called first)
                 [{'content': 'Please provide more information', 'contentType': 'PlainText'}],  # messages (called second)
@@ -1227,7 +1227,7 @@ class TestAWSLexConnector:
         mock_response['audioStream'] = mock_audio_stream
         
         # Mock the decode method
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "Goodbye",  # inputTranscript (called first)
                 [{'content': 'Goodbye', 'contentType': 'PlainText'}],  # messages (called second)
@@ -1394,7 +1394,7 @@ class TestAWSLexConnector:
         }
         
         # Mock the decode method
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = ["Test input", [{'content': 'Test response', 'contentType': 'PlainText'}]]
             
             # Mock Lex runtime call
@@ -1443,7 +1443,7 @@ class TestAWSLexConnector:
         }
         
         # Mock the decode method
-        with patch.object(connector, '_decode_lex_response') as mock_decode:
+        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
             mock_decode.side_effect = [
                 "Test input",  # inputTranscript (called first)
                 [{'content': 'Test response', 'contentType': 'PlainText'}],  # messages (called second)

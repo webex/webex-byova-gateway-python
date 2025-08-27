@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Iterator, Optional
 from .i_vendor_connector import IVendorConnector
 from .aws_lex_audio_processor import AWSLexAudioProcessor
 from .aws_lex_session_manager import AWSLexSessionManager
+from .aws_lex_response_handler import AWSLexResponseHandler
 
 
 class AWSLexConnector(IVendorConnector):
@@ -79,6 +80,9 @@ class AWSLexConnector(IVendorConnector):
 
         # Initialize session manager
         self.session_manager = AWSLexSessionManager(self.logger)
+        
+        # Initialize response handler
+        self.response_handler = AWSLexResponseHandler(self.logger)
 
         # Initialize audio processor
         self.audio_processor = AWSLexAudioProcessor(config, self.logger)
@@ -357,7 +361,7 @@ class AWSLexConnector(IVendorConnector):
             if "5" in dtmf_string:  # Transfer code
                 self.logger.info(f"DTMF transfer requested for conversation {conversation_id}")
                 # Reset conversation state for next audio input cycle
-                self._reset_conversation_for_next_input(conversation_id)
+                self.session_manager.reset_conversation_for_next_input(conversation_id)
                 return self.create_transfer_response(
                     conversation_id=conversation_id,
                     text=f"Transferring you from the {bot_name} assistant to a live agent.",
@@ -367,7 +371,7 @@ class AWSLexConnector(IVendorConnector):
             elif "6" in dtmf_string:  # Goodbye code
                 self.logger.info(f"DTMF goodbye requested for conversation {conversation_id}")
                 # Reset conversation state for next audio input cycle
-                self._reset_conversation_for_next_input(conversation_id)
+                self.session_manager.reset_conversation_for_next_input(conversation_id)
                 return self.create_goodbye_response(
                     conversation_id=conversation_id,
                     text=f"Goodbye from the {bot_name} assistant. Thank you for your time.",
@@ -463,7 +467,7 @@ class AWSLexConnector(IVendorConnector):
             # This is a placeholder for the actual Lex text implementation
             self.logger.debug(f"Text functionality not yet fully implemented: {text_input}")
             # Reset conversation state for next audio input cycle
-            self._reset_conversation_for_next_input(conversation_id)
+            self.session_manager.reset_conversation_for_next_input(conversation_id)
             # Return a placeholder response until full implementation is complete
             return self.create_response(
                 conversation_id=conversation_id,
@@ -475,7 +479,7 @@ class AWSLexConnector(IVendorConnector):
         except Exception as e:
             self.logger.error(f"Error processing text input: {e}")
             # Reset conversation state for next audio input cycle
-            self._reset_conversation_for_next_input(conversation_id)
+            self.session_manager.reset_conversation_for_next_input(conversation_id)
             return self.create_response(
                 conversation_id=conversation_id,
                 message_type="error",
@@ -540,16 +544,16 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.debug(f"Lex API response received for audio input: {type(response)}")
 
                 # Log decoded input transcript and messages for debugging
-                input_transcript_data = self._decode_lex_response('inputTranscript', response)
+                input_transcript_data = self.response_handler._decode_lex_response('inputTranscript', response)
                 if input_transcript_data is None:
                     self.logger.warning("No input transcript generated - audio may have quality issues")
 
-                messages_data = self._decode_lex_response('messages', response)
+                messages_data = self.response_handler._decode_lex_response('messages', response)
                 if messages_data is None:
                     self.logger.debug("No messages in response")
 
                 # Log key Lex V2 response fields for conversation state monitoring
-                interpretations_data = self._decode_lex_response('interpretations', response)
+                interpretations_data = self.response_handler._decode_lex_response('interpretations', response)
                 if interpretations_data is None:
                     self.logger.debug("No interpretations in response")
                 else:
@@ -577,65 +581,35 @@ class AWSLexConnector(IVendorConnector):
                     if primary_intent_state == 'Fulfilled':
                         self.logger.info(f"Primary intent '{primary_intent_name}' is fulfilled - conversation complete")
                         # Create a SESSION_END response for fulfilled intent
-                        session_end_response = self.create_response(
+                        session_end_response = self.response_handler.create_session_end_response(
                             conversation_id=conversation_id,
-                            message_type="session_end",
-                            text="I've successfully completed your request. Thank you for calling!",
-                            audio_content=b"",
-                            barge_in_enabled=False,
-                            response_type="final"
+                            bot_name=self.session_manager.get_bot_name(conversation_id) or "unknown",
+                            intent_name=primary_intent_name
                         )
-                        
-                        # Add SESSION_END output event
-                        session_end_response["output_events"] = [{
-                            "event_type": "SESSION_END",
-                            "name": "lex_intent_fulfilled",
-                            "metadata": {
-                                "reason": "intent_fulfilled",
-                                "intent_name": primary_intent_name,
-                                "bot_name": self.session_manager.get_bot_name(conversation_id) or "unknown",
-                                "conversation_id": conversation_id
-                            }
-                        }]
                         
                         # Reset audio buffer and conversation state
                         self.audio_processor.reset_audio_buffer(conversation_id)
-                        self._reset_conversation_for_next_input(conversation_id)
+                        self.session_manager.reset_conversation_for_next_input(conversation_id)
                         yield session_end_response
                         return
                         
                     elif primary_intent_state == 'Failed':
                         self.logger.info(f"Primary intent '{primary_intent_name}' failed - escalation needed")
                         # Create a TRANSFER_TO_AGENT response
-                        transfer_response = self.create_response(
+                        transfer_response = self.response_handler.create_transfer_response(
                             conversation_id=conversation_id,
-                            message_type="transfer",
-                            text="I'm having trouble with your request. Let me transfer you to a human agent.",
-                            audio_content=b"",
-                            barge_in_enabled=False,
-                            response_type="final"
+                            bot_name=self.session_manager.get_bot_name(conversation_id) or "unknown",
+                            intent_name=primary_intent_name
                         )
-                        
-                        # Add TRANSFER_TO_AGENT output event
-                        transfer_response["output_events"] = [{
-                            "event_type": "TRANSFER_TO_AGENT",
-                            "name": "lex_intent_failed",
-                            "metadata": {
-                                "reason": "intent_failed",
-                                "intent_name": primary_intent_name,
-                                "bot_name": self.session_manager.get_bot_name(conversation_id) or "unknown",
-                                "conversation_id": conversation_id
-                            }
-                        }]
                         
                         # Reset audio buffer and conversation state
                         self.audio_processor.reset_audio_buffer(conversation_id)
-                        self._reset_conversation_for_next_input(conversation_id)
+                        self.session_manager.reset_conversation_for_next_input(conversation_id)
                         yield transfer_response
                         return
 
                 # Check session state and dialog actions BEFORE audio processing
-                session_state_data = self._decode_lex_response('sessionState', response)
+                session_state_data = self.response_handler._decode_lex_response('sessionState', response)
                 if session_state_data is None:
                     self.logger.debug("No session state in response")
                 else:
@@ -661,29 +635,14 @@ class AWSLexConnector(IVendorConnector):
                         self.logger.info(f"Lex dialog action is 'Close' - ending conversation {conversation_id}")
                         
                         # Create a SESSION_END response
-                        session_end_response = self.create_response(
+                        session_end_response = self.response_handler.create_lex_dialog_close_response(
                             conversation_id=conversation_id,
-                            message_type="session_end",
-                            text="Thank you for calling. Have a great day!",
-                            audio_content=b"",  # No audio for session end
-                            barge_in_enabled=False,
-                            response_type="final"
+                            bot_name=self.session_manager.get_bot_name(conversation_id) or "unknown"
                         )
-                        
-                        # Add SESSION_END output event
-                        session_end_response["output_events"] = [{
-                            "event_type": "SESSION_END",
-                            "name": "lex_conversation_ended",
-                            "metadata": {
-                                "reason": "lex_dialog_closed",
-                                "bot_name": self.session_manager.get_bot_name(conversation_id) or "unknown",
-                                "conversation_id": conversation_id
-                            }
-                        }]
                         
                         # Reset audio buffer and conversation state
                         self.audio_processor.reset_audio_buffer(conversation_id)
-                        self._reset_conversation_for_next_input(conversation_id)
+                        self.session_manager.reset_conversation_for_next_input(conversation_id)
                         yield session_end_response
                         return
 
@@ -720,33 +679,23 @@ class AWSLexConnector(IVendorConnector):
                         self.audio_processor.reset_audio_buffer(conversation_id)
 
                         # Yield the Lex response
-                        response = self.create_response(
+                        response_dict = self.response_handler.create_audio_response(
                             conversation_id=conversation_id,
-                            message_type="response",
-                            text=text_response,
+                            text_response=text_response,
                             audio_content=wav_audio,
-                            barge_in_enabled=False,
-                            content_type=content_type,
-                            response_type="final"
+                            content_type=content_type
                         )
                         
                         # Reset conversation state for next audio input cycle
-                        self._reset_conversation_for_next_input(conversation_id)
+                        self.session_manager.reset_conversation_for_next_input(conversation_id)
                         
-                        yield response
-                    else:
-                        self.logger.warning("Audio stream was empty from Lex")
-                        # Reset buffer and log the issue
-                        self.audio_processor.reset_audio_buffer(conversation_id)
-                        # Reset conversation state for next audio input cycle
-                        self._reset_conversation_for_next_input(conversation_id)
-                        self.logger.debug("Audio processing completed but no response generated")
+                        yield response_dict
                 else:
                     self.logger.error("No audio stream in Lex response")
                     # Reset buffer and log the issue
                     self.audio_processor.reset_audio_buffer(conversation_id)
                     # Reset conversation state for next audio input cycle
-                    self._reset_conversation_for_next_input(conversation_id)
+                    self.session_manager.reset_conversation_for_next_input(conversation_id)
                     self.logger.debug("Audio processing completed but no response generated")
 
             except ClientError as e:
@@ -757,7 +706,7 @@ class AWSLexConnector(IVendorConnector):
                 # Reset buffer and log the error
                 self.audio_processor.reset_audio_buffer(conversation_id)
                 # Reset conversation state for next audio input cycle
-                self._reset_conversation_for_next_input(conversation_id)
+                self.session_manager.reset_conversation_for_next_input(conversation_id)
                 self.logger.debug("Audio processing failed due to Lex API error, buffer reset")
 
             except Exception as e:
@@ -768,51 +717,14 @@ class AWSLexConnector(IVendorConnector):
                 # Reset buffer and log the error
                 self.audio_processor.reset_audio_buffer(conversation_id)
                 # Reset conversation state for next audio input cycle
-                self._reset_conversation_for_next_input(conversation_id)
+                self.session_manager.reset_conversation_for_next_input(conversation_id)
                 self.logger.debug("Audio processing failed due to unexpected error, buffer reset")
 
         except Exception as e:
             self.logger.error(f"Error in _send_audio_to_lex: {e}")
             self.logger.debug("Audio processing failed, no response generated")
 
-    def _decode_lex_response(self, field_name: str, response) -> any:
-        """
-        Decode a compressed field from AWS Lex response.
-        
-        Args:
-            field_name: Name of the field to decode (e.g., 'inputTranscript', 'messages')
-            response: AWS Lex response object or dictionary
-        
-        Returns:
-            Decoded data or None if field doesn't exist or decoding fails
-        """
-        try:
-            import base64
-            import gzip
-            import json
-            
-            # Try to get the field value from both formats
-            field_value = None
-            if hasattr(response, field_name) and getattr(response, field_name):
-                field_value = getattr(response, field_name)
-            elif isinstance(response, dict) and response.get(field_name):
-                field_value = response[field_name]
-            
-            if not field_value:
-                return None
-            
-            # Decode the compressed field
-            decoded_bytes = base64.b64decode(field_value)
-            decompressed = gzip.decompress(decoded_bytes)
-            decoded_data = json.loads(decompressed)
-            
-            self.logger.debug(f"Decoded {field_name}: {decoded_data}")
-            return decoded_data
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to decode {field_name}: {e}")
-            self.logger.debug(f"Raw {field_name}: {field_value}")
-            return None
+
 
     def end_conversation(self, conversation_id: str, message_data: Dict[str, Any] = None) -> None:
         """
@@ -871,16 +783,6 @@ class AWSLexConnector(IVendorConnector):
 
 
 
-    def _reset_conversation_for_next_input(self, conversation_id: str) -> None:
-        """
-        Reset the conversation state to prepare for the next audio input cycle.
-        
-        This method should be called after successfully sending a final response to WxCC
-        to prepare the conversation for handling the next round of audio input.
-        
-        Args:
-            conversation_id: Conversation identifier to reset
-        """
-        self.session_manager.reset_conversation_for_next_input(conversation_id)
+
 
 
