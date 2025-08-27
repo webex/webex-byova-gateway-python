@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Iterator, Optional
 
 from .i_vendor_connector import IVendorConnector
 from .aws_lex_audio_processor import AWSLexAudioProcessor
+from .aws_lex_session_manager import AWSLexSessionManager
 
 
 class AWSLexConnector(IVendorConnector):
@@ -76,20 +77,11 @@ class AWSLexConnector(IVendorConnector):
         # Initialize AWS clients
         self._init_aws_clients()
 
-        # Cache for available bots
-        self._available_bots = None
-
-        # Mapping from display names to actual bot IDs
-        self._bot_name_to_id_map = {}
-
-        # Simple session storage for conversations
-        self._sessions = {}
+        # Initialize session manager
+        self.session_manager = AWSLexSessionManager(self.logger)
 
         # Initialize audio processor
         self.audio_processor = AWSLexAudioProcessor(config, self.logger)
-
-        # Track which conversations have already sent START_OF_INPUT event
-        self.conversations_with_start_of_input = set()
 
         self.logger.debug("Caller audio buffering is enabled")
 
@@ -130,40 +122,7 @@ class AWSLexConnector(IVendorConnector):
         Returns:
             List of Lex bot IDs that can be used as virtual agents
         """
-        if self._available_bots is None:
-            try:
-                self.logger.debug("Fetching available Lex bots...")
-
-                # List all bots in the region
-                response = self.lex_client.list_bots()
-                bots = response.get('botSummaries', [])
-
-                # Extract bot IDs and names, format as "aws_lex_connector: Bot Name"
-                bot_identifiers = []
-                for bot in bots:
-                    bot_id = bot['botId']
-                    bot_name = bot.get('botName', bot_id)  # Use bot name if available, fallback to ID
-                    display_name = f"aws_lex_connector: {bot_name}"
-
-                    # Store the mapping: display_name -> actual_bot_id
-                    self._bot_name_to_id_map[display_name] = bot_id
-
-                    bot_identifiers.append(display_name)
-
-                self._available_bots = bot_identifiers
-                self.logger.info(f"Found {len(bot_identifiers)} available Lex bots: {bot_identifiers}")
-                self.logger.debug(f"Bot mappings: {self._bot_name_to_id_map}")
-
-            except ClientError as e:
-                error_code = e.response['Error']['Code']
-                error_message = e.response['Error']['Message']
-                self.logger.error(f"AWS Lex API error ({error_code}): {error_message}")
-                self._available_bots = []
-            except Exception as e:
-                self.logger.error(f"Unexpected error fetching Lex bots: {e}")
-                self._available_bots = []
-
-        return self._available_bots
+        return self.session_manager.get_available_agents(self.lex_client)
 
     def start_conversation(self, conversation_id: str, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -180,26 +139,12 @@ class AWSLexConnector(IVendorConnector):
             # Get the display name from WxCC (e.g., "aws_lex_connector: Booking")
             display_name = request_data.get("virtual_agent_id", "")
 
-            # Look up the actual bot ID from our mapping
-            actual_bot_id = self._bot_name_to_id_map.get(display_name)
-            if not actual_bot_id:
-                raise ValueError(f"Bot not found in mapping: {display_name}. Available bots: {list(self._bot_name_to_id_map.keys())}")
+            # Create session using session manager
+            session_info = self.session_manager.create_session(conversation_id, display_name)
+            actual_bot_id = session_info["actual_bot_id"]
+            bot_name = session_info["bot_name"]
+            session_id = session_info["session_id"]
 
-            # Extract the friendly bot name for display
-            bot_name = display_name.split(": ", 1)[1] if ": " in display_name else display_name
-
-            # Create a simple session ID for Lex
-            session_id = f"session_{conversation_id}"
-
-            # Store session info with both names
-            self._sessions[conversation_id] = {
-                "session_id": session_id,
-                "display_name": display_name,      # "aws_lex_connector: Booking"
-                "actual_bot_id": actual_bot_id,    # "E7LNGX7D2J"
-                "bot_name": bot_name               # "Booking"
-            }
-
-            self.logger.info(f"Started Lex conversation: {conversation_id} with bot: {bot_name} (ID: {actual_bot_id})")
             self.logger.debug(f"Using bot alias: {self.bot_alias_id}")
 
             # Send initial text to Lex and get audio response
@@ -346,7 +291,7 @@ class AWSLexConnector(IVendorConnector):
         self.logger.debug(f"Message data for conversation {conversation_id}: {log_data}")
 
         # Check if we have a valid session for this conversation
-        if conversation_id not in self._sessions:
+        if not self.session_manager.has_session(conversation_id):
             self.logger.error(f"No active session found for conversation {conversation_id}")
             yield self.create_response(
                 conversation_id=conversation_id,
@@ -359,10 +304,9 @@ class AWSLexConnector(IVendorConnector):
             return
 
         # Get session info
-        session_info = self._sessions[conversation_id]
-        session_id = session_info["session_id"]
-        bot_id = session_info["actual_bot_id"]
-        bot_name = session_info["bot_name"]
+        session_id = self.session_manager.get_session_id(conversation_id)
+        bot_id = self.session_manager.get_bot_id(conversation_id)
+        bot_name = self.session_manager.get_bot_name(conversation_id)
 
         # Handle conversation start events
         if message_data.get("input_type") == "conversation_start":
@@ -464,9 +408,9 @@ class AWSLexConnector(IVendorConnector):
             audio_bytes = self.extract_audio_data(message_data.get("audio_data"), conversation_id, self.logger)
 
             # Check if START_OF_INPUT event has been sent, if not send it
-            if conversation_id not in self.conversations_with_start_of_input:
+            if not self.session_manager.has_start_of_input_tracking(conversation_id):
                 self.logger.debug(f"Sending START_OF_INPUT event for conversation {conversation_id}")
-                self.conversations_with_start_of_input.add(conversation_id)
+                self.session_manager.add_start_of_input_tracking(conversation_id)
                 
                 yield self.create_start_of_input_response(conversation_id)
                 return  # Return after sending START_OF_INPUT event
@@ -504,7 +448,7 @@ class AWSLexConnector(IVendorConnector):
         """
         try:
             # Extract session info
-            if conversation_id not in self._sessions:
+            if not self.session_manager.has_session(conversation_id):
                 self.logger.error(f"No session found for conversation {conversation_id}")
                 return self.create_response(
                     conversation_id=conversation_id,
@@ -552,11 +496,9 @@ class AWSLexConnector(IVendorConnector):
         """
         try:
             # Get session info
-            if conversation_id not in self._sessions:
+            if not self.session_manager.has_session(conversation_id):
                 self.logger.error(f"No session found for conversation {conversation_id}")
                 return
-
-            session_info = self._sessions[conversation_id]
 
             # Get the audio buffer for this conversation
             if not self.audio_processor.has_audio_buffer(conversation_id):
@@ -575,8 +517,8 @@ class AWSLexConnector(IVendorConnector):
             self.audio_processor.log_wxcc_audio(conversation_id, buffered_audio)
 
             # Extract session details
-            bot_id = session_info.get("actual_bot_id")
-            session_id = session_info.get("session_id")
+            bot_id = self.session_manager.get_bot_id(conversation_id)
+            session_id = self.session_manager.get_session_id(conversation_id)
 
             # Send audio to AWS Lex
             try:
@@ -651,7 +593,7 @@ class AWSLexConnector(IVendorConnector):
                             "metadata": {
                                 "reason": "intent_fulfilled",
                                 "intent_name": primary_intent_name,
-                                "bot_name": session_info.get("bot_name", "unknown"),
+                                "bot_name": self.session_manager.get_bot_name(conversation_id) or "unknown",
                                 "conversation_id": conversation_id
                             }
                         }]
@@ -681,7 +623,7 @@ class AWSLexConnector(IVendorConnector):
                             "metadata": {
                                 "reason": "intent_failed",
                                 "intent_name": primary_intent_name,
-                                "bot_name": session_info.get("bot_name", "unknown"),
+                                "bot_name": self.session_manager.get_bot_name(conversation_id) or "unknown",
                                 "conversation_id": conversation_id
                             }
                         }]
@@ -734,7 +676,7 @@ class AWSLexConnector(IVendorConnector):
                             "name": "lex_conversation_ended",
                             "metadata": {
                                 "reason": "lex_dialog_closed",
-                                "bot_name": session_info.get("bot_name", "unknown"),
+                                "bot_name": self.session_manager.get_bot_name(conversation_id) or "unknown",
                                 "conversation_id": conversation_id
                             }
                         }]
@@ -883,41 +825,14 @@ class AWSLexConnector(IVendorConnector):
         # Log conversation details first, in case there's an error in cleanup
         self.logger.info(f"Ending AWS Lex conversation: {conversation_id}")
 
-        # Check if we have a valid session for this conversation
-        if conversation_id in self._sessions:
-            # Extract useful info for logging before we clean up
-            session_info = self._sessions[conversation_id]
-            bot_name = session_info.get("bot_name", "unknown")
-            session_id = session_info.get("session_id", "unknown")
-            bot_id = session_info.get("actual_bot_id", "unknown")
-
-            # Clean up the session
-            del self._sessions[conversation_id]
-
-            # Detailed logging with session info
-            self.logger.info(
-                f"Ended AWS Lex conversation - ID: {conversation_id}, "
-                f"Bot: {bot_name}, Session ID: {session_id}, Bot ID: {bot_id}"
-            )
-
-            # If we have message data, generate a proper goodbye response
-            if message_data and message_data.get("generate_response", False):
-                self.logger.debug(f"Creating goodbye response for conversation {conversation_id}")
-                # Could return a response here if needed by the caller
-                return
-        else:
-            self.logger.warning(f"Attempted to end non-existent conversation: {conversation_id}")
+        # End session using session manager
+        session_info = self.session_manager.end_session(conversation_id, message_data)
 
         # Finalize audio buffering (always enabled for AWS Lex connector)
         self.audio_processor.cleanup_audio_buffer(conversation_id)
 
         # Clean up audio logging resources
         self.audio_processor.cleanup_audio_logging(conversation_id)
-
-        # Clean up START_OF_INPUT tracking
-        if conversation_id in self.conversations_with_start_of_input:
-            del self.conversations_with_start_of_input[conversation_id]
-            self.logger.debug(f"Cleaned up START_OF_INPUT tracking for conversation {conversation_id}")
 
         # No return value needed for normal end_conversation calls
 
@@ -951,8 +866,7 @@ class AWSLexConnector(IVendorConnector):
 
     def _refresh_bot_cache(self) -> None:
         """Refresh the cached list of available bots."""
-        self._available_bots = None
-        self._bot_name_to_id_map = {}  # Clear the mapping cache too
+        self.session_manager.refresh_bot_cache()
         self.get_available_agents()
 
 
@@ -967,19 +881,6 @@ class AWSLexConnector(IVendorConnector):
         Args:
             conversation_id: Conversation identifier to reset
         """
-        try:
-            # Remove from START_OF_INPUT tracking to allow new audio input cycle
-            if conversation_id in self.conversations_with_start_of_input:
-                self.conversations_with_start_of_input.remove(conversation_id)
-                self.logger.debug(f"Reset START_OF_INPUT tracking for conversation {conversation_id} - ready for next audio input cycle")
-            else:
-                self.logger.debug(f"Conversation {conversation_id} was not in START_OF_INPUT tracking")
-            
-            # Log the successful reset
-            self.logger.debug(f"Conversation {conversation_id} reset for next audio input cycle")
-            
-        except Exception as e:
-            self.logger.error(f"Error resetting conversation {conversation_id} for next input: {e}")
-            # Don't raise the exception, continue with conversation
+        self.session_manager.reset_conversation_for_next_input(conversation_id)
 
 

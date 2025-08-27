@@ -82,6 +82,7 @@ class TestAWSLexConnector:
             
             connector = AWSLexConnector(mock_config)
             connector.logger = MagicMock()
+            connector.session_manager.logger = MagicMock()
             return connector
 
     def test_init_with_explicit_credentials(self, mock_config):
@@ -100,9 +101,9 @@ class TestAWSLexConnector:
             assert connector.aws_access_key_id == "test_key"
             assert connector.aws_secret_access_key == "test_secret"
             assert connector.bot_alias_id == "TESTALIAS"
-            assert connector._available_bots is None
-            assert connector._bot_name_to_id_map == {}
-            assert connector._sessions == {}
+            assert connector.session_manager._available_bots is None
+            assert connector.session_manager._bot_name_to_id_map == {}
+            assert connector.session_manager._sessions == {}
 
     def test_init_without_credentials(self, mock_config_no_creds):
         """Test connector initialization without explicit AWS credentials."""
@@ -162,8 +163,8 @@ class TestAWSLexConnector:
             "aws_lex_connector: AnotherBot"
         ]
         assert agents == expected_agents
-        assert connector._bot_name_to_id_map["aws_lex_connector: TestBot"] == "bot123"
-        assert connector._bot_name_to_id_map["aws_lex_connector: AnotherBot"] == "bot456"
+        assert connector.session_manager._bot_name_to_id_map["aws_lex_connector: TestBot"] == "bot123"
+        assert connector.session_manager._bot_name_to_id_map["aws_lex_connector: AnotherBot"] == "bot456"
 
     def test_get_available_agents_client_error(self, connector):
         """Test handling of AWS client errors when getting agents."""
@@ -177,7 +178,7 @@ class TestAWSLexConnector:
         agents = connector.get_available_agents()
         
         assert agents == []
-        connector.logger.error.assert_called()
+        connector.session_manager.logger.error.assert_called()
 
     def test_get_available_agents_unexpected_error(self, connector):
         """Test handling of unexpected errors when getting agents."""
@@ -188,7 +189,7 @@ class TestAWSLexConnector:
         agents = connector.get_available_agents()
         
         assert agents == []
-        connector.logger.error.assert_called()
+        connector.session_manager.logger.error.assert_called()
 
     def test_get_available_agents_cached(self, connector, mock_lex_client):
         """Test that available agents are cached after first call."""
@@ -206,7 +207,7 @@ class TestAWSLexConnector:
     def test_start_conversation_success(self, connector, mock_lex_runtime):
         """Test successful conversation start."""
         # Setup bot mapping
-        connector._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
         
         # Mock successful Lex response
         mock_audio_stream = MagicMock()
@@ -247,7 +248,7 @@ class TestAWSLexConnector:
 
     def test_start_conversation_lex_api_error(self, connector, mock_lex_runtime):
         """Test conversation start with Lex API error."""
-        connector._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
         
         mock_lex_runtime.recognize_utterance.side_effect = ClientError(
             {'Error': {'Code': 'BotNotFound', 'Message': 'Bot not found'}},
@@ -265,7 +266,7 @@ class TestAWSLexConnector:
 
     def test_start_conversation_no_audio_response(self, connector, mock_lex_runtime):
         """Test conversation start with no audio response from Lex."""
-        connector._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
         
         # Mock response without audio stream
         mock_response = {}
@@ -283,7 +284,7 @@ class TestAWSLexConnector:
     def test_send_message_conversation_start(self, connector):
         """Test handling of conversation start message."""
         # Need to set up a session first since send_message checks for active sessions
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -300,7 +301,7 @@ class TestAWSLexConnector:
 
     def test_send_message_dtmf_transfer(self, connector):
         """Test handling of DTMF transfer request."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -318,7 +319,7 @@ class TestAWSLexConnector:
 
     def test_send_message_dtmf_goodbye(self, connector):
         """Test handling of DTMF goodbye request."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -336,7 +337,7 @@ class TestAWSLexConnector:
 
     def test_send_message_dtmf_other_digits(self, connector):
         """Test handling of other DTMF digits."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -357,7 +358,7 @@ class TestAWSLexConnector:
 
     def test_send_message_audio_input(self, connector, mock_lex_runtime):
         """Test handling of audio input."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -400,7 +401,7 @@ class TestAWSLexConnector:
 
     def test_send_message_event(self, connector):
         """Test handling of event input."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -418,7 +419,7 @@ class TestAWSLexConnector:
 
     def test_send_message_unrecognized_input(self, connector):
         """Test handling of unrecognized input type."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -435,7 +436,7 @@ class TestAWSLexConnector:
 
     def test_end_conversation_success(self, connector):
         """Test successful conversation ending."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -443,18 +444,18 @@ class TestAWSLexConnector:
         
         connector.end_conversation("conv123")
         
-        assert "conv123" not in connector._sessions
+        assert "conv123" not in connector.session_manager._sessions
         connector.logger.info.assert_called()
 
     def test_end_conversation_no_session(self, connector):
         """Test ending non-existent conversation."""
         connector.end_conversation("nonexistent")
         
-        connector.logger.warning.assert_called()
+        connector.session_manager.logger.warning.assert_called()
 
     def test_end_conversation_with_message_data(self, connector):
         """Test ending conversation with message data."""
-        connector._sessions["conv123"] = {
+        connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
             "actual_bot_id": "bot123"
@@ -463,7 +464,7 @@ class TestAWSLexConnector:
         message_data = {"generate_response": True}
         connector.end_conversation("conv123", message_data)
         
-        assert "conv123" not in connector._sessions
+        assert "conv123" not in connector.session_manager._sessions
 
     def test_convert_wxcc_to_vendor(self, connector):
         """Test conversion from WxCC to vendor format."""
@@ -481,14 +482,14 @@ class TestAWSLexConnector:
 
     def test_refresh_bot_cache(self, connector):
         """Test refreshing the bot cache."""
-        connector._available_bots = ["cached_bot"]
-        connector._bot_name_to_id_map = {"cached": "bot"}
+        connector.session_manager._available_bots = ["cached_bot"]
+        connector.session_manager._bot_name_to_id_map = {"cached": "bot"}
         
         with patch.object(connector, 'get_available_agents') as mock_get_agents:
             connector._refresh_bot_cache()
             
-            assert connector._available_bots is None
-            assert connector._bot_name_to_id_map == {}
+            assert connector.session_manager._available_bots is None
+            assert connector.session_manager._bot_name_to_id_map == {}
             mock_get_agents.assert_called_once()
 
     def test_create_response(self, connector):
@@ -679,39 +680,39 @@ class TestAWSLexConnector:
         conversation_id = "test_conv_789"
         
         # Set up initial state - conversation has START_OF_INPUT tracking
-        connector.conversations_with_start_of_input.add(conversation_id)
-        assert conversation_id in connector.conversations_with_start_of_input
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
+        assert conversation_id in connector.session_manager.conversations_with_start_of_input
         
         # Call the reset method
         connector._reset_conversation_for_next_input(conversation_id)
         
         # Verify conversation was removed from START_OF_INPUT tracking
-        assert conversation_id not in connector.conversations_with_start_of_input
-        assert len(connector.conversations_with_start_of_input) == 0
+        assert conversation_id not in connector.session_manager.conversations_with_start_of_input
+        assert len(connector.session_manager.conversations_with_start_of_input) == 0
 
     def test_reset_conversation_for_next_input_not_tracked(self, connector):
         """Test reset when conversation is not in START_OF_INPUT tracking."""
         conversation_id = "test_conv_790"
         
         # Ensure conversation is not in tracking
-        connector.conversations_with_start_of_input.discard(conversation_id)
-        assert conversation_id not in connector.conversations_with_start_of_input
+        connector.session_manager.conversations_with_start_of_input.discard(conversation_id)
+        assert conversation_id not in connector.session_manager.conversations_with_start_of_input
         
         # Call the reset method
         connector._reset_conversation_for_next_input(conversation_id)
         
         # Verify conversation still not in tracking
-        assert conversation_id not in connector.conversations_with_start_of_input
+        assert conversation_id not in connector.session_manager.conversations_with_start_of_input
 
     def test_reset_conversation_for_next_input_error_handling(self, connector):
         """Test that reset method handles errors gracefully."""
         conversation_id = "test_conv_791"
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Mock the logger to capture error calls
-        connector.logger.error = MagicMock()
+        connector.session_manager.logger.error = MagicMock()
         
         # Create a custom set-like object that raises an exception on remove
         class ExceptionRaisingSet(set):
@@ -719,20 +720,20 @@ class TestAWSLexConnector:
                 raise Exception("Test error")
         
         # Replace the set with our custom one
-        original_set = connector.conversations_with_start_of_input
-        connector.conversations_with_start_of_input = ExceptionRaisingSet([conversation_id])
+        original_set = connector.session_manager.conversations_with_start_of_input
+        connector.session_manager.conversations_with_start_of_input = ExceptionRaisingSet([conversation_id])
         
         try:
             # Call the reset method - should not raise exception
             connector._reset_conversation_for_next_input(conversation_id)
             
             # Verify error was logged
-            connector.logger.error.assert_called_with(
+            connector.session_manager.logger.error.assert_called_with(
                 f"Error resetting conversation {conversation_id} for next input: Test error"
             )
         finally:
             # Restore the original set
-            connector.conversations_with_start_of_input = original_set
+            connector.session_manager.conversations_with_start_of_input = original_set
 
     def test_multiple_audio_input_cycles_success(self, connector, mock_lex_runtime):
         """Test that multiple audio input cycles work correctly with reset functionality."""
@@ -741,7 +742,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -793,7 +794,7 @@ class TestAWSLexConnector:
                     assert response["response_type"] == "final"
                     
                     # Verify conversation state was reset
-                    assert conversation_id not in connector.conversations_with_start_of_input
+                    assert conversation_id not in connector.session_manager.conversations_with_start_of_input
                     
                     # Verify audio buffer was reset
                     assert audio_buffer.get_buffer_size() == 0
@@ -821,14 +822,14 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
         }
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Create DTMF message with transfer code (5)
         message_data = {
@@ -845,7 +846,7 @@ class TestAWSLexConnector:
         assert response["output_events"][0]["event_type"] == "TRANSFER_TO_HUMAN"
         
         # Verify conversation state was reset
-        assert conversation_id not in connector.conversations_with_start_of_input
+        assert conversation_id not in connector.session_manager.conversations_with_start_of_input
 
     def test_reset_integration_with_dtmf_goodbye(self, connector):
         """Test that conversation reset works correctly with DTMF goodbye."""
@@ -857,7 +858,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -910,7 +911,7 @@ class TestAWSLexConnector:
                 assert response["response_type"] == "final"
                 assert response["barge_in_enabled"] == False
                 
-                # Verify SESSION_END output event
+                                # Verify SESSION_END output event
                 assert "output_events" in response
                 assert len(response["output_events"]) == 1
                 event = response["output_events"][0]
@@ -919,9 +920,9 @@ class TestAWSLexConnector:
                 assert event["metadata"]["reason"] == "lex_dialog_closed"
                 assert event["metadata"]["bot_name"] == "TestBot"
                 assert event["metadata"]["conversation_id"] == conversation_id
-                
+
                 # Verify conversation state was reset
-                assert conversation_id not in connector.conversations_with_start_of_input
+                assert conversation_id not in connector.session_manager.conversations_with_start_of_input
                 assert audio_buffer.get_buffer_size() == 0
 
     def test_session_end_on_intent_fulfilled(self, connector):
@@ -931,7 +932,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -993,7 +994,7 @@ class TestAWSLexConnector:
                 assert event["metadata"]["conversation_id"] == conversation_id
                 
                 # Verify conversation state was reset
-                assert conversation_id not in connector.conversations_with_start_of_input
+                assert conversation_id not in connector.session_manager.conversations_with_start_of_input
                 assert audio_buffer.get_buffer_size() == 0
 
     def test_transfer_to_agent_on_intent_failed(self, connector):
@@ -1003,7 +1004,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1068,7 +1069,7 @@ class TestAWSLexConnector:
                 assert event["metadata"]["conversation_id"] == conversation_id
                 
                 # Verify conversation state was reset
-                assert conversation_id not in connector.conversations_with_start_of_input
+                assert conversation_id not in connector.session_manager.conversations_with_start_of_input
                 assert audio_buffer.get_buffer_size() == 0
 
     def test_multiple_interpretations_primary_intent_handling(self, connector):
@@ -1078,7 +1079,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1143,7 +1144,7 @@ class TestAWSLexConnector:
         session_id = "session_id_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1200,7 +1201,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1267,14 +1268,14 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
         }
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Create DTMF message with goodbye code (6)
         message_data = {
@@ -1291,21 +1292,21 @@ class TestAWSLexConnector:
         assert response["output_events"][0]["event_type"] == "CONVERSATION_END"
         
         # Verify conversation state was reset
-        assert conversation_id not in connector.conversations_with_start_of_input
+        assert conversation_id not in connector.session_manager.conversations_with_start_of_input
 
     def test_reset_integration_with_text_input(self, connector):
         """Test that conversation reset works correctly with text input."""
         conversation_id = "test_conv_795"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": "session_123",
             "actual_bot_id": "test_bot_123",
             "bot_name": "TestBot"
         }
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Process text input
         response = connector._send_text_to_lex(conversation_id, "Hello")
@@ -1315,7 +1316,7 @@ class TestAWSLexConnector:
         assert "Processing text input: Hello" in response["text"]
         
         # Verify conversation state was reset
-        assert conversation_id not in connector.conversations_with_start_of_input
+        assert conversation_id not in connector.session_manager.conversations_with_start_of_input
 
     def test_reset_integration_with_audio_processing_errors(self, connector, mock_lex_runtime):
         """Test that conversation reset works correctly even when audio processing errors occur."""
@@ -1324,7 +1325,7 @@ class TestAWSLexConnector:
         session_id = "session_id_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1339,7 +1340,7 @@ class TestAWSLexConnector:
         assert audio_buffer.get_buffer_size() > 0
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Mock Lex runtime to raise an error
         with patch.object(connector.lex_runtime, 'recognize_utterance', side_effect=ClientError(
@@ -1352,7 +1353,7 @@ class TestAWSLexConnector:
             assert len(responses) == 0
             
             # Verify conversation state was reset despite error
-            assert conversation_id not in connector.conversations_with_start_of_input
+            assert conversation_id not in connector.session_manager.conversations_with_start_of_input
             
             # Verify audio buffer was reset
             assert audio_buffer.get_buffer_size() == 0
@@ -1364,7 +1365,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1379,7 +1380,7 @@ class TestAWSLexConnector:
         assert audio_buffer.get_buffer_size() > 0
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Mock Lex response with empty audio stream
         mock_audio_stream = MagicMock()
@@ -1405,7 +1406,7 @@ class TestAWSLexConnector:
                 assert len(responses) == 0
                 
                 # Verify conversation state was reset
-                assert conversation_id not in connector.conversations_with_start_of_input
+                assert conversation_id not in connector.session_manager.conversations_with_start_of_input
                 
                 # Verify audio buffer was reset
                 assert audio_buffer.get_buffer_size() == 0
@@ -1417,7 +1418,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1432,7 +1433,7 @@ class TestAWSLexConnector:
         assert audio_buffer.get_buffer_size() > 0
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Mock Lex response with no audio stream
         mock_response = {
@@ -1459,7 +1460,7 @@ class TestAWSLexConnector:
                 assert len(responses) == 0
                 
                 # Verify conversation state was reset
-                assert conversation_id not in connector.conversations_with_start_of_input
+                assert conversation_id not in connector.session_manager.conversations_with_start_of_input
                 
                 # Verify audio buffer was reset
                 assert audio_buffer.get_buffer_size() == 0
@@ -1471,7 +1472,7 @@ class TestAWSLexConnector:
         session_id = "session_123"
         
         # Set up session
-        connector._sessions[conversation_id] = {
+        connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
             "bot_name": "TestBot"
@@ -1486,7 +1487,7 @@ class TestAWSLexConnector:
         assert audio_buffer.get_buffer_size() > 0
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Mock Lex runtime to raise an unexpected error
         with patch.object(connector.lex_runtime, 'recognize_utterance', side_effect=Exception("Unexpected error")):
@@ -1497,7 +1498,7 @@ class TestAWSLexConnector:
             assert len(responses) == 0
             
             # Verify conversation state was reset despite error
-            assert conversation_id not in connector.conversations_with_start_of_input
+            assert conversation_id not in connector.session_manager.conversations_with_start_of_input
             
             # Verify audio buffer was reset
             assert audio_buffer.get_buffer_size() == 0
@@ -1507,16 +1508,13 @@ class TestAWSLexConnector:
         conversation_id = "test_conv_800"
         
         # Set up initial state
-        connector.conversations_with_start_of_input.add(conversation_id)
+        connector.session_manager.conversations_with_start_of_input.add(conversation_id)
         
         # Call the reset method
-        connector._reset_conversation_for_next_input(conversation_id)
+        connector.session_manager.reset_conversation_for_next_input(conversation_id)
         
         # Verify appropriate logging occurred
-        connector.logger.debug.assert_any_call(
-            f"Reset START_OF_INPUT tracking for conversation {conversation_id} - ready for next audio input cycle"
-        )
-        connector.logger.debug.assert_any_call(
+        connector.session_manager.logger.debug.assert_any_call(
             f"Conversation {conversation_id} reset for next audio input cycle"
         )
 
