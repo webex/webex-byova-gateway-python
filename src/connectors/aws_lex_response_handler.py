@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List, Optional, Generator
 
 from botocore.exceptions import ClientError
+from .aws_lex_error_handler import AWSLexErrorHandler, ErrorContext
 
 
 class AWSLexResponseHandler:
@@ -19,14 +20,16 @@ class AWSLexResponseHandler:
     processing logic to keep the main connector focused on business logic.
     """
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, error_handler: Optional[AWSLexErrorHandler] = None):
         """
         Initialize the response handler.
 
         Args:
             logger: Logger instance for the connector
+            error_handler: Optional error handler instance
         """
         self.logger = logger
+        self.error_handler = error_handler or AWSLexErrorHandler(logger)
 
     def create_session_end_response(self, conversation_id: str, bot_name: str, 
                                   reason: str = "intent_fulfilled", 
@@ -315,9 +318,7 @@ class AWSLexResponseHandler:
                 self.logger.debug("Audio processing completed but no response generated")
 
         except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
-            self.logger.error(f"Lex API error during audio processing: {error_code} - {error_message}")
+            self.error_handler.handle_lex_api_error(e, conversation_id, ErrorContext.LEX_AUDIO_PROCESSING)
             
             # Reset buffer and log the error
             audio_processor.reset_audio_buffer(conversation_id)
@@ -326,9 +327,7 @@ class AWSLexResponseHandler:
             self.logger.debug("Audio processing failed due to Lex API error, buffer reset")
 
         except Exception as e:
-            self.logger.error(f"Unexpected error during audio processing: {e}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            self.error_handler.handle_audio_processing_error(e, conversation_id)
             
             # Reset buffer and log the error
             audio_processor.reset_audio_buffer(conversation_id)
@@ -371,6 +370,5 @@ class AWSLexResponseHandler:
             return decoded_data
             
         except Exception as e:
-            self.logger.warning(f"Failed to decode {field_name}: {e}")
-            self.logger.debug(f"Raw {field_name}: {field_value}")
+            self.error_handler.handle_response_decoding_error(e, field_name, field_value)
             return None

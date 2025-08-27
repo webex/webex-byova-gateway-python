@@ -15,6 +15,7 @@ from .aws_lex_audio_processor import AWSLexAudioProcessor
 from .aws_lex_session_manager import AWSLexSessionManager
 from .aws_lex_response_handler import AWSLexResponseHandler
 from .aws_lex_config import AWSLexConfig
+from .aws_lex_error_handler import AWSLexErrorHandler, ErrorContext
 
 
 class AWSLexConnector(IVendorConnector):
@@ -72,6 +73,9 @@ class AWSLexConnector(IVendorConnector):
         self.response_content_type = self.config_manager.get_response_content_type()
         self.aws_credentials = self.config_manager.get_aws_credentials()
 
+        # Initialize error handler first (needed for AWS client initialization)
+        self.error_handler = AWSLexErrorHandler(self.logger)
+
         # Initialize AWS clients
         self._init_aws_clients()
 
@@ -79,7 +83,7 @@ class AWSLexConnector(IVendorConnector):
         self.session_manager = AWSLexSessionManager(self.logger)
         
         # Initialize response handler
-        self.response_handler = AWSLexResponseHandler(self.logger)
+        self.response_handler = AWSLexResponseHandler(self.logger, self.error_handler)
 
         # Initialize audio processor
         self.audio_processor = AWSLexAudioProcessor(config, self.logger)
@@ -112,8 +116,7 @@ class AWSLexConnector(IVendorConnector):
             self.logger.debug("AWS Lex clients initialized successfully")
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize AWS clients: {e}")
-            raise
+            self.error_handler.handle_aws_client_init_error(e)
 
     def get_available_agents(self) -> List[str]:
         """
@@ -240,11 +243,8 @@ class AWSLexConnector(IVendorConnector):
                 )
 
             except Exception as e:
-                self.logger.error(f"Error getting audio response from Lex: {e}")
-                self.logger.error(f"Exception type: {type(e)}")
-                import traceback
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
-
+                self.error_handler.handle_audio_processing_error(e, conversation_id)
+                
                 # Fallback to text response
                 return self.create_response(
                     conversation_id=conversation_id,
@@ -256,17 +256,11 @@ class AWSLexConnector(IVendorConnector):
                 )
 
         except Exception as e:
-            self.logger.error(f"Error starting Lex conversation: {e}")
-            self.logger.error(f"Exception type: {type(e)}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return self.create_response(
+            self.error_handler.handle_conversation_error(e, conversation_id, ErrorContext.CONVERSATION_START)
+            return self.error_handler.create_fallback_response(
                 conversation_id=conversation_id,
-                message_type="error",
-                text="I'm having trouble starting our conversation. Please try again.",
-                audio_content=b"",
-                barge_in_enabled=False,
-                response_type="final"
+                original_message_type="welcome",
+                fallback_text="I'm having trouble starting our conversation. Please try again."
             )
 
     def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
@@ -293,14 +287,7 @@ class AWSLexConnector(IVendorConnector):
         # Check if we have a valid session for this conversation
         if not self.session_manager.has_session(conversation_id):
             self.logger.error(f"No active session found for conversation {conversation_id}")
-            yield self.create_response(
-                conversation_id=conversation_id,
-                message_type="error",
-                text="No active conversation found. Please start a new conversation.",
-                audio_content=b"",
-                barge_in_enabled=False,
-                response_type="final"
-            )
+            yield self.error_handler.create_session_error_response(conversation_id, ErrorContext.SESSION_NO_SESSION)
             return
 
         # Get session info
@@ -433,7 +420,7 @@ class AWSLexConnector(IVendorConnector):
                 return
 
         except Exception as e:
-            self.logger.error(f"Error processing audio input: {e}")
+            self.error_handler.handle_audio_processing_error(e, conversation_id)
 
     def _send_text_to_lex(self, conversation_id: str, text_input: str) -> Dict[str, Any]:
         """
@@ -450,13 +437,7 @@ class AWSLexConnector(IVendorConnector):
             # Extract session info
             if not self.session_manager.has_session(conversation_id):
                 self.logger.error(f"No session found for conversation {conversation_id}")
-                return self.create_response(
-                    conversation_id=conversation_id,
-                    message_type="error",
-                    text="I couldn't process your request. Please try again.",
-                    barge_in_enabled=False,
-                    response_type="final"
-                )
+                return self.error_handler.create_session_error_response(conversation_id, ErrorContext.SESSION_NO_SESSION)
             
             self.logger.debug(f"Sending text '{text_input}' to Lex for conversation {conversation_id}")
 
@@ -473,15 +454,13 @@ class AWSLexConnector(IVendorConnector):
                 response_type="final"
             )
         except Exception as e:
-            self.logger.error(f"Error processing text input: {e}")
+            self.error_handler.handle_text_processing_error(e, conversation_id, text_input)
             # Reset conversation state for next audio input cycle
             self.session_manager.reset_conversation_for_next_input(conversation_id)
-            return self.create_response(
+            return self.error_handler.create_error_response(
                 conversation_id=conversation_id,
-                message_type="error",
-                text="An error occurred while processing your text. Please try again.",
-                barge_in_enabled=False,
-                response_type="final"
+                error_message="An error occurred while processing your text. Please try again.",
+                context=ErrorContext.TEXT_PROCESSING
             )
 
     def _send_audio_to_lex(self, conversation_id: str) -> Iterator[Dict[str, Any]]:
@@ -694,9 +673,7 @@ class AWSLexConnector(IVendorConnector):
                     self.logger.debug("Audio processing completed but no response generated")
 
             except ClientError as e:
-                error_code = e.response['Error']['Code']
-                error_message = e.response['Error']['Message']
-                self.logger.error(f"Lex API error during audio processing: {error_code} - {error_message}")
+                self.error_handler.handle_lex_api_error(e, conversation_id, ErrorContext.LEX_AUDIO_PROCESSING)
                 
                 # Reset buffer and log the error
                 self.audio_processor.reset_audio_buffer(conversation_id)
@@ -705,9 +682,7 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.debug("Audio processing failed due to Lex API error, buffer reset")
 
             except Exception as e:
-                self.logger.error(f"Unexpected error during audio processing: {e}")
-                import traceback
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                self.error_handler.handle_audio_processing_error(e, conversation_id)
                 
                 # Reset buffer and log the error
                 self.audio_processor.reset_audio_buffer(conversation_id)
@@ -716,7 +691,7 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.debug("Audio processing failed due to unexpected error, buffer reset")
 
         except Exception as e:
-            self.logger.error(f"Error in _send_audio_to_lex: {e}")
+            self.error_handler.handle_audio_processing_error(e, conversation_id)
             self.logger.debug("Audio processing failed, no response generated")
 
 
