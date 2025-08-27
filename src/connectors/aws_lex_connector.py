@@ -71,6 +71,7 @@ class AWSLexConnector(IVendorConnector):
         self.locale_id = self.config_manager.get_locale_id()
         self.request_content_type = self.config_manager.get_request_content_type()
         self.response_content_type = self.config_manager.get_response_content_type()
+        self.barge_in_enabled = self.config_manager.is_barge_in_enabled()
         self.aws_credentials = self.config_manager.get_aws_credentials()
 
         # Initialize error handler first (needed for AWS client initialization)
@@ -196,7 +197,7 @@ class AWSLexConnector(IVendorConnector):
                             message_type="welcome",
                             text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                             audio_content=wav_audio,
-                            barge_in_enabled=False,
+                            barge_in_enabled=self.barge_in_enabled,
                             content_type=content_type,
                             response_type="final"
                         )
@@ -207,7 +208,7 @@ class AWSLexConnector(IVendorConnector):
                             message_type="welcome",
                             text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                             audio_content=b"",
-                            barge_in_enabled=False,
+                            barge_in_enabled=self.barge_in_enabled,
                             response_type="final"
                         )
                 else:
@@ -223,7 +224,7 @@ class AWSLexConnector(IVendorConnector):
                         message_type="welcome",
                         text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                         audio_content=b"",
-                        barge_in_enabled=False,
+                        barge_in_enabled=self.barge_in_enabled,
                         response_type="final"
                     )
 
@@ -238,7 +239,7 @@ class AWSLexConnector(IVendorConnector):
                     message_type="welcome",
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
-                    barge_in_enabled=False,
+                    barge_in_enabled=self.barge_in_enabled,
                     response_type="final"
                 )
 
@@ -251,7 +252,7 @@ class AWSLexConnector(IVendorConnector):
                     message_type="welcome",
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
-                    barge_in_enabled=False,
+                    barge_in_enabled=self.barge_in_enabled,
                     response_type="final"
                 )
 
@@ -450,7 +451,7 @@ class AWSLexConnector(IVendorConnector):
                 conversation_id=conversation_id,
                 message_type="silence",
                 text=f"Processing text input: {text_input}",
-                barge_in_enabled=False,
+                barge_in_enabled=self.barge_in_enabled,
                 response_type="final"
             )
         except Exception as e:
@@ -498,6 +499,17 @@ class AWSLexConnector(IVendorConnector):
             # Extract session details
             bot_id = self.session_manager.get_bot_id(conversation_id)
             session_id = self.session_manager.get_session_id(conversation_id)
+            
+            # Log session details for debugging
+            self.logger.debug(f"Session details for conversation {conversation_id}: bot_id={bot_id}, session_id={session_id}")
+            
+            # Validate session details
+            if not session_id:
+                self.logger.error(f"No session ID found for conversation {conversation_id}")
+                return
+            if not bot_id:
+                self.logger.error(f"No bot ID found for conversation {conversation_id}")
+                return
 
             # Send audio to AWS Lex
             try:
@@ -506,10 +518,14 @@ class AWSLexConnector(IVendorConnector):
                 
                 self.logger.debug(f"Converted {len(buffered_audio)} bytes u-law to {len(pcm_audio)} bytes 16-bit PCM at 16kHz")
 
+                # Log the parameters being sent to AWS Lex for debugging
+                self.logger.debug(f"Sending to AWS Lex: botId={bot_id}, botAliasId={self.bot_alias_id}, localeId={self.locale_id}, sessionId={session_id}")
+
                 response = self.lex_runtime.recognize_utterance(
                     botId=bot_id,
                     botAliasId=self.bot_alias_id,
                     localeId=self.locale_id,
+                    sessionId=session_id,
                     requestContentType='audio/l16; rate=16000; channels=1',  # 16-bit PCM, 16kHz, little-endian
                     responseContentType=self.response_content_type,
                     inputStream=pcm_audio

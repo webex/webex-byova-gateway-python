@@ -30,7 +30,8 @@ class TestAWSLexConnector:
             "region_name": "us-east-1",
             "aws_access_key_id": "test_key",
             "aws_secret_access_key": "test_secret",
-            "bot_alias_id": "TESTALIAS"
+            "bot_alias_id": "TESTALIAS",
+            "barge_in_enabled": False
         }
 
     @pytest.fixture
@@ -38,7 +39,19 @@ class TestAWSLexConnector:
         """Provide a mock configuration without explicit credentials."""
         return {
             "region_name": "us-east-1",
-            "bot_alias_id": "TESTALIAS"
+            "bot_alias_id": "TESTALIAS",
+            "barge_in_enabled": False
+        }
+
+    @pytest.fixture
+    def mock_config_barge_in_enabled(self):
+        """Provide a mock configuration with barge-in enabled."""
+        return {
+            "region_name": "us-east-1",
+            "aws_access_key_id": "test_key",
+            "aws_secret_access_key": "test_secret",
+            "bot_alias_id": "TESTALIAS",
+            "barge_in_enabled": True
         }
 
     @pytest.fixture
@@ -98,6 +111,22 @@ class TestAWSLexConnector:
             connector = AWSLexConnector(mock_config)
             
             assert connector.config_manager.get_region_name() == "us-east-1"
+            assert connector.config_manager.is_barge_in_enabled() is False
+
+    def test_init_with_barge_in_enabled(self, mock_config_barge_in_enabled):
+        """Test connector initialization with barge-in enabled."""
+        with patch('boto3.Session') as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.client.side_effect = lambda service: {
+                'lexv2-models': MagicMock(),
+                'lexv2-runtime': MagicMock()
+            }[service]
+            mock_session_class.return_value = mock_session
+            
+            connector = AWSLexConnector(mock_config_barge_in_enabled)
+            
+            assert connector.config_manager.get_region_name() == "us-east-1"
+            assert connector.config_manager.is_barge_in_enabled() is True
             assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] == "test_key"
             assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] == "test_secret"
             assert connector.config_manager.get_bot_alias_id() == "TESTALIAS"
@@ -234,6 +263,45 @@ class TestAWSLexConnector:
             assert "TestBot" in response["text"]
             assert response["audio_content"] == b"converted_audio"
             assert response["barge_in_enabled"] is False
+
+    def test_start_conversation_with_barge_in_enabled(self, mock_config_barge_in_enabled):
+        """Test conversation start with barge-in enabled configuration."""
+        with patch('boto3.Session') as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.client.side_effect = lambda service: {
+                'lexv2-models': MagicMock(),
+                'lexv2-runtime': MagicMock()
+            }[service]
+            mock_session_class.return_value = mock_session
+            
+            connector = AWSLexConnector(mock_config_barge_in_enabled)
+            connector.logger = MagicMock()
+            connector.session_manager.logger = MagicMock()
+            
+            # Mock the bot discovery
+            connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+            
+            # Mock the Lex response
+            mock_response = MagicMock()
+            mock_response.audioStream = b"test_audio"
+            mock_response.contentType = "audio/pcm"
+            
+            connector.lex_runtime = MagicMock()
+            connector.lex_runtime.recognize_utterance.return_value = mock_response
+            
+            # Mock audio conversion
+            connector.audio_processor = MagicMock()
+            connector.audio_processor.convert_lex_audio_to_wxcc_format.return_value = (b"converted_audio", "audio/wav")
+            
+            response = connector.start_conversation("conv123", {
+                "virtual_agent_id": "aws_lex_connector: TestBot"
+            })
+            
+            assert response["conversation_id"] == "conv123"
+            assert response["message_type"] == "welcome"
+            assert "TestBot" in response["text"]
+            assert response["audio_content"] == b"converted_audio"
+            assert response["barge_in_enabled"] is True
 
     def test_start_conversation_bot_not_found(self, connector):
         """Test conversation start with unknown bot."""
@@ -1517,6 +1585,283 @@ class TestAWSLexConnector:
         connector.session_manager.logger.debug.assert_any_call(
             f"Conversation {conversation_id} reset for next audio input cycle"
         )
+
+    def test_recognize_utterance_parameters_audio_input(self, connector):
+        """Test that recognize_utterance is called with all required parameters for audio input."""
+        # Set up session and audio buffer
+        conversation_id = "test_conv_params_audio"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        connector.session_manager._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock recognize_utterance to capture parameters
+        with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize:
+            mock_recognize.return_value = MagicMock()
+            
+            # Call the method
+            list(connector._send_audio_to_lex(conversation_id))
+            
+            # Verify the method was called
+            assert mock_recognize.called
+            
+            # Verify all required parameters are present
+            call_args = mock_recognize.call_args
+            assert call_args is not None
+            
+            # Check required parameters
+            assert 'botId' in call_args.kwargs
+            assert 'botAliasId' in call_args.kwargs
+            assert 'localeId' in call_args.kwargs
+            assert 'sessionId' in call_args.kwargs  # ← This would catch the regression!
+            assert 'requestContentType' in call_args.kwargs
+            assert 'responseContentType' in call_args.kwargs
+            assert 'inputStream' in call_args.kwargs
+            
+            # Verify specific values
+            assert call_args.kwargs['botId'] == bot_id
+            assert call_args.kwargs['sessionId'] == session_id
+            assert call_args.kwargs['botAliasId'] == connector.bot_alias_id
+            assert call_args.kwargs['localeId'] == connector.locale_id
+            assert call_args.kwargs['requestContentType'] == 'audio/l16; rate=16000; channels=1'
+            assert call_args.kwargs['responseContentType'] == connector.response_content_type
+            assert call_args.kwargs['inputStream'] is not None  # Should have audio data
+
+    def test_recognize_utterance_parameters_text_input(self, connector):
+        """Test that recognize_utterance is called with all required parameters for text input."""
+        # Set up bot mapping first
+        connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        
+        # Set up session
+        conversation_id = "test_conv_params_text"
+        bot_id = "bot123"  # Use the same ID as in the mapping
+        expected_session_id = f"session_{conversation_id}"  # Session manager generates this format
+        
+        # Let the session manager create the session properly
+        # connector.session_manager._sessions[conversation_id] = {
+        #     "session_id": session_id,
+        #     "actual_bot_id": bot_id,
+        #     "bot_name": "TestBot"
+        # }
+        
+        # Mock recognize_utterance to capture parameters
+        with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize:
+            mock_recognize.return_value = MagicMock()
+            
+            # Call the method (start_conversation calls recognize_utterance)
+            connector.start_conversation(conversation_id, {
+                "virtual_agent_id": "aws_lex_connector: TestBot"
+            })
+            
+            # Verify the method was called
+            assert mock_recognize.called
+            
+            # Verify all required parameters are present
+            call_args = mock_recognize.call_args
+            assert call_args is not None
+            
+            # Check required parameters
+            assert 'botId' in call_args.kwargs
+            assert 'botAliasId' in call_args.kwargs
+            assert 'localeId' in call_args.kwargs
+            assert 'sessionId' in call_args.kwargs  # ← This would catch the regression!
+            assert 'requestContentType' in call_args.kwargs
+            assert 'responseContentType' in call_args.kwargs
+            assert 'inputStream' in call_args.kwargs
+            
+            # Verify specific values
+            assert call_args.kwargs['botId'] == bot_id
+            assert call_args.kwargs['sessionId'] == expected_session_id
+            assert call_args.kwargs['botAliasId'] == connector.bot_alias_id
+            assert call_args.kwargs['localeId'] == connector.locale_id
+            assert call_args.kwargs['requestContentType'] == connector.request_content_type
+            assert call_args.kwargs['responseContentType'] == connector.response_content_type
+            assert call_args.kwargs['inputStream'] is not None  # Should have text data
+
+    def test_recognize_utterance_parameters_validation_error(self, connector):
+        """Test that missing sessionId parameter would cause validation error."""
+        # Set up session and audio buffer
+        conversation_id = "test_conv_params_validation"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        connector.session_manager._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock recognize_utterance to simulate the missing sessionId error
+        with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize:
+            # Simulate the exact error that occurred
+            mock_recognize.side_effect = ClientError(
+                {'Error': {'Code': 'ParamValidationError', 'Message': 'Missing required parameter in input: "sessionId"'}},
+                'RecognizeUtterance'
+            )
+            
+            # Call the method - it should handle the error gracefully
+            responses = list(connector._send_audio_to_lex(conversation_id))
+            
+            # Verify the method was called (even though it failed)
+            assert mock_recognize.called
+            
+            # Verify error handling worked (no responses should be yielded due to error)
+            assert len(responses) == 0
+
+    def test_recognize_utterance_parameters_barge_in_enabled(self, mock_config_barge_in_enabled):
+        """Test that recognize_utterance parameters are correct when barge-in is enabled."""
+        with patch('boto3.Session') as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.client.side_effect = lambda service: {
+                'lexv2-models': MagicMock(),
+                'lexv2-runtime': MagicMock()
+            }[service]
+            mock_session_class.return_value = mock_session
+            
+            connector = AWSLexConnector(mock_config_barge_in_enabled)
+            connector.logger = MagicMock()
+            connector.session_manager.logger = MagicMock()
+            
+            # Set up session
+            conversation_id = "test_conv_barge_in"
+            bot_id = "test_bot_123"
+            session_id = "session_123"
+            
+            connector.session_manager._sessions[conversation_id] = {
+                "session_id": session_id,
+                "actual_bot_id": bot_id,
+                "bot_name": "TestBot"
+            }
+            
+            connector.audio_processor.init_audio_buffer(conversation_id)
+            audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
+            audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+            
+            # Mock recognize_utterance to capture parameters
+            with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize:
+                mock_recognize.return_value = MagicMock()
+                
+                # Call the method
+                list(connector._send_audio_to_lex(conversation_id))
+                
+                # Verify the method was called
+                assert mock_recognize.called
+                
+                # Verify all required parameters are present
+                call_args = mock_recognize.call_args
+                assert call_args is not None
+                
+                # Check required parameters
+                assert 'botId' in call_args.kwargs
+                assert 'botAliasId' in call_args.kwargs
+                assert 'localeId' in call_args.kwargs
+                assert 'sessionId' in call_args.kwargs  # ← Critical for barge-in to work!
+                assert 'requestContentType' in call_args.kwargs
+                assert 'responseContentType' in call_args.kwargs
+                assert 'inputStream' in call_args.kwargs
+                
+                # Verify barge-in configuration is properly applied
+                assert connector.barge_in_enabled is True
+
+    def test_recognize_utterance_parameters_barge_in_disabled(self, connector):
+        """Test that recognize_utterance parameters are correct when barge-in is disabled."""
+        # Set up session and audio buffer
+        conversation_id = "test_conv_barge_in_disabled"
+        bot_id = "test_bot_123"
+        session_id = "session_123"
+        
+        connector.session_manager._sessions[conversation_id] = {
+            "session_id": session_id,
+            "actual_bot_id": bot_id,
+            "bot_name": "TestBot"
+        }
+        
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        # Mock recognize_utterance to capture parameters
+        with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize:
+            mock_recognize.return_value = MagicMock()
+            
+            # Call the method
+            list(connector._send_audio_to_lex(conversation_id))
+            
+            # Verify the method was called
+            assert mock_recognize.called
+            
+            # Verify all required parameters are present
+            call_args = mock_recognize.call_args
+            assert call_args is not None
+            
+            # Check required parameters
+            assert 'botId' in call_args.kwargs
+            assert 'botAliasId' in call_args.kwargs
+            assert 'localeId' in call_args.kwargs
+            assert 'sessionId' in call_args.kwargs  # ← Critical for barge-in to work!
+            assert 'requestContentType' in call_args.kwargs
+            assert 'responseContentType' in call_args.kwargs
+            assert 'inputStream' in call_args.kwargs
+            
+            # Verify barge-in configuration is properly applied
+            assert connector.barge_in_enabled is False
+
+    def test_recognize_utterance_parameters_consistency(self, connector):
+        """Test that both text and audio recognize_utterance calls use consistent parameters."""
+        # Set up bot mapping first
+        connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        
+        # Set up session
+        conversation_id = "test_conv_consistency"
+        bot_id = "bot123"  # Use the same ID as in the mapping
+        expected_session_id = f"session_{conversation_id}"  # Session manager generates this format
+        
+        # Test text input parameters
+        with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize_text:
+            mock_recognize_text.return_value = MagicMock()
+            
+            connector.start_conversation(conversation_id, {
+                "virtual_agent_id": "aws_lex_connector: TestBot"
+            })
+            
+            text_call_args = mock_recognize_text.call_args
+            assert text_call_args is not None
+            
+        # Test audio input parameters
+        connector.audio_processor.init_audio_buffer(conversation_id)
+        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
+        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        
+        with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize_audio:
+            mock_recognize_audio.return_value = MagicMock()
+            
+            list(connector._send_audio_to_lex(conversation_id))
+            
+            audio_call_args = mock_recognize_audio.call_args
+            assert audio_call_args is not None
+            
+        # Verify both calls have the same required parameters
+        required_params = ['botId', 'botAliasId', 'localeId', 'sessionId', 'requestContentType', 'responseContentType', 'inputStream']
+        
+        for param in required_params:
+            assert param in text_call_args.kwargs, f"Text call missing {param}"
+            assert param in audio_call_args.kwargs, f"Audio call missing {param}"
+            
+        # Verify sessionId is the same in both calls
+        assert text_call_args.kwargs['sessionId'] == audio_call_args.kwargs['sessionId']
+        assert text_call_args.kwargs['sessionId'] == expected_session_id
 
 
 if __name__ == "__main__":

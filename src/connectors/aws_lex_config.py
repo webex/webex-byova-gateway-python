@@ -23,6 +23,7 @@ class AWSLexConfig:
     DEFAULT_LOCALE_ID = "en_US"
     DEFAULT_REQUEST_CONTENT_TYPE = "text/plain; charset=utf-8"
     DEFAULT_RESPONSE_CONTENT_TYPE = "audio/pcm"
+    DEFAULT_BARGE_IN_ENABLED = False
     
     # Required configuration keys
     REQUIRED_CONFIG_KEYS = ["region_name"]
@@ -86,6 +87,9 @@ class AWSLexConfig:
             # Process content types
             self._validated_config["request_content_type"] = self._config.get("request_content_type", self.DEFAULT_REQUEST_CONTENT_TYPE)
             self._validated_config["response_content_type"] = self._config.get("response_content_type", self.DEFAULT_RESPONSE_CONTENT_TYPE)
+            
+            # Process barge-in configuration
+            self._validated_config["barge_in_enabled"] = self._config.get("barge_in_enabled", self.DEFAULT_BARGE_IN_ENABLED)
             
             # Process audio logging configuration
             self._validated_config["audio_logging"] = self._process_audio_logging_config()
@@ -185,6 +189,15 @@ class AWSLexConfig:
         """
         return self._validated_config["response_content_type"]
 
+    def is_barge_in_enabled(self) -> bool:
+        """
+        Check if barge-in is enabled for responses.
+        
+        Returns:
+            True if barge-in is enabled, False otherwise
+        """
+        return self._validated_config["barge_in_enabled"]
+
     def get_audio_logging_config(self) -> Dict[str, Any]:
         """
         Get the audio logging configuration.
@@ -252,6 +265,7 @@ class AWSLexConfig:
             f"region: {self.get_region_name()}",
             f"bot_alias: {self.get_bot_alias_id()}",
             f"locale: {self.get_locale_id()}",
+            f"barge_in: {'enabled' if self.is_barge_in_enabled() else 'disabled'}",
             f"audio_logging: {'enabled' if self.is_audio_logging_enabled() else 'disabled'}",
             f"max_retries: {self.get_max_retries()}",
             f"timeout: {self.get_timeout()}s"

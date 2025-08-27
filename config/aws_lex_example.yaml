@@ -14,6 +14,11 @@ aws_lex_connector:
   # Change this if your bot uses a different alias
   bot_alias_id: "TSTALIASID"
   
+  # Optional: Barge-in configuration
+  # When enabled, users can interrupt the bot's response
+  # Default: false (disabled)
+  barge_in_enabled: false
+  
   # Note: Audio conversion to WAV format is always enabled (WxCC requirement)
 
 # Example configurations for different environments:
@@ -22,13 +27,16 @@ aws_lex_connector:
 aws_lex_connector_dev:
   region_name: "us-east-1"
   bot_alias_id: "TSTALIASID"
+  barge_in_enabled: true  # Enable barge-in for development
 
 # Production
 aws_lex_connector_prod:
   region_name: "us-east-1"
   bot_alias_id: "PRODALIASID"  # Your production bot alias
+  barge_in_enabled: false  # Disable barge-in for production (default)
 
 # Custom bot with specific alias
 aws_lex_connector_custom:
   region_name: "us-west-2"
   bot_alias_id: "CUSTOMALIAS"  # Your custom bot alias
+  barge_in_enabled: true  # Enable barge-in for custom bot

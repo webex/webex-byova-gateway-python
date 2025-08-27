@@ -31,6 +31,10 @@ connectors:
       region_name: "us-east-1"
       bot_alias_id: "TSTALIASID"
       
+      # Barge-in configuration (default: false)
+      # When enabled, users can interrupt the bot's response
+      barge_in_enabled: false
+      
       # Audio logging configuration
       audio_logging:
         enabled: true
