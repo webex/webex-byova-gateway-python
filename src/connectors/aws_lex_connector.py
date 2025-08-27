@@ -14,6 +14,7 @@ from .i_vendor_connector import IVendorConnector
 from .aws_lex_audio_processor import AWSLexAudioProcessor
 from .aws_lex_session_manager import AWSLexSessionManager
 from .aws_lex_response_handler import AWSLexResponseHandler
+from .aws_lex_config import AWSLexConfig
 
 
 class AWSLexConnector(IVendorConnector):
@@ -57,23 +58,19 @@ class AWSLexConnector(IVendorConnector):
         AWS Lex returns 16kHz, 16-bit PCM, which this connector automatically converts
         using the shared audio utilities.
         """
-        # Extract configuration
-        self.region_name = config.get('region_name')
-        if not self.region_name:
-            raise ValueError("region_name is required in AWS Lex connector configuration")
-
-        # Optional explicit AWS credentials
-        self.aws_access_key_id = config.get('aws_access_key_id')
-        self.aws_secret_access_key = config.get('aws_secret_access_key')
-
-        # Audio format configuration for WAV conversion
-        # WxCC always requires WAV format, so this is always enabled
-
-        # Bot alias configuration
-        self.bot_alias_id = config.get('bot_alias_id', 'TSTALIASID')  # Default: TSTALIASID
-
-        # Set up logging
+        # Set up logging first
         self.logger = logging.getLogger(__name__)
+
+        # Initialize configuration manager
+        self.config_manager = AWSLexConfig(config, self.logger)
+
+        # Extract commonly used configuration values for efficiency
+        self.region_name = self.config_manager.get_region_name()
+        self.bot_alias_id = self.config_manager.get_bot_alias_id()
+        self.locale_id = self.config_manager.get_locale_id()
+        self.request_content_type = self.config_manager.get_request_content_type()
+        self.response_content_type = self.config_manager.get_response_content_type()
+        self.aws_credentials = self.config_manager.get_aws_credentials()
 
         # Initialize AWS clients
         self._init_aws_clients()
@@ -89,18 +86,17 @@ class AWSLexConnector(IVendorConnector):
 
         self.logger.debug("Caller audio buffering is enabled")
 
-        self.logger.info(f"AWSLexConnector initialized for region: {self.region_name}")
-        self.logger.info(f"Bot alias ID: {self.bot_alias_id}")
+        self.logger.info(f"AWSLexConnector initialized: {self.config_manager.get_config_summary()}")
         self.logger.debug("Audio conversion to WAV format: Always enabled (WxCC requirement)")
 
     def _init_aws_clients(self) -> None:
         """Initialize AWS Lex clients."""
         try:
-            if self.aws_access_key_id and self.aws_secret_access_key:
+            if self.aws_credentials["aws_access_key_id"] and self.aws_credentials["aws_secret_access_key"]:
                 # Use explicit credentials
                 session = boto3.Session(
-                    aws_access_key_id=self.aws_access_key_id,
-                    aws_secret_access_key=self.aws_secret_access_key,
+                    aws_access_key_id=self.aws_credentials["aws_access_key_id"],
+                    aws_secret_access_key=self.aws_credentials["aws_secret_access_key"],
                     region_name=self.region_name
                 )
                 self.logger.debug("Using explicit AWS credentials")
@@ -110,7 +106,7 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.debug("Using default AWS credential chain")
 
             # Initialize clients
-            self.lex_client = session.client('lexv2-models')  # For bot managemen
+            self.lex_client = session.client('lexv2-models')  # For bot management
             self.lex_runtime = session.client('lexv2-runtime')  # For conversations
 
             self.logger.debug("AWS Lex clients initialized successfully")
@@ -162,10 +158,10 @@ class AWSLexConnector(IVendorConnector):
                 response = self.lex_runtime.recognize_utterance(
                     botId=actual_bot_id,
                     botAliasId=self.bot_alias_id,
-                    localeId='en_US',
+                    localeId=self.locale_id,
                     sessionId=session_id,
-                    requestContentType='text/plain; charset=utf-8',
-                    responseContentType='audio/pcm',
+                    requestContentType=self.request_content_type,
+                    responseContentType=self.response_content_type,
                     inputStream=text_bytes
                 )
 
@@ -534,10 +530,9 @@ class AWSLexConnector(IVendorConnector):
                 response = self.lex_runtime.recognize_utterance(
                     botId=bot_id,
                     botAliasId=self.bot_alias_id,
-                    localeId='en_US',
-                    sessionId=session_id,
+                    localeId=self.locale_id,
                     requestContentType='audio/l16; rate=16000; channels=1',  # 16-bit PCM, 16kHz, little-endian
-                    responseContentType='audio/pcm',
+                    responseContentType=self.response_content_type,
                     inputStream=pcm_audio
                 )
 

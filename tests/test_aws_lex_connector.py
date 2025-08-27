@@ -97,10 +97,10 @@ class TestAWSLexConnector:
             
             connector = AWSLexConnector(mock_config)
             
-            assert connector.region_name == "us-east-1"
-            assert connector.aws_access_key_id == "test_key"
-            assert connector.aws_secret_access_key == "test_secret"
-            assert connector.bot_alias_id == "TESTALIAS"
+            assert connector.config_manager.get_region_name() == "us-east-1"
+            assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] == "test_key"
+            assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] == "test_secret"
+            assert connector.config_manager.get_bot_alias_id() == "TESTALIAS"
             assert connector.session_manager._available_bots is None
             assert connector.session_manager._bot_name_to_id_map == {}
             assert connector.session_manager._sessions == {}
@@ -117,16 +117,16 @@ class TestAWSLexConnector:
             
             connector = AWSLexConnector(mock_config_no_creds)
             
-            assert connector.region_name == "us-east-1"
-            assert connector.aws_access_key_id is None
-            assert connector.aws_secret_access_key is None
-            assert connector.bot_alias_id == "TESTALIAS"
+            assert connector.config_manager.get_region_name() == "us-east-1"
+            assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] is None
+            assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] is None
+            assert connector.config_manager.get_bot_alias_id() == "TESTALIAS"
 
     def test_init_missing_region_name(self):
         """Test connector initialization fails without region_name."""
         config = {"aws_access_key_id": "test_key"}
         
-        with pytest.raises(ValueError, match="region_name is required"):
+        with pytest.raises(ValueError, match="Required configuration key 'region_name' is missing"):
             AWSLexConnector(config)
 
     def test_init_aws_clients_success(self, mock_config):
