@@ -243,6 +243,107 @@ class AudioConverter:
             # Return original data if resampling fails
             return pcm_16khz_data
 
+    def resample_24khz_to_8khz(
+        self, pcm_24khz_data: bytes, bit_depth: int = 16
+    ) -> bytes:
+        """
+        Resample 24kHz PCM audio to 8kHz using anti-aliasing filtering.
+
+        Some audio files are recorded at 24kHz, but WxCC expects 8kHz.
+        This method uses a more aggressive low-pass filter to prevent aliasing artifacts
+        when downsampling by a factor of 3.
+
+        Args:
+            pcm_24khz_data: Raw PCM audio data at 24kHz
+            bit_depth: Audio bit depth (default: 16)
+
+        Returns:
+            Resampled PCM audio data at 8kHz
+        """
+        try:
+            if bit_depth == 16:
+                # Convert bytes to 16-bit integers (little-endian)
+                samples_24khz = struct.unpack(
+                    f"<{len(pcm_24khz_data) // 2}h", pcm_24khz_data
+                )
+
+                # Apply stronger low-pass filter to prevent aliasing
+                # This is a 5-point moving average filter for better anti-aliasing
+                filtered_samples = []
+                for i in range(len(samples_24khz)):
+                    if i == 0:
+                        # First sample: average with next 2 samples
+                        filtered_sample = (samples_24khz[i] + samples_24khz[i + 1] + samples_24khz[i + 2]) // 3
+                    elif i == 1:
+                        # Second sample: average with neighbors
+                        filtered_sample = (samples_24khz[i - 1] + samples_24khz[i] + samples_24khz[i + 1] + samples_24khz[i + 2]) // 4
+                    elif i == len(samples_24khz) - 2:
+                        # Second-to-last sample: average with neighbors
+                        filtered_sample = (samples_24khz[i - 2] + samples_24khz[i - 1] + samples_24khz[i] + samples_24khz[i + 1]) // 4
+                    elif i == len(samples_24khz) - 1:
+                        # Last sample: average with previous 2 samples
+                        filtered_sample = (samples_24khz[i - 2] + samples_24khz[i - 1] + samples_24khz[i]) // 3
+                    else:
+                        # Middle samples: 5-point average for better anti-aliasing
+                        filtered_sample = (samples_24khz[i - 2] + samples_24khz[i - 1] + samples_24khz[i] + samples_24khz[i + 1] + samples_24khz[i + 2]) // 5
+                    filtered_samples.append(filtered_sample)
+
+                # Downsample by taking every 3rd sample (24kHz -> 8kHz = factor of 3)
+                samples_8khz = filtered_samples[::3]
+
+                # Convert back to bytes
+                pcm_8khz_data = struct.pack(f"<{len(samples_8khz)}h", *samples_8khz)
+
+                self.logger.debug(
+                    f"Resampled 24kHz to 8kHz with anti-aliasing: {len(pcm_24khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
+                )
+                self.logger.debug(
+                    f"Sample count: {len(samples_24khz)} -> {len(samples_8khz)}"
+                )
+
+                return pcm_8khz_data
+
+            elif bit_depth == 8:
+                # For 8-bit audio, apply similar filtering then take every 3rd byte
+                # Convert to signed integers for filtering
+                samples_24khz = struct.unpack(f"<{len(pcm_24khz_data)}B", pcm_24khz_data)
+                signed_samples = [(sample - 128) for sample in samples_24khz]
+                
+                # Apply filtering with 5-point average
+                filtered_samples = []
+                for i in range(len(signed_samples)):
+                    if i == 0:
+                        filtered_sample = (signed_samples[i] + signed_samples[i + 1] + signed_samples[i + 2]) // 3
+                    elif i == 1:
+                        filtered_sample = (signed_samples[i - 1] + signed_samples[i] + signed_samples[i + 1] + signed_samples[i + 2]) // 4
+                    elif i == len(signed_samples) - 2:
+                        filtered_sample = (signed_samples[i - 2] + signed_samples[i - 1] + signed_samples[i] + signed_samples[i + 1]) // 4
+                    elif i == len(signed_samples) - 1:
+                        filtered_sample = (signed_samples[i - 2] + signed_samples[i - 1] + signed_samples[i]) // 3
+                    else:
+                        filtered_sample = (signed_samples[i - 2] + signed_samples[i - 1] + signed_samples[i] + signed_samples[i + 1] + signed_samples[i + 2]) // 5
+                    filtered_samples.append(filtered_sample)
+                
+                # Downsample and convert back to unsigned
+                samples_8khz = [filtered_samples[i] + 128 for i in range(0, len(filtered_samples), 3)]
+                pcm_8khz_data = struct.pack(f"<{len(samples_8khz)}B", *samples_8khz)
+                
+                self.logger.debug(
+                    f"Resampled 24kHz to 8kHz with anti-aliasing: {len(pcm_24khz_data)} bytes -> {len(pcm_8khz_data)} bytes"
+                )
+                return pcm_8khz_data
+
+            else:
+                self.logger.warning(
+                    f"Unsupported bit depth for resampling: {bit_depth}, returning original data"
+                )
+                return pcm_24khz_data
+
+        except Exception as e:
+            self.logger.error(f"Error resampling 24kHz to 8kHz: {e}")
+            # Return original data if resampling fails
+            return pcm_24khz_data
+
     def pcm_to_ulaw(
         self, pcm_data: bytes, sample_rate: int = 8000, bit_depth: int = 16
     ) -> bytes:
@@ -678,6 +779,8 @@ class AudioConverter:
                         self.logger.debug(f"Resampling from {sample_rate}Hz to 8000Hz")
                         if sample_rate == 16000:
                             pcm_data = self.resample_16khz_to_8khz(pcm_data, bit_depth)
+                        elif sample_rate == 24000:
+                            pcm_data = self.resample_24khz_to_8khz(pcm_data, bit_depth)
                         else:
                             self.logger.warning(f"Resampling from {sample_rate}Hz not implemented, using original")
                     
@@ -796,6 +899,14 @@ def resample_16khz_to_8khz(
     """Convenience function to resample 16kHz PCM to 8kHz."""
     converter = AudioConverter(logger)
     return converter.resample_16khz_to_8khz(pcm_16khz_data, bit_depth)
+
+
+def resample_24khz_to_8khz(
+    pcm_24khz_data: bytes, bit_depth: int = 16, logger: Optional[logging.Logger] = None
+) -> bytes:
+    """Convenience function to resample 24kHz PCM to 8kHz."""
+    converter = AudioConverter(logger)
+    return converter.resample_24khz_to_8khz(pcm_24khz_data, bit_depth)
 
 
 def pcm_to_ulaw(

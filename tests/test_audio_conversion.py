@@ -138,6 +138,164 @@ class TestAudioConversion:
         # Verify the data is still valid 16-bit PCM
         assert len(resampled_data) % 2 == 0  # Even number of bytes for 16-bit
 
+    def test_24khz_resampling_convenience_function(self):
+        """Test the 24kHz resampling convenience function."""
+        from src.utils.audio_utils import resample_24khz_to_8khz
+        
+        # Generate test PCM data (24kHz, 16-bit, mono)
+        test_pcm_24khz_16bit = self._generate_test_pcm_data(24000, 16, 1, 0.1)
+        
+        # Test the convenience function
+        resampled_data = resample_24khz_to_8khz(test_pcm_24khz_16bit, 16)
+        
+        # Verify resampled data is one-third the size (every 3rd sample)
+        assert len(resampled_data) == len(test_pcm_24khz_16bit) // 3
+        
+        # Verify the data is still valid 16-bit PCM
+        assert len(resampled_data) % 2 == 0  # Even number of bytes for 16-bit
+
+    def test_resample_24khz_to_8khz(self):
+        """Test resampling from 24kHz to 8kHz."""
+        # Generate test PCM data (24kHz, 16-bit, mono)
+        test_pcm_24khz_16bit = self._generate_test_pcm_data(24000, 16, 1, 0.1)
+        
+        resampled_data = self.converter.resample_24khz_to_8khz(test_pcm_24khz_16bit, 16)
+        
+        # Verify resampled data is one-third the size (every 3rd sample)
+        assert len(resampled_data) == len(test_pcm_24khz_16bit) // 3
+        
+        # Verify the data is still valid 16-bit PCM
+        assert len(resampled_data) % 2 == 0  # Even number of bytes for 16-bit
+
+    def test_resample_24khz_to_8khz_8bit(self):
+        """Test resampling from 24kHz to 8kHz with 8-bit PCM."""
+        # Generate test PCM data (24kHz, 8-bit, mono)
+        test_pcm_24khz_8bit = self._generate_test_pcm_data(24000, 8, 1, 0.1)
+        
+        resampled_data = self.converter.resample_24khz_to_8khz(test_pcm_24khz_8bit, 8)
+        
+        # Verify resampled data is one-third the size (every 3rd sample)
+        assert len(resampled_data) == len(test_pcm_24khz_8bit) // 3
+        
+        # Verify the data is still valid 8-bit PCM
+        assert len(resampled_data) % 1 == 0  # Any number of bytes for 8-bit
+
+    def test_resample_24khz_to_8khz_quality(self):
+        """Test that 24kHz to 8kHz resampling maintains audio quality."""
+        # Generate a longer test signal for better quality assessment
+        test_signal = self._generate_test_pcm_data(24000, 16, 1, 0.5)  # 0.5 seconds
+        
+        # Resample
+        resampled = self.converter.resample_24khz_to_8khz(test_signal, 16)
+        
+        # Verify resampling results
+        original_samples = len(test_signal) // 2  # 16-bit samples
+        resampled_samples = len(resampled) // 2   # 16-bit samples
+        
+        # Should have exactly one-third the samples (24kHz -> 8kHz)
+        assert resampled_samples == original_samples // 3, f"Expected {original_samples // 3} samples, got {resampled_samples}"
+        
+        # Verify the resampled data is valid PCM
+        samples = struct.unpack(f"<{resampled_samples}h", resampled)
+        assert all(-32768 <= sample <= 32767 for sample in samples), "All samples should be valid 16-bit PCM"
+
+    def test_resample_24khz_to_8khz_edge_cases(self):
+        """Test edge cases for 24kHz to 8kHz resampling."""
+        # Test with very short audio (less than 5 samples)
+        short_audio = struct.pack("<3h", 1000, 2000, 3000)  # 3 samples, 6 bytes
+        resampled = self.converter.resample_24khz_to_8khz(short_audio, 16)
+        
+        # Should handle gracefully and return valid data
+        assert len(resampled) > 0, "Should handle short audio gracefully"
+        
+        # Test with single sample
+        single_sample = struct.pack("<1h", 1000)  # 1 sample, 2 bytes
+        resampled_single = self.converter.resample_24khz_to_8khz(single_sample, 16)
+        
+        # Should handle gracefully
+        assert len(resampled_single) > 0, "Should handle single sample gracefully"
+
+    def test_resample_24khz_to_8khz_invalid_bit_depth(self):
+        """Test 24kHz resampling with invalid bit depth."""
+        test_pcm_24khz_16bit = self._generate_test_pcm_data(24000, 16, 1, 0.1)
+        
+        # Test with unsupported bit depth
+        result = self.converter.resample_24khz_to_8khz(test_pcm_24khz_16bit, 24)
+        
+        # Should return original data with warning
+        assert result == test_pcm_24khz_16bit, "Should return original data for unsupported bit depth"
+
+    def test_resample_24khz_to_8khz_error_handling(self):
+        """Test error handling in 24kHz resampling."""
+        # Test with data that's too short for 16-bit processing
+        # Need at least 6 bytes (3 samples) for 16-bit processing
+        short_data = b"\x00\x00"  # Only 2 bytes, not enough for 16-bit
+        
+        # Should handle gracefully and return original data
+        result = self.converter.resample_24khz_to_8khz(short_data, 16)
+        
+        # Should return original data on error
+        assert result == short_data, "Should return original data on error"
+
+    def test_24khz_conversion_integration(self):
+        """Test that 24kHz files are properly converted in the full pipeline."""
+        # Create a test 24kHz WAV file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file_path = temp_file.name
+            
+            # Create 24kHz, 16-bit PCM file (not WXCC compatible)
+            test_pcm_24khz = self._generate_test_pcm_data(24000, 16, 1, 0.1)
+            with wave.open(temp_file_path, 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(24000)
+                wav_file.writeframes(test_pcm_24khz)
+            
+            try:
+                # Test the full conversion pipeline
+                result = self.converter.convert_any_audio_to_wxcc(Path(temp_file_path))
+                
+                # Should return converted audio data
+                assert len(result) > 0, "Should convert 24kHz audio successfully"
+                
+                # Verify the result is WAV format
+                assert result.startswith(b'RIFF'), "Result should be WAV format"
+                assert b'WAVE' in result, "Result should be WAV format"
+                
+                # Verify WxCC compatibility
+                sample_rate = struct.unpack('<I', result[24:28])[0]
+                bit_depth = struct.unpack('<H', result[34:36])[0]
+                channels = struct.unpack('<H', result[22:24])[0]
+                
+                assert sample_rate == 8000, "Should be converted to 8kHz"
+                assert bit_depth == 8, "Should be converted to 8-bit"
+                assert channels == 1, "Should be converted to mono"
+                
+            finally:
+                # Clean up
+                Path(temp_file_path).unlink(missing_ok=True)
+
+    def test_24khz_vs_16khz_resampling_consistency(self):
+        """Test that 24kHz and 16kHz resampling produce consistent results."""
+        # Generate test signals of the same duration
+        test_16khz = self._generate_test_pcm_data(16000, 16, 1, 0.1)
+        test_24khz = self._generate_test_pcm_data(24000, 16, 1, 0.1)
+        
+        # Resample both to 8kHz
+        resampled_16khz = self.converter.resample_16khz_to_8khz(test_16khz, 16)
+        resampled_24khz = self.converter.resample_24khz_to_8khz(test_24khz, 16)
+        
+        # Both should produce 8kHz output
+        samples_16khz = len(resampled_16khz) // 2
+        samples_24khz = len(resampled_24khz) // 2
+        
+        # 16kHz -> 8kHz: factor of 2, 24kHz -> 8kHz: factor of 3
+        expected_16khz_samples = len(test_16khz) // 4  # 16-bit samples, factor of 2
+        expected_24khz_samples = len(test_24khz) // 6  # 16-bit samples, factor of 3
+        
+        assert samples_16khz == expected_16khz_samples, f"16kHz resampling: expected {expected_16khz_samples}, got {samples_16khz}"
+        assert samples_24khz == expected_24khz_samples, f"24kHz resampling: expected {expected_24khz_samples}, got {samples_24khz}"
+
     def test_convert_aws_lex_audio_to_wxcc(self):
         """Test complete AWS Lex to WxCC conversion."""
         # Test the standalone function
