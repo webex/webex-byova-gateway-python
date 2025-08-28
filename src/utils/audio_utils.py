@@ -658,8 +658,43 @@ class AudioConverter:
                 with open(audio_path, 'rb') as f:
                     return f.read()
             
-            # For now, return empty bytes for unsupported conversions
-            # This can be enhanced later with proper format conversion libraries
+            # Handle PCM audio conversion
+            if audio_info.get("encoding") == "pcm":
+                self.logger.debug(f"Converting PCM audio file {audio_path} to WXCC format")
+                
+                # Read the PCM data from the file
+                with wave.open(str(audio_path), 'rb') as wav_file:
+                    # Get audio parameters
+                    sample_rate = wav_file.getframerate()
+                    bit_depth = wav_file.getsampwidth() * 8
+                    channels = wav_file.getnchannels()
+                    n_frames = wav_file.getnframes()
+                    
+                    # Read audio data
+                    pcm_data = wav_file.readframes(n_frames)
+                    
+                    # Step 1: Resample to 8kHz if needed
+                    if sample_rate != 8000:
+                        self.logger.debug(f"Resampling from {sample_rate}Hz to 8000Hz")
+                        if sample_rate == 16000:
+                            pcm_data = self.resample_16khz_to_8khz(pcm_data, bit_depth)
+                        else:
+                            self.logger.warning(f"Resampling from {sample_rate}Hz not implemented, using original")
+                    
+                    # Step 2: Convert to u-law format
+                    if bit_depth != 8:
+                        self.logger.debug(f"Converting {bit_depth}-bit PCM to u-law")
+                        ulaw_data = self.pcm_to_ulaw(pcm_data, 8000, bit_depth)
+                    else:
+                        ulaw_data = pcm_data
+                    
+                    # Step 3: Create WXCC-compatible WAV header
+                    wav_header = self.pcm_to_wav(ulaw_data, 8000, 8, 1, "ulaw")
+                    
+                    self.logger.debug(f"Successfully converted {audio_path} to WXCC format")
+                    return wav_header
+            
+            # For other formats, return empty bytes (can be enhanced later)
             self.logger.warning(
                 f"Audio conversion from {audio_info.get('encoding', 'unknown')} "
                 f"to WXCC format not yet implemented for {audio_path}"

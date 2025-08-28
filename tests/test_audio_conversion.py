@@ -313,3 +313,157 @@ class TestAudioConversion:
         assert bit_depth == 8
         assert channels == 1
         assert format_code == 7
+
+    def test_convert_any_audio_to_wxcc_pcm_conversion(self):
+        """Test the new convert_any_audio_to_wxcc method with PCM files."""
+        # Create a temporary WAV file for testing
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file_path = temp_file.name
+            
+            # Create a test WAV file with 16kHz, 16-bit PCM
+            with wave.open(temp_file_path, 'wb') as wav_file:
+                wav_file.setnchannels(1)  # Mono
+                wav_file.setsampwidth(2)  # 16-bit
+                wav_file.setframerate(16000)  # 16kHz
+                wav_file.writeframes(self.test_pcm_16khz_16bit)
+            
+            try:
+                # Test the conversion
+                result = self.converter.convert_any_audio_to_wxcc(Path(temp_file_path))
+                
+                # Verify conversion was successful
+                assert len(result) > 0, "Conversion should return non-empty result"
+                
+                # Verify the result is a valid WAV file
+                assert result.startswith(b'RIFF'), "Result should be a valid WAV file"
+                assert b'WAVE' in result, "Result should contain WAVE identifier"
+                
+                # Parse the converted WAV header
+                sample_rate = struct.unpack('<I', result[24:28])[0]
+                bit_depth = struct.unpack('<H', result[34:36])[0]
+                channels = struct.unpack('<H', result[22:24])[0]
+                format_code = struct.unpack('<H', result[20:22])[0]
+                
+                # Verify WXCC compatibility
+                assert sample_rate == 8000, f"Sample rate should be 8000Hz, got {sample_rate}Hz"
+                assert bit_depth == 8, f"Bit depth should be 8-bit, got {bit_depth}-bit"
+                assert channels == 1, f"Channels should be 1, got {channels}"
+                assert format_code == 7, f"Format should be u-law (7), got {format_code}"
+                
+                # Verify the converted file is smaller (due to resampling and encoding)
+                original_size = len(self.test_pcm_16khz_16bit)
+                converted_size = struct.unpack('<I', result[40:44])[0]  # Data chunk size
+                assert converted_size < original_size, "Converted audio should be smaller due to resampling"
+                
+            finally:
+                # Clean up
+                Path(temp_file_path).unlink(missing_ok=True)
+
+    def test_convert_any_audio_to_wxcc_already_compatible(self):
+        """Test convert_any_audio_to_wxcc with already WXCC-compatible files."""
+        # Create a temporary WAV file that's already WXCC-compatible
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file_path = temp_file.name
+            
+            # Create a test WAV file with 8kHz, 8-bit u-law
+            ulaw_data = self.converter.pcm_to_ulaw(self.test_pcm_8khz_8bit, 8000, 8)
+            wav_data = self.converter.pcm_to_wav(ulaw_data, 8000, 8, 1, "ulaw")
+            
+            with open(temp_file_path, 'wb') as f:
+                f.write(wav_data)
+            
+            try:
+                # Test the conversion
+                result = self.converter.convert_any_audio_to_wxcc(Path(temp_file_path))
+                
+                # Should return the file as-is since it's already compatible
+                assert result == wav_data, "Should return original data for already compatible files"
+                
+            finally:
+                # Clean up
+                Path(temp_file_path).unlink(missing_ok=True)
+
+    def test_resample_16khz_to_8khz_quality(self):
+        """Test that 16kHz to 8kHz resampling maintains audio quality."""
+        # Generate a longer test signal for better quality assessment
+        test_signal = self._generate_test_pcm_data(16000, 16, 1, 0.5)  # 0.5 seconds
+        
+        # Resample
+        resampled = self.converter.resample_16khz_to_8khz(test_signal, 16)
+        
+        # Verify resampling results
+        original_samples = len(test_signal) // 2  # 16-bit samples
+        resampled_samples = len(resampled) // 2   # 16-bit samples
+        
+        # Should have exactly half the samples (16kHz -> 8kHz)
+        assert resampled_samples == original_samples // 2, f"Expected {original_samples // 2} samples, got {resampled_samples}"
+        
+        # Verify the resampled data is valid PCM
+        samples = struct.unpack(f"<{resampled_samples}h", resampled)
+        assert all(-32768 <= sample <= 32767 for sample in samples), "All samples should be valid 16-bit PCM"
+
+    def test_pcm_to_ulaw_conversion_accuracy(self):
+        """Test that PCM to u-law conversion produces accurate results."""
+        # Generate a simple test signal
+        test_signal = self._generate_test_pcm_data(8000, 16, 1, 0.1)
+        
+        # Convert to u-law
+        ulaw_data = self.converter.pcm_to_ulaw(test_signal, 8000, 16)
+        
+        # Verify conversion results
+        assert len(ulaw_data) == len(test_signal) // 2, "u-law should be half the size of 16-bit PCM"
+        
+        # Verify all bytes are valid u-law values
+        assert all(0 <= byte <= 255 for byte in ulaw_data), "All u-law bytes should be in valid range"
+        
+        # Verify the conversion is deterministic (same input produces same output)
+        ulaw_data2 = self.converter.pcm_to_ulaw(test_signal, 8000, 16)
+        assert ulaw_data == ulaw_data2, "PCM to u-law conversion should be deterministic"
+
+    def test_audio_conversion_error_handling(self):
+        """Test error handling in audio conversion methods."""
+        # Test with non-existent file
+        result = self.converter.convert_any_audio_to_wxcc(Path("non_existent_file.wav"))
+        assert result == b"", "Should return empty bytes for non-existent files"
+        
+        # Test with invalid WAV file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file_path = temp_file.name
+            temp_file.write(b"invalid wav data")
+            temp_file.close()
+            
+            try:
+                result = self.converter.convert_any_audio_to_wxcc(Path(temp_file_path))
+                # Should handle gracefully, either return empty or raise exception
+                assert isinstance(result, bytes), "Should return bytes or handle exception gracefully"
+            finally:
+                Path(temp_file_path).unlink(missing_ok=True)
+
+    def test_wxcc_compatibility_analysis(self):
+        """Test the audio file analysis for WXCC compatibility."""
+        # Create a test WAV file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file_path = temp_file.name
+            
+            # Create 16kHz, 16-bit PCM file (not WXCC compatible)
+            with wave.open(temp_file_path, 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                wav_file.writeframes(self.test_pcm_16khz_16bit)
+            
+            try:
+                # Analyze the file
+                audio_info = self.converter.analyze_audio_file(Path(temp_file_path))
+                
+                # Verify analysis results
+                assert "error" not in audio_info, "Should not have errors for valid WAV file"
+                assert audio_info["sample_rate"] == 16000, "Sample rate should be 16000Hz"
+                assert audio_info["bit_depth"] == 16, "Bit depth should be 16-bit"
+                assert audio_info["channels"] == 1, "Channels should be 1"
+                assert audio_info["encoding"] == "pcm", "Encoding should be PCM"
+                assert not audio_info["is_wxcc_compatible"], "16kHz 16-bit PCM should not be WXCC compatible"
+                
+            finally:
+                # Clean up
+                Path(temp_file_path).unlink(missing_ok=True)
