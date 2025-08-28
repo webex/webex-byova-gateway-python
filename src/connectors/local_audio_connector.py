@@ -135,7 +135,8 @@ class LocalAudioConnector(IVendorConnector):
         Returns:
             Iterator yielding responses from the local audio connector
         """
-        self.logger.info(f"Processing message for conversation {conversation_id}")
+        self.logger.info(f"Processing message for conversation {conversation_id}, input_type: {message_data.get('input_type')}")
+
 
         # Log relevant parts of message_data without audio bytes
         log_data = {
