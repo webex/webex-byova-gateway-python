@@ -395,23 +395,29 @@ class AWSLexConnector(IVendorConnector):
             # Extract audio data from the message
             audio_bytes = self.extract_audio_data(message_data.get("audio_data"), conversation_id, self.logger)
 
-            # Check if START_OF_INPUT event has been sent, if not send it
-            if not self.session_manager.has_start_of_input_tracking(conversation_id):
-                self.logger.debug(f"Sending START_OF_INPUT event for conversation {conversation_id}")
-                self.session_manager.add_start_of_input_tracking(conversation_id)
-                
-                yield self.create_start_of_input_response(conversation_id)
-                return  # Return after sending START_OF_INPUT event
-            
             if not audio_bytes:
                 self.logger.error(f"No valid audio data found for conversation {conversation_id}")
                 return
 
-            # Buffer audio (always enabled for AWS Lex connector)
-            silence_detected = self.audio_processor.process_audio_for_buffering(audio_bytes, conversation_id, self.extract_audio_data)
+            # Process audio for buffering to detect speech
+            buffer_status = self.audio_processor.process_audio_for_buffering(audio_bytes, conversation_id, self.extract_audio_data)
+            
+            # Check if START_OF_INPUT event has been sent, if not send it only when speech is detected
+            if not self.session_manager.has_start_of_input_tracking(conversation_id):
+                # Only send START_OF_INPUT when speech is actually detected, not just any audio
+                if buffer_status.get('speech_detected', False):
+                    self.logger.debug(f"Speech detected, sending START_OF_INPUT event for conversation {conversation_id}")
+                    self.session_manager.add_start_of_input_tracking(conversation_id)
+                    
+                    yield self.create_start_of_input_response(conversation_id)
+                    return  # Return after sending START_OF_INPUT event
+                else:
+                    # Still waiting for speech, don't send START_OF_INPUT yet
+                    self.logger.debug(f"Still waiting for speech in conversation {conversation_id}, audio buffering but no START_OF_INPUT sent")
+                    return
 
             # Check if silence threshold was detected, if so send END_OF_INPUT event
-            if silence_detected:
+            if buffer_status.get('silence_detected', False):
                 self.logger.debug(f"Silence threshold detected, sending END_OF_INPUT event for next audio input cycle")
                 yield self.create_end_of_input_response(conversation_id)
 

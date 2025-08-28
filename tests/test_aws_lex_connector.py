@@ -438,22 +438,90 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        # First call should send START_OF_INPUT event
-        responses = list(connector.send_message("conv123", message_data))
-        assert len(responses) == 1
-        assert responses[0]["message_type"] == "silence"
-        assert responses[0]["text"] == ""
-        assert "output_events" in responses[0]
-        assert len(responses[0]["output_events"]) == 1
-        assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
-        assert responses[0]["output_events"][0]["name"] == ""  # Empty name for START_OF_INPUT
-        assert responses[0]["barge_in_enabled"] is True
-        assert responses[0]["response_type"] == "silence"
+        # Mock audio extraction and processing to simulate speech detection
+        with patch.object(connector, 'extract_audio_data', return_value=b"input_audio"):
+            with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
+                "silence_detected": False,
+                "speech_detected": True,
+                "waiting_for_speech": False,
+                "buffer_size": 100
+            }):
+                # First call should send START_OF_INPUT event when speech is detected
+                responses = list(connector.send_message("conv123", message_data))
+                assert len(responses) == 1
+                assert responses[0]["message_type"] == "silence"
+                assert responses[0]["text"] == ""
+                assert "output_events" in responses[0]
+                assert len(responses[0]["output_events"]) == 1
+                assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
+                assert responses[0]["output_events"][0]["name"] == ""  # Empty name for START_OF_INPUT
+                assert responses[0]["barge_in_enabled"] is True
+                assert responses[0]["response_type"] == "silence"
         
-        # Second call should return no response since no silence detected
+        # Second call should return no response since START_OF_INPUT already sent
         # (audio is just being buffered)
         responses = list(connector.send_message("conv123", message_data))
         assert len(responses) == 0  # No response when just buffering audio
+
+    def test_send_message_audio_input_no_speech_detected(self, connector):
+        """Test that START_OF_INPUT is NOT sent when speech is not detected."""
+        connector.session_manager._sessions["conv123"] = {
+            "bot_name": "TestBot",
+            "session_id": "session123",
+            "actual_bot_id": "bot123"
+        }
+        
+        message_data = {
+            "input_type": "audio",
+            "audio_data": b"input_audio",
+            "conversation_id": "conv123"
+        }
+        
+        # Mock audio extraction and processing to simulate NO speech detection
+        with patch.object(connector, 'extract_audio_data', return_value=b"input_audio"):
+            with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
+                "silence_detected": False,
+                "speech_detected": False,
+                "waiting_for_speech": True,
+                "buffer_size": 50
+            }):
+                # Should NOT send START_OF_INPUT when speech is not detected
+                responses = list(connector.send_message("conv123", message_data))
+                assert len(responses) == 0  # No response when waiting for speech
+                
+                # Verify conversation is NOT in START_OF_INPUT tracking
+                assert "conv123" not in connector.session_manager.conversations_with_start_of_input
+        
+        # Test with multiple audio inputs - still no START_OF_INPUT until speech detected
+        for i in range(3):
+            with patch.object(connector, 'extract_audio_data', return_value=b"more_audio"):
+                with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
+                    "silence_detected": False,
+                    "speech_detected": False,
+                    "waiting_for_speech": True,
+                    "buffer_size": 50 + (i * 10)
+                }):
+                    responses = list(connector.send_message("conv123", message_data))
+                    assert len(responses) == 0  # Still no response
+                    assert "conv123" not in connector.session_manager.conversations_with_start_of_input
+        
+        # Now test that START_OF_INPUT IS sent when speech is finally detected
+        with patch.object(connector, 'extract_audio_data', return_value=b"speech_audio"):
+            with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
+                "silence_detected": False,
+                "speech_detected": True,
+                "waiting_for_speech": False,
+                "buffer_size": 100
+            }):
+                responses = list(connector.send_message("conv123", message_data))
+                assert len(responses) == 1  # Now we get a response
+                assert responses[0]["message_type"] == "silence"
+                assert "output_events" in responses[0]
+                assert len(responses[0]["output_events"]) == 1
+                assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
+                
+                # Verify conversation IS now in START_OF_INPUT tracking
+                assert "conv123" in connector.session_manager.conversations_with_start_of_input
 
     def test_send_message_no_session(self, connector):
         """Test handling of message with no active session."""
@@ -873,7 +941,12 @@ class TestAWSLexConnector:
                     # Mock audio extraction
                     with patch.object(connector, 'extract_audio_data', return_value=b"new_audio_input"):
                         # Mock audio buffering
-                        with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value=False):
+                        with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
+                            "silence_detected": False,
+                            "speech_detected": True,
+                            "waiting_for_speech": False,
+                            "buffer_size": 100
+                        }):
                             responses = list(connector._handle_audio_input(conversation_id, message_data, bot_id, session_id, "TestBot"))
                             
                             # Should send START_OF_INPUT since conversation was reset
