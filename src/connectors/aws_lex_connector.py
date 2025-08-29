@@ -396,33 +396,11 @@ class AWSLexConnector(IVendorConnector):
             # Convert DTMF events to a string
             dtmf_string = "".join([str(digit) for digit in dtmf_events])
 
-            # Process special DTMF codes
-            if "5" in dtmf_string:  # Transfer code
-                self.logger.info(f"DTMF transfer requested for conversation {conversation_id}")
-                # Reset conversation state for next audio input cycle
-                self.session_manager.reset_conversation_for_next_input(conversation_id)
-                return self.create_transfer_response(
-                    conversation_id=conversation_id,
-                    text=f"Transferring you from the {bot_name} assistant to a live agent.",
-                    audio_content=b"",  # Would need to load transfer audio here
-                    reason="dtmf_transfer_requested"
-                )
-            elif "6" in dtmf_string:  # Goodbye code
-                self.logger.info(f"DTMF goodbye requested for conversation {conversation_id}")
-                # Reset conversation state for next audio input cycle
-                self.session_manager.reset_conversation_for_next_input(conversation_id)
-                return self.create_goodbye_response(
-                    conversation_id=conversation_id,
-                    text=f"Goodbye from the {bot_name} assistant. Thank you for your time.",
-                    audio_content=b"",  # Would need to load transfer audio here
-                    reason="dtmf_goodbye_requested"
-                )
-            else:
-                # For other DTMF digits, send to Lex as tex
-                self.logger.debug(f"Sending DTMF {dtmf_string} to Lex for conversation {conversation_id}")
-                # Convert DTMF to a more meaningful input for Lex
-                text_input = f"DTMF {dtmf_string}"
-                return self._send_text_to_lex(conversation_id, text_input)
+            # Send all DTMF digits directly to AWS Lex
+            self.logger.debug(f"Sending DTMF {dtmf_string} to Lex for conversation {conversation_id}")
+            # Convert DTMF to a more meaningful input for Lex
+            text_input = f"DTMF {dtmf_string}"
+            return self._send_text_to_lex(conversation_id, text_input)
 
         # If no DTMF events, just return silence
         return self.create_response(
