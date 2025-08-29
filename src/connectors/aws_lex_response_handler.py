@@ -141,7 +141,7 @@ class AWSLexResponseHandler:
     def create_audio_response(self, conversation_id: str, text_response: str,
                             audio_content: bytes, content_type: str = "audio/wav") -> Dict[str, Any]:
         """
-        Create a standard audio response.
+        Create a standard audio response with DTMF input mode enabled.
 
         Args:
             conversation_id: Conversation identifier
@@ -150,7 +150,7 @@ class AWSLexResponseHandler:
             content_type: MIME type of the audio content
 
         Returns:
-            Audio response dictionary
+            Audio response dictionary with DTMF input mode enabled
         """
         response = {
             "conversation_id": conversation_id,
@@ -159,7 +159,14 @@ class AWSLexResponseHandler:
             "audio_content": audio_content,
             "barge_in_enabled": False,
             "content_type": content_type,
-            "response_type": "final"
+            "response_type": "final",
+            "input_mode": 2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+            "input_handling_config": {
+                "dtmf_config": {
+                    "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                    "dtmf_input_length": 10  # Allow up to 10 digits
+                }
+            }
         }
         
         return response

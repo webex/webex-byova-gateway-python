@@ -21,7 +21,8 @@ class AWSLexConfig:
     # Default configuration values
     DEFAULT_BOT_ALIAS_ID = "TSTALIASID"
     DEFAULT_LOCALE_ID = "en_US"
-    DEFAULT_REQUEST_CONTENT_TYPE = "text/plain; charset=utf-8"
+    DEFAULT_TEXT_REQUEST_CONTENT_TYPE = "text/plain; charset=utf-8"
+    DEFAULT_AUDIO_REQUEST_CONTENT_TYPE = "audio/l16; rate=16000; channels=1"
     DEFAULT_RESPONSE_CONTENT_TYPE = "audio/pcm"
     DEFAULT_BARGE_IN_ENABLED = False
     
@@ -85,7 +86,8 @@ class AWSLexConfig:
             self._validated_config["locale_id"] = self._config.get("locale_id", self.DEFAULT_LOCALE_ID)
             
             # Process content types
-            self._validated_config["request_content_type"] = self._config.get("request_content_type", self.DEFAULT_REQUEST_CONTENT_TYPE)
+            self._validated_config["text_request_content_type"] = self._config.get("text_request_content_type", self.DEFAULT_TEXT_REQUEST_CONTENT_TYPE)
+            self._validated_config["audio_request_content_type"] = self._config.get("audio_request_content_type", self.DEFAULT_AUDIO_REQUEST_CONTENT_TYPE)
             self._validated_config["response_content_type"] = self._config.get("response_content_type", self.DEFAULT_RESPONSE_CONTENT_TYPE)
             
             # Process barge-in configuration
@@ -171,14 +173,23 @@ class AWSLexConfig:
         """
         return self._validated_config["locale_id"]
 
-    def get_request_content_type(self) -> str:
+    def get_text_request_content_type(self) -> str:
         """
-        Get the request content type.
+        Get the text request content type.
         
         Returns:
-            Request content type
+            Text request content type
         """
-        return self._validated_config["request_content_type"]
+        return self._validated_config["text_request_content_type"]
+
+    def get_audio_request_content_type(self) -> str:
+        """
+        Get the audio request content type.
+        
+        Returns:
+            Audio request content type
+        """
+        return self._validated_config["audio_request_content_type"]
 
     def get_response_content_type(self) -> str:
         """

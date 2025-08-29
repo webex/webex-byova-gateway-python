@@ -69,7 +69,8 @@ class AWSLexConnector(IVendorConnector):
         self.region_name = self.config_manager.get_region_name()
         self.bot_alias_id = self.config_manager.get_bot_alias_id()
         self.locale_id = self.config_manager.get_locale_id()
-        self.request_content_type = self.config_manager.get_request_content_type()
+        self.text_request_content_type = self.config_manager.get_text_request_content_type()
+        self.audio_request_content_type = self.config_manager.get_audio_request_content_type()
         self.response_content_type = self.config_manager.get_response_content_type()
         self.barge_in_enabled = self.config_manager.is_barge_in_enabled()
         self.aws_credentials = self.config_manager.get_aws_credentials()
@@ -164,7 +165,7 @@ class AWSLexConnector(IVendorConnector):
                     botAliasId=self.bot_alias_id,
                     localeId=self.locale_id,
                     sessionId=session_id,
-                    requestContentType=self.request_content_type,
+                    requestContentType=self.text_request_content_type,
                     responseContentType=self.response_content_type,
                     inputStream=text_bytes
                 )
@@ -172,60 +173,44 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.debug(f"Lex API response received: {type(response)}")
                 self.logger.debug(f"Lex API response keys: {list(response.keys()) if hasattr(response, 'keys') else 'No keys'}")
 
-                # Extract audio response
-                audio_stream = response.get('audioStream')
-                if audio_stream:
-                    self.logger.debug(f"Audio stream found: {type(audio_stream)}")
-                    audio_response = audio_stream.read()
-                    audio_stream.close()
-                    self.logger.info(f"Received audio response: {len(audio_response)} bytes")
-
-                    if audio_response:
-                        # Log outgoing AWS Lex audio if audio logging is enabled
-                        self.audio_processor.log_aws_audio(conversation_id, audio_response)
-                        
-                        self.logger.debug("Audio content is valid, returning response with audio")
-
-                        # Use the audio processor to convert AWS Lex audio to WxCC-compatible format
-                        # AWS Lex returns 16kHz, 16-bit PCM, but WxCC expects 8kHz, 8-bit u-law
-                        wav_audio, content_type = self.audio_processor.convert_lex_audio_to_wxcc_format(
-                            audio_response
-                        )
-
-                        return self.create_response(
-                            conversation_id=conversation_id,
-                            message_type="welcome",
-                            text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
-                            audio_content=wav_audio,
-                            barge_in_enabled=self.barge_in_enabled,
-                            content_type=content_type,
-                            response_type="final"
-                        )
-                    else:
-                        self.logger.warning("Audio stream was empty, falling back to text-only response")
-                        return self.create_response(
-                            conversation_id=conversation_id,
-                            message_type="welcome",
-                            text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
-                            audio_content=b"",
-                            barge_in_enabled=self.barge_in_enabled,
-                            response_type="final"
-                        )
+                # Process the Lex response using the unified method
+                response_dict = self._process_lex_response(conversation_id, response, "conversation_start")
+                
+                # Override the response to use welcome message format
+                if response_dict.get('audio_content'):
+                    # If we have audio, use it with welcome message
+                    return self.create_response(
+                        conversation_id=conversation_id,
+                        message_type="welcome",
+                        text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
+                        audio_content=response_dict['audio_content'],
+                        barge_in_enabled=self.barge_in_enabled,
+                        content_type=response_dict.get('content_type', 'audio/wav'),
+                        response_type="final",
+                        input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                        input_handling_config={
+                            "dtmf_config": {
+                                "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                                "dtmf_input_length": 10  # Allow up to 10 digits
+                            }
+                        }
+                    )
                 else:
-                    self.logger.error("No audio stream in Lex response")
-                    # Check if there are other fields in the response
-                    if hasattr(response, 'messages'):
-                        self.logger.debug(f"Lex messages: {response.messages}")
-                    if hasattr(response, 'intentName'):
-                        self.logger.info(f"Lex intent: {response.intentName}")
-
+                    # No audio, return welcome message without audio
                     return self.create_response(
                         conversation_id=conversation_id,
                         message_type="welcome",
                         text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                         audio_content=b"",
                         barge_in_enabled=self.barge_in_enabled,
-                        response_type="final"
+                        response_type="final",
+                        input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                        input_handling_config={
+                            "dtmf_config": {
+                                "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                                "dtmf_input_length": 10  # Allow up to 10 digits
+                            }
+                        }
                     )
 
             except ClientError as e:
@@ -253,7 +238,14 @@ class AWSLexConnector(IVendorConnector):
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
                     barge_in_enabled=self.barge_in_enabled,
-                    response_type="final"
+                    response_type="final",
+                    input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                    input_handling_config={
+                        "dtmf_config": {
+                            "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                            "dtmf_input_length": 10  # Allow up to 10 digits
+                        }
+                    }
                 )
 
         except Exception as e:
@@ -398,8 +390,8 @@ class AWSLexConnector(IVendorConnector):
 
             # Send all DTMF digits directly to AWS Lex
             self.logger.debug(f"Sending DTMF {dtmf_string} to Lex for conversation {conversation_id}")
-            # Convert DTMF to a more meaningful input for Lex
-            text_input = f"DTMF {dtmf_string}"
+            # Send clean DTMF digits to Lex for better intent matching
+            text_input = dtmf_string
             return self._send_text_to_lex(conversation_id, text_input)
 
         # If no DTMF events, just return silence
@@ -457,6 +449,32 @@ class AWSLexConnector(IVendorConnector):
                 # Send buffered audio to AWS Lex
                 yield from self._send_audio_to_lex(conversation_id)
 
+                # After sending audio to Lex, enable DTMF input mode for the response
+                # This allows users to press DTMF keys after hearing Lex's response
+                yield self.create_response(
+                    conversation_id=conversation_id,
+                    message_type="silence",
+                    text="",
+                    audio_content=b"",
+                    barge_in_enabled=self.barge_in_enabled,
+                    input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                    input_handling_config={
+                        "dtmf_config": {
+                            "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                            "dtmf_input_length": 10  # Allow up to 10 digits
+                        }
+                    },
+                    output_events=[{
+                        "event_type": "START_OF_INPUT",  # Use START_OF_INPUT to indicate DTMF mode is active
+                        "name": "dtmf_enabled",
+                        "metadata": {
+                            "conversation_id": conversation_id,
+                            "dtmf_enabled": True,
+                            "input_mode": "DTMF"
+                        }
+                    }]
+                )
+
                 return
 
         except Exception as e:
@@ -481,26 +499,173 @@ class AWSLexConnector(IVendorConnector):
             
             self.logger.debug(f"Sending text '{text_input}' to Lex for conversation {conversation_id}")
 
-            # This is a placeholder for the actual Lex text implementation
-            self.logger.debug(f"Text functionality not yet fully implemented: {text_input}")
-            # Reset conversation state for next audio input cycle
-            self.session_manager.reset_conversation_for_next_input(conversation_id)
-            # Return a placeholder response until full implementation is complete
-            return self.create_response(
-                conversation_id=conversation_id,
-                message_type="silence",
-                text=f"Processing text input: {text_input}",
-                barge_in_enabled=self.barge_in_enabled,
-                response_type="final"
-            )
+            # Get session details
+            bot_id = self.session_manager.get_bot_id(conversation_id)
+            session_id = self.session_manager.get_session_id(conversation_id)
+            
+            # Log session details for debugging
+            self.logger.debug(f"Session details for conversation {conversation_id}: bot_id={bot_id}, session_id={session_id}")
+            
+            # Validate session details
+            if not session_id:
+                self.logger.error(f"No session ID found for conversation {conversation_id}")
+                return self.error_handler.create_session_error_response(conversation_id, ErrorContext.SESSION_NO_SESSION)
+            if not bot_id:
+                self.logger.error(f"No bot ID found for conversation {conversation_id}")
+                return self.error_handler.create_session_error_response(conversation_id, ErrorContext.SESSION_NO_SESSION)
+
+            # Send text to AWS Lex using recognize_utterance
+            try:
+                # Convert text to bytes for the request
+                text_bytes = text_input.encode('utf-8')
+                
+                self.logger.debug(f"Sending text to AWS Lex: botId={bot_id}, botAliasId={self.bot_alias_id}, localeId={self.locale_id}, sessionId={session_id}, text='{text_input}'")
+
+                response = self.lex_runtime.recognize_utterance(
+                    botId=bot_id,
+                    botAliasId=self.bot_alias_id,
+                    localeId=self.locale_id,
+                    sessionId=session_id,
+                    requestContentType=self.text_request_content_type,
+                    responseContentType=self.response_content_type,
+                    inputStream=text_bytes
+                )
+
+                self.logger.debug(f"Received response from AWS Lex for conversation {conversation_id}")
+                
+                # Process the Lex response using the unified method
+                return self._process_lex_response(conversation_id, response, "text")
+
+            except ClientError as e:
+                self.error_handler.handle_lex_api_error(e, conversation_id, ErrorContext.LEX_TEXT_PROCESSING)
+                return self.error_handler.create_error_response(
+                    conversation_id=conversation_id,
+                    error_message="An error occurred while processing your input with AWS Lex. Please try again.",
+                    context=ErrorContext.LEX_TEXT_PROCESSING
+                )
+
         except Exception as e:
             self.error_handler.handle_text_processing_error(e, conversation_id, text_input)
-            # Reset conversation state for next audio input cycle
-            self.session_manager.reset_conversation_for_next_input(conversation_id)
             return self.error_handler.create_error_response(
                 conversation_id=conversation_id,
                 error_message="An error occurred while processing your text. Please try again.",
                 context=ErrorContext.TEXT_PROCESSING
+            )
+
+    def _process_lex_response(self, conversation_id: str, lex_response: Any, input_type: str = "unknown") -> Dict[str, Any]:
+        """
+        Process the response from AWS Lex (unified method for both text and audio input).
+
+        Args:
+            conversation_id: Conversation identifier
+            lex_response: Response from AWS Lex recognize_utterance
+            input_type: Type of input that generated this response ("text", "audio", etc.)
+
+        Returns:
+            Processed response in WxCC format
+        """
+        try:
+            self.logger.debug(f"Processing Lex {input_type} response for conversation {conversation_id}")
+            
+            # Extract response components - use the response handler to decode encoded fields
+            messages_data = self.response_handler._decode_lex_response('messages', lex_response) or []
+            audio_stream = lex_response.get('audioStream', None)
+            session_state = self.response_handler._decode_lex_response('sessionState', lex_response) or {}
+            
+            # Log response details
+            self.logger.debug(f"Lex response for conversation {conversation_id}: {len(messages_data)} messages, audio: {'yes' if audio_stream else 'no'}")
+            self.logger.debug(f"Session state type: {type(session_state)}, content: {session_state}")
+            
+            # Debug print interpretations data from Lex
+            interpretations = self.response_handler._decode_lex_response('interpretations', lex_response) or []
+            self.logger.debug(f"Interpretations data: {interpretations}")
+            if interpretations:
+                for i, interpretation in enumerate(interpretations):
+                    if isinstance(interpretation, dict):
+                        intent_name = interpretation.get('intent', {}).get('name', 'Unknown')
+                        confidence = interpretation.get('nluConfidence', {}).get('score', 'Unknown')
+                        slots = interpretation.get('slots', {})
+                        self.logger.debug(f"Interpretation {i}: Intent='{intent_name}', Confidence={confidence}, Slots={slots}")
+                    else:
+                        self.logger.debug(f"Interpretation {i}: {interpretation}")
+            
+            # Check if session should end
+            if session_state and isinstance(session_state, dict) and session_state.get('intent', {}).get('state') == 'Fulfilled':
+                self.logger.info(f"Intent fulfilled for conversation {conversation_id}, ending session")
+                return self.create_response(
+                    conversation_id=conversation_id,
+                    message_type="goodbye",
+                    text="Thank you for using our service.",
+                    response_type="final"
+                )
+            
+            # Process audio response if available
+            if audio_stream:
+                self.logger.debug(f"Audio stream found: {type(audio_stream)}")
+                audio_response = audio_stream.read()
+                audio_stream.close()
+                self.logger.info(f"Received audio response: {len(audio_response)} bytes")
+
+                if audio_response:
+                    # Log outgoing AWS Lex audio if audio logging is enabled
+                    self.audio_processor.log_aws_audio(conversation_id, audio_response)
+                    
+                    self.logger.debug("Audio content is valid, processing Lex response")
+
+                    # Convert AWS Lex audio to WxCC-compatible format
+                    wav_audio, content_type = self.audio_processor.convert_lex_audio_to_wxcc_format(
+                        audio_response
+                    )
+
+                    # Extract text from response if available
+                    text_response = f"I processed your {input_type} input and here's my response."
+                    if messages_data and len(messages_data) > 0:
+                        first_message = messages_data[0]
+                        if isinstance(first_message, dict) and 'content' in first_message:
+                            text_response = first_message['content']
+                            self.logger.debug(f"Extracted text response: {text_response}")
+
+                    # Return audio response with FINAL response type for AWS Lex prompts
+                    # Also enable DTMF input mode so users can press keys after hearing the response
+                    return self.response_handler.create_audio_response(
+                        conversation_id=conversation_id,
+                        text_response=text_response,
+                        audio_content=wav_audio,
+                        content_type=content_type
+                    )
+                else:
+                    self.logger.warning("Audio stream was empty, falling back to text-only response")
+            else:
+                self.logger.debug("No audio stream in Lex response")
+            
+            # No audio response or empty audio, return text-only response
+            text_response = f"I processed your {input_type} input."
+            if messages_data and len(messages_data) > 0:
+                first_message = messages_data[0]
+                if isinstance(first_message, dict) and 'content' in first_message:
+                    text_response = first_message['content']
+            
+            return self.create_response(
+                conversation_id=conversation_id,
+                message_type="response",
+                text=text_response,
+                response_type="final",
+                input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                input_handling_config={
+                    "dtmf_config": {
+                        "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                        "dtmf_input_length": 10  # Allow up to 10 digits
+                    }
+                }
+            )
+                
+        except Exception as e:
+            self.logger.error(f"Error processing Lex {input_type} response for conversation {conversation_id}: {e}")
+            self.logger.error(f"Response structure: {type(lex_response)}, keys: {list(lex_response.keys()) if hasattr(lex_response, 'keys') else 'No keys'}")
+            return self.error_handler.create_error_response(
+                conversation_id=conversation_id,
+                error_message=f"An error occurred while processing the {input_type} response from AWS Lex.",
+                context=ErrorContext.RESPONSE_PROCESSING
             )
 
     def _send_audio_to_lex(self, conversation_id: str) -> Iterator[Dict[str, Any]]:
@@ -565,7 +730,7 @@ class AWSLexConnector(IVendorConnector):
                     botAliasId=self.bot_alias_id,
                     localeId=self.locale_id,
                     sessionId=session_id,
-                    requestContentType='audio/l16; rate=16000; channels=1',  # 16-bit PCM, 16kHz, little-endian
+                    requestContentType=self.audio_request_content_type,  # 16-bit PCM, 16kHz, little-endian
                     responseContentType=self.response_content_type,
                     inputStream=pcm_audio
                 )
@@ -675,57 +840,16 @@ class AWSLexConnector(IVendorConnector):
                         yield session_end_response
                         return
 
-                # Extract audio response
-                audio_stream = response.get('audioStream')
-                if audio_stream:
-                    self.logger.debug(f"Audio stream found: {type(audio_stream)}")
-                    audio_response = audio_stream.read()
-                    audio_stream.close()
-                    self.logger.info(f"Received audio response: {len(audio_response)} bytes")
-
-                    if audio_response:
-                        # Log outgoing AWS Lex audio if audio logging is enabled
-                        self.audio_processor.log_aws_audio(conversation_id, audio_response)
-                        
-                        self.logger.debug("Audio content is valid, processing Lex response")
-
-                        # Convert AWS Lex audio to WxCC-compatible format
-                        wav_audio, content_type = self.audio_processor.convert_lex_audio_to_wxcc_format(
-                            audio_response
-                        )
-
-                        # Extract text from response if available
-                        text_response = "I heard your audio input and processed it."
-                        if messages_data and len(messages_data) > 0:
-                            first_message = messages_data[0]
-                            if 'content' in first_message:
-                                text_response = first_message['content']
-                                self.logger.debug(f"Extracted text response: {text_response}")
-                        else:
-                            self.logger.debug("No text content found in messages, using generic response")
-
-                        # Reset the buffer after successful processing
-                        self.audio_processor.reset_audio_buffer(conversation_id)
-
-                        # Yield the Lex response
-                        response_dict = self.response_handler.create_audio_response(
-                            conversation_id=conversation_id,
-                            text_response=text_response,
-                            audio_content=wav_audio,
-                            content_type=content_type
-                        )
-                        
-                        # Reset conversation state for next audio input cycle
-                        self.session_manager.reset_conversation_for_next_input(conversation_id)
-                        
-                        yield response_dict
-                else:
-                    self.logger.error("No audio stream in Lex response")
-                    # Reset buffer and log the issue
-                    self.audio_processor.reset_audio_buffer(conversation_id)
-                    # Reset conversation state for next audio input cycle
-                    self.session_manager.reset_conversation_for_next_input(conversation_id)
-                    self.logger.debug("Audio processing completed but no response generated")
+                # Process the Lex response using the unified method
+                response_dict = self._process_lex_response(conversation_id, response, "audio")
+                
+                # Reset the buffer after successful processing
+                self.audio_processor.reset_audio_buffer(conversation_id)
+                
+                # Reset conversation state for next audio input cycle
+                self.session_manager.reset_conversation_for_next_input(conversation_id)
+                
+                yield response_dict
 
             except ClientError as e:
                 self.error_handler.handle_lex_api_error(e, conversation_id, ErrorContext.LEX_AUDIO_PROCESSING)

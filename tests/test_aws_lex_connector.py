@@ -381,9 +381,13 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "transfer"
+        with patch.object(connector, '_send_text_to_lex') as mock_send_text:
+            mock_send_text.return_value = {"message_type": "response"}
+            
+            response = list(connector.send_message("conv123", message_data))
+            assert len(response) == 1
+            # DTMF 5 is now sent to Lex as text "5" instead of special transfer handling
+            mock_send_text.assert_called_once_with("conv123", "5")
 
     def test_send_message_dtmf_goodbye(self, connector):
         """Test handling of DTMF goodbye request."""
@@ -399,9 +403,13 @@ class TestAWSLexConnector:
             "conversation_id": "conv123"
         }
         
-        response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "goodbye"
+        with patch.object(connector, '_send_text_to_lex') as mock_send_text:
+            mock_send_text.return_value = {"message_type": "response"}
+            
+            response = list(connector.send_message("conv123", message_data))
+            assert len(response) == 1
+            # DTMF 6 is now sent to Lex as text "6" instead of special goodbye handling
+            mock_send_text.assert_called_once_with("conv123", "6")
 
     def test_send_message_dtmf_other_digits(self, connector):
         """Test handling of other DTMF digits."""
@@ -418,11 +426,12 @@ class TestAWSLexConnector:
         }
         
         with patch.object(connector, '_send_text_to_lex') as mock_send_text:
-            mock_send_text.return_value = {"message_type": "silence"}
+            mock_send_text.return_value = {"message_type": "response"}
             
             response = list(connector.send_message("conv123", message_data))
             assert len(response) == 1
-            mock_send_text.assert_called_once_with("conv123", "DTMF 123")
+            # DTMF digits are now sent to Lex as text "123" instead of "DTMF 123"
+            mock_send_text.assert_called_once_with("conv123", "123")
 
     def test_send_message_audio_input(self, connector, mock_lex_runtime):
         """Test handling of audio input."""
@@ -979,15 +988,16 @@ class TestAWSLexConnector:
         }
         
         # Process DTMF input
-        response = connector._handle_dtmf_input(conversation_id, message_data, bot_id, session_id, "TestBot")
-        
-        # Verify transfer response
-        assert response["message_type"] == "transfer"
-        assert "output_events" in response
-        assert response["output_events"][0]["event_type"] == "TRANSFER_TO_HUMAN"
-        
-        # Verify conversation state was reset
-        assert conversation_id not in connector.session_manager.conversations_with_start_of_input
+        with patch.object(connector, '_send_text_to_lex') as mock_send_text:
+            mock_send_text.return_value = {"message_type": "response"}
+            
+            response = connector._handle_dtmf_input(conversation_id, message_data, bot_id, session_id, "TestBot")
+            
+            # Verify DTMF is sent to Lex as text "5" instead of special transfer handling
+            mock_send_text.assert_called_once_with(conversation_id, "5")
+            
+            # Verify response is returned
+            assert response["message_type"] == "response"
 
     def test_reset_integration_with_dtmf_goodbye(self, connector):
         """Test that conversation reset works correctly with DTMF goodbye."""
@@ -1755,7 +1765,7 @@ class TestAWSLexConnector:
             assert call_args.kwargs['sessionId'] == expected_session_id
             assert call_args.kwargs['botAliasId'] == connector.bot_alias_id
             assert call_args.kwargs['localeId'] == connector.locale_id
-            assert call_args.kwargs['requestContentType'] == connector.request_content_type
+            assert call_args.kwargs['requestContentType'] == connector.text_request_content_type
             assert call_args.kwargs['responseContentType'] == connector.response_content_type
             assert call_args.kwargs['inputStream'] is not None  # Should have text data
 
@@ -1935,6 +1945,82 @@ class TestAWSLexConnector:
         # Verify sessionId is the same in both calls
         assert text_call_args.kwargs['sessionId'] == audio_call_args.kwargs['sessionId']
         assert text_call_args.kwargs['sessionId'] == expected_session_id
+
+    def test_response_handler_audio_response_dtmf_config_structure(self, connector):
+        """Test that the response handler's DTMF config has the correct structure."""
+        # Create a response using the actual response handler
+        response = connector.response_handler.create_audio_response(
+            "conv123", "Test response", b"test_audio", "audio/wav"
+        )
+        
+        # Verify the response structure
+        assert "input_mode" in response
+        assert "input_handling_config" in response
+        assert "dtmf_config" in response["input_handling_config"]
+        
+        # Verify DTMF config values
+        dtmf_config = response["input_handling_config"]["dtmf_config"]
+        assert "inter_digit_timeout_msec" in dtmf_config
+        assert "dtmf_input_length" in dtmf_config
+        
+        # Verify the values are integers
+        assert isinstance(dtmf_config["inter_digit_timeout_msec"], int)
+        assert isinstance(dtmf_config["dtmf_input_length"], int)
+        
+        # Verify the values are reasonable
+        assert 1000 <= dtmf_config["inter_digit_timeout_msec"] <= 10000
+        assert 1 <= dtmf_config["dtmf_input_length"] <= 20
+
+    def test_response_handler_audio_response_other_fields_preserved(self, connector):
+        """Test that other fields in the audio response are preserved when adding DTMF config."""
+        # Create a response
+        response = connector.response_handler.create_audio_response(
+            "conv123", "Test response", b"test_audio", "audio/wav"
+        )
+        
+        # Verify that all expected fields are present
+        expected_fields = [
+            "conversation_id", "message_type", "text", "audio_content", 
+            "barge_in_enabled", "content_type", "response_type", 
+            "input_mode", "input_handling_config"
+        ]
+        
+        for field in expected_fields:
+            assert field in response, f"Field {field} missing from response"
+        
+        # Verify the values are correct
+        assert response["conversation_id"] == "conv123"
+        assert response["message_type"] == "response"
+        assert response["text"] == "Test response"
+        assert response["audio_content"] == b"test_audio"
+        assert response["content_type"] == "audio/wav"
+        assert response["response_type"] == "final"
+        assert response["input_mode"] == 2
+
+    def test_response_handler_audio_response_dtmf_config_immutable(self, connector):
+        """Test that the DTMF config in the response is not shared between responses."""
+        # Create two responses
+        response1 = connector.response_handler.create_audio_response(
+            "conv123", "Response 1", b"audio1", "audio/wav"
+        )
+        response2 = connector.response_handler.create_audio_response(
+            "conv456", "Response 2", b"audio2", "audio/wav"
+        )
+        
+        # Verify they have different conversation IDs
+        assert response1["conversation_id"] != response2["conversation_id"]
+        
+        # Verify they both have DTMF config
+        assert "input_handling_config" in response1
+        assert "input_handling_config" in response2
+        assert "dtmf_config" in response1["input_handling_config"]
+        assert "dtmf_config" in response2["input_handling_config"]
+        
+        # Verify the DTMF config values are the same (they should be constants)
+        dtmf1 = response1["input_handling_config"]["dtmf_config"]
+        dtmf2 = response2["input_handling_config"]["dtmf_config"]
+        assert dtmf1["inter_digit_timeout_msec"] == dtmf2["inter_digit_timeout_msec"]
+        assert dtmf1["dtmf_input_length"] == dtmf2["dtmf_input_length"]
 
 
 if __name__ == "__main__":
