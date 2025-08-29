@@ -319,6 +319,61 @@ class AWSLexConnector(IVendorConnector):
         # Handle unrecognized input types
         yield self.handle_unrecognized_input(conversation_id, message_data, self.logger)
 
+    def handle_event(self, conversation_id: str, message_data: Dict[str, Any], logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+        """
+        Handle event inputs for AWS Lex connector.
+
+        Args:
+            conversation_id: Unique identifier for the conversation
+            message_data: Message data containing the event
+            logger: Optional logger instance
+
+        Returns:
+            Response that enables appropriate input mode
+        """
+        if logger and "event_data" in message_data:
+            event_type = message_data.get("event_data", {}).get("event_type")
+            event_name = message_data.get("event_data", {}).get("name", "")
+            logger.info(f"Event for conversation {conversation_id}: event_type={event_type}, name={event_name}")
+
+        # Handle START_OF_DTMF event specifically
+        if message_data.get("event_data", {}).get("event_type") == 4:  # START_OF_DTMF
+            logger.info(f"Handling START_OF_DTMF event for conversation {conversation_id}")
+            
+            # Return a response that enables DTMF input mode WITHOUT final response type
+            # This allows the gateway to continue listening for DTMF input
+            return self.create_response(
+                conversation_id=conversation_id,
+                message_type="silence",
+                text="",  # No text response needed
+                audio_content=b"",  # No audio response needed
+                barge_in_enabled=self.barge_in_enabled,
+                # DO NOT set response_type="final" - this prevents DTMF input from being received
+                # response_type="final" tells the gateway the conversation is complete
+                input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                input_handling_config={
+                    "dtmf_config": {
+                        "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                        "dtmf_input_length": 10  # Allow up to 10 digits
+                    }
+                },
+                output_events=[{
+                    "event_type": "START_OF_INPUT",  # Use START_OF_INPUT to indicate DTMF mode is active
+                    "name": "dtmf_enabled",
+                    "metadata": {
+                        "conversation_id": conversation_id,
+                        "dtmf_enabled": True,
+                        "input_mode": "DTMF"
+                    }
+                }]
+            )
+
+        # For other events, return default silence response
+        return self.create_response(
+            conversation_id=conversation_id,
+            message_type="silence"
+        )
+
     def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any], bot_id: str, session_id: str, bot_name: str) -> Dict[str, Any]:
         """
         Handle DTMF input for the Lex bot.
