@@ -442,8 +442,9 @@ class AWSLexConnector(IVendorConnector):
                     return
 
             # Check if silence threshold was detected, if so send END_OF_INPUT event
+            # This applies to both first and subsequent audio segments
             if buffer_status.get('silence_detected', False):
-                self.logger.debug(f"Silence threshold detected, sending END_OF_INPUT event for next audio input cycle")
+                self.logger.debug("Silence threshold detected, sending END_OF_INPUT event for next audio input cycle")
                 yield self.create_end_of_input_response(conversation_id)
 
                 # Send buffered audio to AWS Lex

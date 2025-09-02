@@ -262,6 +262,8 @@ class AWSLexSessionManager:
         """
         return conversation_id in self.conversations_with_start_of_input
 
+
+
     def reset_conversation_for_next_input(self, conversation_id: str) -> None:
         """
         Reset the conversation state to prepare for the next audio input cycle.
@@ -269,15 +271,18 @@ class AWSLexSessionManager:
         This method should be called after successfully sending a final response to WxCC
         to prepare the conversation for handling the next round of audio input.
         
+        This method removes START_OF_INPUT tracking so that each audio segment
+        can follow the same independent flow: speech detection -> START_OF_INPUT -> silence detection -> END_OF_INPUT.
+        
         Args:
             conversation_id: Conversation identifier to reset
         """
         try:
-            # Remove from START_OF_INPUT tracking to allow new audio input cycle
+            # Remove from START_OF_INPUT tracking to allow each segment to be independent
             self.remove_start_of_input_tracking(conversation_id)
             
             # Log the successful reset
-            self.logger.debug(f"Conversation {conversation_id} reset for next audio input cycle")
+            self.logger.debug(f"Conversation {conversation_id} reset for next audio input cycle (START_OF_INPUT tracking reset for independent segment flow)")
             
         except Exception as e:
             self.logger.error(f"Error resetting conversation {conversation_id} for next input: {e}")
@@ -327,6 +332,8 @@ class AWSLexSessionManager:
             Number of conversations with START_OF_INPUT tracking
         """
         return len(self.conversations_with_start_of_input)
+
+
 
     def get_session_info(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """
