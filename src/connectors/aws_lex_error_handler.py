@@ -219,7 +219,14 @@ class AWSLexErrorHandler:
             "audio_content": b"",
             "barge_in_enabled": False,
             "response_type": "final",
-            "error_context": context.value
+            "error_context": context.value,
+            "input_mode": 3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
+            "input_handling_config": {
+                "dtmf_config": {
+                    "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                    "dtmf_input_length": 10  # Allow up to 10 digits
+                }
+            }
         }
         
         return response
@@ -246,7 +253,14 @@ class AWSLexErrorHandler:
             "audio_content": b"",
             "barge_in_enabled": False,
             "response_type": "final",
-            "fallback_from": original_message_type
+            "fallback_from": original_message_type,
+            "input_mode": 3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
+            "input_handling_config": {
+                "dtmf_config": {
+                    "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                    "dtmf_input_length": 10  # Allow up to 10 digits
+                }
+            }
         }
         
         return response
@@ -327,7 +341,14 @@ class AWSLexErrorHandler:
             "response_type": "final",
             "error_context": ErrorContext.LEX_API_CALL.value,
             "aws_error_code": error_code,
-            "aws_error_message": error_message
+            "aws_error_message": error_message,
+            "input_mode": 3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
+            "input_handling_config": {
+                "dtmf_config": {
+                    "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                    "dtmf_input_length": 10  # Allow up to 10 digits
+                }
+            }
         }
         
         return response

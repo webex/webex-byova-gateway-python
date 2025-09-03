@@ -225,7 +225,14 @@ class AWSLexConnector(IVendorConnector):
                     text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
                     audio_content=b"",
                     barge_in_enabled=self.barge_in_enabled,
-                    response_type="final"
+                    response_type="final",
+                    input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
+                    input_handling_config={
+                        "dtmf_config": {
+                            "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                            "dtmf_input_length": 10  # Allow up to 10 digits
+                        }
+                    }
                 )
 
             except Exception as e:
@@ -336,17 +343,27 @@ class AWSLexConnector(IVendorConnector):
             self.session_manager.add_dtmf_mode_tracking(conversation_id)
             logger.info(f"Added conversation {conversation_id} to DTMF mode tracking - speech detection disabled")
             
-            # Return a response that enables DTMF input mode WITHOUT final response type
-            # This allows the gateway to continue listening for DTMF input
-            # Note: Do NOT send START_OF_INPUT event here - START_OF_INPUT should only be sent when audio/speech is detected
+            # Log the response we're about to send
+            logger.info(f"Sending DTMF mode activation response with START_OF_INPUT event for conversation {conversation_id}")
+            
+            # Return a response that enables DTMF input mode WITH START_OF_INPUT event
+            # This explicitly tells WxCC that input is expected
             return self.create_response(
                 conversation_id=conversation_id,
                 message_type="silence",
                 text="",  # No text response needed
                 audio_content=b"",  # No audio response needed
                 barge_in_enabled=self.barge_in_enabled,
-                # DO NOT set response_type="final" - this prevents DTMF input from being received
-                # response_type="final" tells the gateway the conversation is complete
+                output_events=[{
+                    "event_type": "START_OF_INPUT",
+                    "name": "dtmf_mode_enabled",
+                    "metadata": {
+                        "conversation_id": conversation_id,
+                        "dtmf_enabled": True,
+                        "input_mode": "DTMF"
+                    }
+                }],
+                response_type="partial",  # Use partial to keep conversation active for DTMF input
                 input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
                 input_handling_config={
                     "dtmf_config": {
@@ -355,6 +372,9 @@ class AWSLexConnector(IVendorConnector):
                     }
                 }
             )
+            
+            # Log that we've sent the response
+            logger.info(f"DTMF mode activation response sent for conversation {conversation_id}")
 
         # For other events, return default silence response
         return self.create_response(
@@ -455,8 +475,6 @@ class AWSLexConnector(IVendorConnector):
                 # Send buffered audio to AWS Lex
                 yield from self._send_audio_to_lex(conversation_id)
 
-                # Note: DTMF mode will be enabled after Lex responds, not immediately after sending audio
-                # This prevents duplicate START_OF_INPUT events during the audio input cycle
                 return
 
         except Exception as e:
@@ -620,7 +638,7 @@ class AWSLexConnector(IVendorConnector):
             else:
                 self.logger.debug("No audio stream in Lex response")
             
-            # No audio response or empty audio, return text-only response
+            # No audio response or empty audio, return text-only response with DTMF mode enabled
             text_response = f"I processed your {input_type} input."
             if messages_data and len(messages_data) > 0:
                 first_message = messages_data[0]
@@ -631,7 +649,14 @@ class AWSLexConnector(IVendorConnector):
                 conversation_id=conversation_id,
                 message_type="response",
                 text=text_response,
-                response_type="final"
+                response_type="final",
+                input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
+                input_handling_config={
+                    "dtmf_config": {
+                        "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                        "dtmf_input_length": 10  # Allow up to 10 digits
+                    }
+                }
             )
                 
         except Exception as e:

@@ -527,6 +527,18 @@ class ConversationProcessor:
             # Set response type
             if response_type is not None:
                 va_response.response_type = response_type
+            elif connector_response and "response_type" in connector_response:
+                # Convert string response type from connector to protobuf enum
+                response_type_str = connector_response["response_type"]
+                if response_type_str == "final":
+                    va_response.response_type = VoiceVAResponse.ResponseType.FINAL
+                elif response_type_str == "partial":
+                    va_response.response_type = VoiceVAResponse.ResponseType.PARTIAL
+                elif response_type_str == "chunk":
+                    va_response.response_type = VoiceVAResponse.ResponseType.CHUNK
+                else:
+                    self.logger.warning(f"Unknown response_type '{response_type_str}', defaulting to FINAL")
+                    va_response.response_type = VoiceVAResponse.ResponseType.FINAL
             else:
                 va_response.response_type = VoiceVAResponse.ResponseType.FINAL
 
