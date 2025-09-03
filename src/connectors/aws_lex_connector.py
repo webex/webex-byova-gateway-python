@@ -334,6 +334,7 @@ class AWSLexConnector(IVendorConnector):
             
             # Return a response that enables DTMF input mode WITHOUT final response type
             # This allows the gateway to continue listening for DTMF input
+            # Note: Do NOT send START_OF_INPUT event here - START_OF_INPUT should only be sent when audio/speech is detected
             return self.create_response(
                 conversation_id=conversation_id,
                 message_type="silence",
@@ -348,16 +349,7 @@ class AWSLexConnector(IVendorConnector):
                         "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
                         "dtmf_input_length": 10  # Allow up to 10 digits
                     }
-                },
-                output_events=[{
-                    "event_type": "START_OF_INPUT",  # Use START_OF_INPUT to indicate DTMF mode is active
-                    "name": "dtmf_enabled",
-                    "metadata": {
-                        "conversation_id": conversation_id,
-                        "dtmf_enabled": True,
-                        "input_mode": "DTMF"
-                    }
-                }]
+                }
             )
 
         # For other events, return default silence response
@@ -450,32 +442,8 @@ class AWSLexConnector(IVendorConnector):
                 # Send buffered audio to AWS Lex
                 yield from self._send_audio_to_lex(conversation_id)
 
-                # After sending audio to Lex, enable DTMF input mode for the response
-                # This allows users to press DTMF keys after hearing Lex's response
-                yield self.create_response(
-                    conversation_id=conversation_id,
-                    message_type="silence",
-                    text="",
-                    audio_content=b"",
-                    barge_in_enabled=self.barge_in_enabled,
-                    input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
-                    input_handling_config={
-                        "dtmf_config": {
-                            "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
-                            "dtmf_input_length": 10  # Allow up to 10 digits
-                        }
-                    },
-                    output_events=[{
-                        "event_type": "START_OF_INPUT",  # Use START_OF_INPUT to indicate DTMF mode is active
-                        "name": "dtmf_enabled",
-                        "metadata": {
-                            "conversation_id": conversation_id,
-                            "dtmf_enabled": True,
-                            "input_mode": "DTMF"
-                        }
-                    }]
-                )
-
+                # Note: DTMF mode will be enabled after Lex responds, not immediately after sending audio
+                # This prevents duplicate START_OF_INPUT events during the audio input cycle
                 return
 
         except Exception as e:
@@ -650,14 +618,7 @@ class AWSLexConnector(IVendorConnector):
                 conversation_id=conversation_id,
                 message_type="response",
                 text=text_response,
-                response_type="final",
-                input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
-                input_handling_config={
-                    "dtmf_config": {
-                        "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
-                        "dtmf_input_length": 10  # Allow up to 10 digits
-                    }
-                }
+                response_type="final"
             )
                 
         except Exception as e:
