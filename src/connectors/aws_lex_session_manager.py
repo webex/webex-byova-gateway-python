@@ -39,6 +39,9 @@ class AWSLexSessionManager:
         
         # Track which conversations have already sent START_OF_INPUT event
         self.conversations_with_start_of_input: Set[str] = set()
+        
+        # Track which conversations are currently in DTMF input mode
+        self.conversations_in_dtmf_mode: Set[str] = set()
 
     def get_available_agents(self, lex_client) -> List[str]:
         """
@@ -262,6 +265,41 @@ class AWSLexSessionManager:
         """
         return conversation_id in self.conversations_with_start_of_input
 
+    def add_dtmf_mode_tracking(self, conversation_id: str) -> None:
+        """
+        Add a conversation to DTMF mode tracking.
+
+        Args:
+            conversation_id: Conversation identifier
+        """
+        self.conversations_in_dtmf_mode.add(conversation_id)
+        self.logger.debug(f"Added conversation {conversation_id} to DTMF mode tracking")
+
+    def remove_dtmf_mode_tracking(self, conversation_id: str) -> None:
+        """
+        Remove a conversation from DTMF mode tracking.
+
+        Args:
+            conversation_id: Conversation identifier
+        """
+        if conversation_id in self.conversations_in_dtmf_mode:
+            self.conversations_in_dtmf_mode.remove(conversation_id)
+            self.logger.debug(f"Removed conversation {conversation_id} from DTMF mode tracking")
+        else:
+            self.logger.debug(f"Conversation {conversation_id} was not in DTMF mode tracking")
+
+    def has_dtmf_mode_tracking(self, conversation_id: str) -> bool:
+        """
+        Check if a conversation is in DTMF mode.
+
+        Args:
+            conversation_id: Conversation identifier
+
+        Returns:
+            True if conversation is in DTMF mode, False otherwise
+        """
+        return conversation_id in self.conversations_in_dtmf_mode
+
 
 
     def reset_conversation_for_next_input(self, conversation_id: str) -> None:
@@ -271,7 +309,7 @@ class AWSLexSessionManager:
         This method should be called after successfully sending a final response to WxCC
         to prepare the conversation for handling the next round of audio input.
         
-        This method removes START_OF_INPUT tracking so that each audio segment
+        This method removes START_OF_INPUT tracking and DTMF mode tracking so that each audio segment
         can follow the same independent flow: speech detection -> START_OF_INPUT -> silence detection -> END_OF_INPUT.
         
         Args:
@@ -281,8 +319,11 @@ class AWSLexSessionManager:
             # Remove from START_OF_INPUT tracking to allow each segment to be independent
             self.remove_start_of_input_tracking(conversation_id)
             
+            # Remove from DTMF mode tracking to allow speech detection to resume
+            self.remove_dtmf_mode_tracking(conversation_id)
+            
             # Log the successful reset
-            self.logger.debug(f"Conversation {conversation_id} reset for next audio input cycle (START_OF_INPUT tracking reset for independent segment flow)")
+            self.logger.debug(f"Conversation {conversation_id} reset for next audio input cycle (START_OF_INPUT and DTMF mode tracking reset for independent segment flow)")
             
         except Exception as e:
             self.logger.error(f"Error resetting conversation {conversation_id} for next input: {e}")
@@ -333,6 +374,15 @@ class AWSLexSessionManager:
         """
         return len(self.conversations_with_start_of_input)
 
+    def get_dtmf_mode_count(self) -> int:
+        """
+        Get the current number of conversations in DTMF mode.
+
+        Returns:
+            Number of conversations in DTMF mode
+        """
+        return len(self.conversations_in_dtmf_mode)
+
 
 
     def get_session_info(self, conversation_id: str) -> Optional[Dict[str, Any]]:
@@ -355,7 +405,8 @@ class AWSLexSessionManager:
             'bot_id': session_info.get('actual_bot_id'),
             'bot_name': session_info.get('bot_name'),
             'display_name': session_info.get('display_name'),
-            'has_start_of_input_tracking': conversation_id in self.conversations_with_start_of_input
+            'has_start_of_input_tracking': conversation_id in self.conversations_with_start_of_input,
+            'has_dtmf_mode_tracking': conversation_id in self.conversations_in_dtmf_mode
         }
 
     def cleanup_all_sessions(self) -> None:
@@ -365,9 +416,11 @@ class AWSLexSessionManager:
         This is useful for shutdown or testing purposes.
         """
         session_count = len(self._sessions)
-        tracking_count = len(self.conversations_with_start_of_input)
+        start_of_input_count = len(self.conversations_with_start_of_input)
+        dtmf_mode_count = len(self.conversations_in_dtmf_mode)
         
         self._sessions.clear()
         self.conversations_with_start_of_input.clear()
+        self.conversations_in_dtmf_mode.clear()
         
-        self.logger.info(f"Cleaned up {session_count} sessions and {tracking_count} tracking entries")
+        self.logger.info(f"Cleaned up {session_count} sessions, {start_of_input_count} START_OF_INPUT tracking entries, and {dtmf_mode_count} DTMF mode tracking entries")

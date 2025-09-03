@@ -1672,7 +1672,7 @@ class TestAWSLexConnector:
         
         # Verify appropriate logging occurred
         connector.session_manager.logger.debug.assert_any_call(
-            f"Conversation {conversation_id} reset for next audio input cycle (START_OF_INPUT tracking reset for independent segment flow)"
+            f"Conversation {conversation_id} reset for next audio input cycle (START_OF_INPUT and DTMF mode tracking reset for independent segment flow)"
         )
 
     def test_recognize_utterance_parameters_audio_input(self, connector):
@@ -2001,7 +2001,7 @@ class TestAWSLexConnector:
         assert response["audio_content"] == b"test_audio"
         assert response["content_type"] == "audio/wav"
         assert response["response_type"] == "final"
-        assert response["input_mode"] == 2
+        assert response["input_mode"] == 3  # INPUT_VOICE_DTMF = 3 (voice + DTMF input)
 
     def test_response_handler_audio_response_dtmf_config_immutable(self, connector):
         """Test that the DTMF config in the response is not shared between responses."""
@@ -2210,6 +2210,168 @@ class TestAWSLexConnector:
                         break
         
         assert end_of_input_found, "END_OF_INPUT event should be sent when silence is detected"
+
+    def test_dtmf_mode_tracking_speech_detection_disabled(self, connector):
+        """Test that speech detection is disabled when conversation is in DTMF mode."""
+        conversation_id = "test_dtmf_mode_conv"
+        
+        # Set up session
+        connector.session_manager._sessions[conversation_id] = {
+            "session_id": "session_123",
+            "actual_bot_id": "test_bot",
+            "bot_name": "TestBot"
+        }
+        
+        # Mock audio processor to return speech detected
+        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
+            "speech_detected": True,
+            "silence_detected": False,
+            "waiting_for_speech": False,
+            "buffer_size": 100
+        })
+        
+        # First, verify that speech detection works normally when NOT in DTMF mode
+        message_data = {
+            "input_type": "audio",
+            "audio_data": b"test_audio_data"
+        }
+        
+        # Mock the session manager methods
+        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=False)
+        connector.session_manager.add_start_of_input_tracking = MagicMock()
+        connector.session_manager.has_dtmf_mode_tracking = MagicMock(return_value=False)
+        
+        # Process audio input - should detect speech and send START_OF_INPUT
+        responses = list(connector._handle_audio_input(conversation_id, message_data, "test_bot", "session_123", "TestBot"))
+        
+        # Should send START_OF_INPUT when speech is detected
+        assert len(responses) == 1
+        assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
+        
+        # Now add conversation to DTMF mode tracking
+        connector.session_manager.add_dtmf_mode_tracking(conversation_id)
+        connector.session_manager.has_dtmf_mode_tracking = MagicMock(return_value=True)
+        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=False)
+        connector.session_manager.add_start_of_input_tracking = MagicMock()
+        
+        # Process audio input again - should skip speech detection entirely
+        responses = list(connector._handle_audio_input(conversation_id, message_data, "test_bot", "session_123", "TestBot"))
+        
+        # Should NOT send any response when in DTMF mode
+        assert len(responses) == 0
+        
+        # Verify that START_OF_INPUT tracking was NOT added
+        connector.session_manager.add_start_of_input_tracking.assert_not_called()
+
+    def test_dtmf_mode_tracking_removed_after_dtmf_input(self, connector):
+        """Test that DTMF mode tracking is removed after DTMF input is processed."""
+        conversation_id = "test_dtmf_removal_conv"
+        
+        # Set up session
+        connector.session_manager._sessions[conversation_id] = {
+            "session_id": "session_123",
+            "actual_bot_id": "test_bot",
+            "bot_name": "TestBot"
+        }
+        
+        # Add conversation to DTMF mode tracking
+        connector.session_manager.add_dtmf_mode_tracking(conversation_id)
+        assert connector.session_manager.has_dtmf_mode_tracking(conversation_id)
+        
+        # Mock Lex response
+        mock_response = MagicMock()
+        mock_response.get.return_value = None
+        connector.lex_runtime.recognize_utterance = MagicMock(return_value=mock_response)
+        
+        # Mock response handler
+        connector.response_handler.create_audio_response = MagicMock(return_value={
+            "message_type": "response",
+            "text": "Test response",
+            "audio_content": b"response_audio",
+            "response_type": "final"
+        })
+        
+        # Process DTMF input
+        message_data = {
+            "input_type": "dtmf",
+            "dtmf_data": {
+                "dtmf_events": [1, 2, 3]
+            }
+        }
+        
+        connector._handle_dtmf_input(conversation_id, message_data, "test_bot", "session_123", "TestBot")
+        
+        # Verify that DTMF mode tracking was removed
+        assert not connector.session_manager.has_dtmf_mode_tracking(conversation_id)
+
+    def test_start_of_dtmf_event_sets_dtmf_mode_tracking(self, connector):
+        """Test that START_OF_DTMF event adds conversation to DTMF mode tracking."""
+        conversation_id = "test_start_of_dtmf_conv"
+        
+        # Set up session
+        connector.session_manager._sessions[conversation_id] = {
+            "session_id": "session_123",
+            "actual_bot_id": "test_bot",
+            "bot_name": "TestBot"
+        }
+        
+        # Verify conversation is not in DTMF mode initially
+        assert not connector.session_manager.has_dtmf_mode_tracking(conversation_id)
+        
+        # Process START_OF_DTMF event
+        message_data = {
+            "input_type": "event",
+            "event_data": {
+                "event_type": 4,  # START_OF_DTMF
+                "name": ""
+            }
+        }
+        
+        connector.handle_event(conversation_id, message_data, connector.logger)
+        
+        # Verify that conversation is now in DTMF mode
+        assert connector.session_manager.has_dtmf_mode_tracking(conversation_id)
+
+    def test_dtmf_mode_completely_disables_speech_detection(self, connector):
+        """Test that speech detection is completely disabled when in DTMF mode (simulating the reported issue)."""
+        conversation_id = "a9cbbe79-5e95-4f1c-a122-5979f0e9bb05"  # Use the actual conversation ID from the report
+        
+        # Set up session
+        connector.session_manager._sessions[conversation_id] = {
+            "session_id": "session_123",
+            "actual_bot_id": "test_bot",
+            "bot_name": "TestBot"
+        }
+        
+        # Mock audio processor to return speech detected
+        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
+            "speech_detected": True,
+            "silence_detected": False,
+            "waiting_for_speech": False,
+            "buffer_size": 100
+        })
+        
+        # Mock the session manager methods
+        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=False)
+        connector.session_manager.add_start_of_input_tracking = MagicMock()
+        connector.session_manager.has_dtmf_mode_tracking = MagicMock(return_value=True)  # Simulate DTMF mode
+        
+        # Process audio input - should skip all processing due to DTMF mode
+        message_data = {
+            "input_type": "audio",
+            "audio_data": b"test_audio_data"
+        }
+        
+        responses = list(connector._handle_audio_input(conversation_id, message_data, "test_bot", "session_123", "TestBot"))
+        
+        # Should NOT send any response when in DTMF mode
+        assert len(responses) == 0
+        
+        # Verify that audio processor was NOT called (since we return early)
+        connector.audio_processor.process_audio_for_buffering.assert_not_called()
+        
+        # Verify that START_OF_INPUT tracking was NOT added
+        connector.session_manager.add_start_of_input_tracking.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -332,6 +332,10 @@ class AWSLexConnector(IVendorConnector):
         if message_data.get("event_data", {}).get("event_type") == 4:  # START_OF_DTMF
             logger.info(f"Handling START_OF_DTMF event for conversation {conversation_id}")
             
+            # Add conversation to DTMF mode tracking to disable speech detection
+            self.session_manager.add_dtmf_mode_tracking(conversation_id)
+            logger.info(f"Added conversation {conversation_id} to DTMF mode tracking - speech detection disabled")
+            
             # Return a response that enables DTMF input mode WITHOUT final response type
             # This allows the gateway to continue listening for DTMF input
             # Note: Do NOT send START_OF_INPUT event here - START_OF_INPUT should only be sent when audio/speech is detected
@@ -380,6 +384,10 @@ class AWSLexConnector(IVendorConnector):
             # Convert DTMF events to a string
             dtmf_string = "".join([str(digit) for digit in dtmf_events])
 
+            # Remove conversation from DTMF mode tracking to re-enable speech detection
+            self.session_manager.remove_dtmf_mode_tracking(conversation_id)
+            self.logger.info(f"Removed conversation {conversation_id} from DTMF mode tracking - speech detection re-enabled")
+
             # Send all DTMF digits directly to AWS Lex
             self.logger.debug(f"Sending DTMF {dtmf_string} to Lex for conversation {conversation_id}")
             # Send clean DTMF digits to Lex for better intent matching
@@ -409,6 +417,11 @@ class AWSLexConnector(IVendorConnector):
             Response from Lex with processed audio
         """
         try:
+            # Check if conversation is in DTMF mode - if so, skip speech detection entirely
+            if self.session_manager.has_dtmf_mode_tracking(conversation_id):
+                self.logger.debug(f"Conversation {conversation_id} is in DTMF mode, skipping speech detection")
+                return
+
             # Extract audio data from the message
             audio_bytes = self.extract_audio_data(message_data.get("audio_data"), conversation_id, self.logger)
 
