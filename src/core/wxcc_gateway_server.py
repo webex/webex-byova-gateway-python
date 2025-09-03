@@ -411,6 +411,7 @@ class ConversationProcessor:
                                     self.logger.warning(f"Failed to convert metadata for event {event_type}: {e}")
                             
                             va_response.output_events.append(output_event)
+                            self.logger.info(f"Sent {event_type} event to WxCC for conversation {self.conversation_id}")
                             self.logger.debug(f"Added {event_type} event to silence response")
                 
                 return va_response
@@ -462,6 +463,7 @@ class ConversationProcessor:
                 )
                 output_event.name = "session_ended"
                 va_response.output_events.append(output_event)
+                self.logger.info(f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (goodbye message)")
                 self.can_be_deleted = True
             elif message_type == "transfer":
                 output_event = OutputEvent()
@@ -470,6 +472,7 @@ class ConversationProcessor:
                 )
                 output_event.name = "transfer_requested"
                 va_response.output_events.append(output_event)
+                self.logger.info(f"Sent TRANSFER_TO_AGENT event to WxCC for conversation {self.conversation_id}")
                 self.can_be_deleted = True
             elif message_type == "session_end":
                 output_event = OutputEvent()
@@ -478,6 +481,7 @@ class ConversationProcessor:
                 )
                 output_event.name = "session_ended"
                 va_response.output_events.append(output_event)
+                self.logger.info(f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (session_end message)")
                 self.can_be_deleted = True
 
             # Handle generic output events from connector responses
@@ -517,6 +521,7 @@ class ConversationProcessor:
                                 self.logger.warning(f"Failed to convert metadata for event {event_type}: {e}")
                         
                         va_response.output_events.append(output_event)
+                        self.logger.info(f"Sent {event_type} event to WxCC for conversation {self.conversation_id}")
                         self.logger.debug(f"Added {event_type} event to gRPC response")
 
             # Set response type
@@ -569,6 +574,7 @@ class ConversationProcessor:
         output_event.event_type = OutputEvent.EventType.CUSTOM_EVENT
         output_event.name = "error_occurred"
         va_response.output_events.append(output_event)
+        self.logger.info(f"Sent CUSTOM_EVENT (error_occurred) to WxCC for conversation {self.conversation_id}")
 
         # Set response type
         va_response.response_type = VoiceVAResponse.ResponseType.FINAL
