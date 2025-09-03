@@ -187,7 +187,7 @@ class AWSLexConnector(IVendorConnector):
                         barge_in_enabled=self.barge_in_enabled,
                         content_type=response_dict.get('content_type', 'audio/wav'),
                         response_type="final",
-                        input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                        input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
                         input_handling_config={
                             "dtmf_config": {
                                 "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
@@ -204,7 +204,7 @@ class AWSLexConnector(IVendorConnector):
                         audio_content=b"",
                         barge_in_enabled=self.barge_in_enabled,
                         response_type="final",
-                        input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                        input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
                         input_handling_config={
                             "dtmf_config": {
                                 "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
@@ -239,7 +239,7 @@ class AWSLexConnector(IVendorConnector):
                     audio_content=b"",
                     barge_in_enabled=self.barge_in_enabled,
                     response_type="final",
-                    input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                    input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
                     input_handling_config={
                         "dtmf_config": {
                             "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
@@ -343,7 +343,7 @@ class AWSLexConnector(IVendorConnector):
                 barge_in_enabled=self.barge_in_enabled,
                 # DO NOT set response_type="final" - this prevents DTMF input from being received
                 # response_type="final" tells the gateway the conversation is complete
-                input_mode=2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+                input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
                 input_handling_config={
                     "dtmf_config": {
                         "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits

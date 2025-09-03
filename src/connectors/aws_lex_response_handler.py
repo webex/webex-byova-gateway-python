@@ -160,7 +160,7 @@ class AWSLexResponseHandler:
             "barge_in_enabled": False,
             "content_type": content_type,
             "response_type": "final",
-            "input_mode": 2,  # INPUT_EVENT_DTMF = 2 (from protobuf)
+            "input_mode": 3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
             "input_handling_config": {
                 "dtmf_config": {
                     "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
