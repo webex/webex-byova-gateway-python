@@ -208,11 +208,6 @@ class AudioBuffer:
                         f"(threshold: {self.silence_duration}s)"
                     )
                     if silence_time >= self.silence_duration:
-                        self.logger.info(
-                            f"Silence detected for {silence_time:.2f}s in conversation {self.conversation_id}, "
-                            f"triggering audio ready callback"
-                        )
-                        
                         # Silence threshold reached - audio is ready for processing
                         # The caller should check silence_detected and call get_buffered_audio()
                         self.logger.info(
@@ -290,11 +285,6 @@ class AudioBuffer:
         silence_time = current_time - self.last_audio_time
         
         if silence_time >= self.silence_duration:
-            self.logger.info(
-                f"Silence timeout reached ({silence_time:.2f}s) for conversation {self.conversation_id}, "
-                f"triggering audio ready callback"
-            )
-            
             # Silence timeout reached - audio is ready for processing
             # The caller should check silence_detected and call get_buffered_audio()
             self.logger.info(
