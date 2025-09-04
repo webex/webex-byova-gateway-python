@@ -787,8 +787,8 @@ class AWSLexConnector(IVendorConnector):
                         yield session_end_response
                         return
                         
-                    elif primary_intent_state == 'Failed':
-                        self.logger.info(f"Primary intent '{primary_intent_name}' failed - escalation needed")
+                    elif primary_intent_state == 'ReadyForFulfillment':
+                        self.logger.info(f"Primary intent '{primary_intent_name}' - escalation needed")
                         # Create a TRANSFER_TO_AGENT response
                         transfer_response = self.response_handler.create_transfer_response(
                             conversation_id=conversation_id,
