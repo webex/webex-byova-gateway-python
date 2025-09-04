@@ -596,7 +596,7 @@ class TestAWSLexConnector:
         """Test ending non-existent conversation."""
         connector.end_conversation("nonexistent")
         
-        connector.session_manager.logger.warning.assert_called()
+        connector.session_manager.logger.debug.assert_called()
 
     def test_end_conversation_with_message_data(self, connector):
         """Test ending conversation with message data."""

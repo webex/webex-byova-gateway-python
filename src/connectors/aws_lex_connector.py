@@ -886,14 +886,19 @@ class AWSLexConnector(IVendorConnector):
         # Log conversation details first, in case there's an error in cleanup
         self.logger.info(f"Ending AWS Lex conversation: {conversation_id}")
 
-        # End session using session manager
+        # End session using session manager (this may warn if session doesn't exist, which is OK)
         session_info = self.session_manager.end_session(conversation_id, message_data)
+        
+        if session_info:
+            self.logger.debug(f"Successfully ended session for conversation {conversation_id}")
+        else:
+            self.logger.debug(f"No active session found for conversation {conversation_id} (this is normal for early termination)")
 
-        # Finalize audio buffering (always enabled for AWS Lex connector)
+        # Always clean up audio resources, regardless of session state
         self.audio_processor.cleanup_audio_buffer(conversation_id)
-
-        # Clean up audio logging resources
         self.audio_processor.cleanup_audio_logging(conversation_id)
+
+        self.logger.info(f"Completed cleanup for AWS Lex conversation: {conversation_id}")
 
         # No return value needed for normal end_conversation calls
 

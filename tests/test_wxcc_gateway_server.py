@@ -419,6 +419,84 @@ class TestConversationProcessor:
         assert responses[0].prompts[0].text == "Event received"
         assert responses[1].prompts[0].text == "Event processed"
 
+    def test_process_session_end_event(self, processor, mock_router):
+        """Test processing SESSION_END event from client."""
+        from src.generated.byova_common_pb2 import EventInput
+        from src.generated.voicevirtualagent_pb2 import VoiceVAResponse
+        
+        # Create SESSION_END event input
+        mock_session_end_event = EventInput()
+        mock_session_end_event.event_type = EventInput.EventType.SESSION_END
+        mock_session_end_event.name = "call_end"
+        mock_session_end_event.parameters = {}
+        
+        # Mock connector returning response for end_conversation
+        mock_end_response = {
+            "message_type": "session_end",
+            "text": "Conversation ended",
+            "audio_content": b"goodbye_audio",
+            "barge_in_enabled": False
+        }
+        mock_router.route_request.return_value = mock_end_response
+
+        # Process SESSION_END event
+        responses = list(processor._process_event_input(mock_session_end_event))
+
+        # Verify router was called to end conversation
+        mock_router.route_request.assert_called_once_with(
+            "test_agent_456",
+            "end_conversation",
+            "test_conv_123",
+            {
+                "conversation_id": "test_conv_123",
+                "virtual_agent_id": "test_agent_456",
+                "input_type": "conversation_end",
+            }
+        )
+
+        # Verify conversation is marked for cleanup
+        assert processor.can_be_deleted == True
+
+        # Verify response was processed
+        assert len(responses) == 2  # One from connector, one final response
+        
+        # Check the final response has SESSION_END output event
+        final_response = responses[1]
+        assert final_response.response_type == VoiceVAResponse.ResponseType.FINAL
+        assert len(final_response.output_events) == 1
+        assert final_response.output_events[0].event_type == 1  # SESSION_END
+        assert final_response.output_events[0].name == "session_ended_by_client"
+
+    def test_process_session_end_event_with_connector_error(self, processor, mock_router):
+        """Test processing SESSION_END event when connector returns error."""
+        from src.generated.byova_common_pb2 import EventInput
+        from src.generated.voicevirtualagent_pb2 import VoiceVAResponse
+        
+        # Create SESSION_END event input
+        mock_session_end_event = EventInput()
+        mock_session_end_event.event_type = EventInput.EventType.SESSION_END
+        mock_session_end_event.name = "call_end"
+        mock_session_end_event.parameters = {}
+        
+        # Mock connector raising exception
+        mock_router.route_request.side_effect = Exception("Connector error")
+
+        # Process SESSION_END event
+        responses = list(processor._process_event_input(mock_session_end_event))
+
+        # Verify conversation is still marked for cleanup even with error
+        assert processor.can_be_deleted == True
+
+        # Verify final response is still sent
+        assert len(responses) == 1  # Only the final response
+        
+        # Check the final response has SESSION_END output event
+        final_response = responses[0]
+        assert final_response.response_type == VoiceVAResponse.ResponseType.FINAL
+        assert len(final_response.output_events) == 1
+        assert final_response.output_events[0].event_type == 1  # SESSION_END
+        assert final_response.output_events[0].name == "session_ended_by_client"
+
     def test_audio_input_field_access(self, processor, mock_router, mock_audio_input):
         """Test that audio input correctly accesses caller_audio field."""
         # Mock connector returning single response
