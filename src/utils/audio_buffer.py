@@ -26,7 +26,7 @@ class AudioBuffer:
         self,
         conversation_id: str,
         max_buffer_size: int = 1024 * 1024,  # 1MB default
-        silence_threshold: int = 3000,
+        silence_threshold: int = 4000,  # Increased from 3000 for more conservative detection
         silence_duration: float = 2.0,
         quiet_threshold: int = 20,
         sample_rate: int = 8000,
@@ -61,6 +61,9 @@ class AudioBuffer:
         self.channels = channels
         self.encoding = encoding
 
+        # Pattern detection thresholds
+        self.min_alternating_percentage = 5.0  # Minimum alternation percentage for speech
+        self.min_unique_values = 10  # Minimum unique values for speech
 
         # Internal state
         self.audio_buffer = bytearray()
@@ -73,7 +76,8 @@ class AudioBuffer:
             f"AudioBuffer initialized for conversation {conversation_id} "
             f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, "
             f"quiet threshold: {quiet_threshold}, max buffer size: {max_buffer_size} bytes, "
-            f"waiting for speech: {self.waiting_for_speech})"
+            f"pattern detection: min alternation {self.min_alternating_percentage}%, "
+            f"min unique values {self.min_unique_values}, waiting for speech: {self.waiting_for_speech})"
         )
 
     def start_buffering(self) -> None:
@@ -362,21 +366,46 @@ class AudioBuffer:
 
     def detect_silence(self, audio_data: bytes) -> bool:
         """
-        Detect if audio data contains only silence.
+        Enhanced silence detection with pattern analysis to prevent false positives.
 
         Args:
             audio_data: Audio data bytes to analyze
 
         Returns:
-            True if the audio is below the silence threshold
+            True if the audio is below the silence threshold or shows background noise patterns
         """
         if not audio_data or len(audio_data) == 0:
             self.logger.debug("Empty audio data passed to silence detection")
             return True
 
         # For u-law encoding, we can directly check byte values
-        # Silence in u-law is typically represented by values close to 0xFF
         if self.encoding == "ulaw":
+            bytes_list = list(audio_data)
+            
+            # Check for constant patterns (very low alternation) - indicates background noise
+            sample_size = min(1000, len(bytes_list))
+            sample = bytes_list[:sample_size]
+            alternating_count = sum(1 for i in range(1, len(sample)) 
+                                  if sample[i] != sample[i-1])
+            alternating_percentage = (alternating_count / (len(sample) - 1)) * 100
+            
+            # If too constant, it's likely background noise, not speech
+            if alternating_percentage < self.min_alternating_percentage:
+                self.logger.debug(
+                    f"Constant pattern detected ({alternating_percentage:.1f}% alternation) - "
+                    f"treating as silence (background noise, threshold: {self.min_alternating_percentage}%)"
+                )
+                return True
+            
+            # Check for very low variation (constant tones)
+            unique_values = len(set(bytes_list))
+            if unique_values < self.min_unique_values:
+                self.logger.debug(
+                    f"Low variation detected ({unique_values} unique values) - "
+                    f"treating as silence (constant tone, threshold: {self.min_unique_values})"
+                )
+                return True
+            
             # Use the configured silence threshold to determine sensitivity
             # The threshold represents the percentage of non-silent samples allowed
             # Higher threshold = more sensitive (more likely to detect silence)
@@ -390,13 +419,13 @@ class AudioBuffer:
             # We'll consider values in the "quiet" range (around 127) as effective silence
             quiet_threshold = self.quiet_threshold  # Use the quiet_threshold from __init__
             significant_audio_count = sum(
-                1 for byte in audio_data 
+                1 for byte in bytes_list 
                 if abs(byte - 127) > quiet_threshold and byte != 0xFF
             )
             
             # Calculate percentage of significant audio samples
-            if len(audio_data) > 0:
-                significant_audio_percentage = (significant_audio_count / len(audio_data)) * 100
+            if len(bytes_list) > 0:
+                significant_audio_percentage = (significant_audio_count / len(bytes_list)) * 100
                 self.logger.debug(
                     f"Detected {significant_audio_percentage:.2f}% significant audio samples "
                     f"(threshold: {threshold_percentage:.1f}%, configured: {self.silence_threshold})"

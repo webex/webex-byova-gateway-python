@@ -44,7 +44,7 @@ class TestAudioBuffer:
         
         assert buffer.conversation_id == "test_conv_456"
         assert buffer.max_buffer_size == 1024*1024  # 1MB default
-        assert buffer.silence_threshold == 3000
+        assert buffer.silence_threshold == 4000  # Updated default threshold
         assert buffer.silence_duration == 2.0
         assert buffer.quiet_threshold == 20
         assert buffer.sample_rate == 8000
@@ -116,8 +116,9 @@ class TestAudioBuffer:
     def test_add_audio_data_basic(self, basic_buffer):
         """Test adding basic audio data."""
         # Create audio data that will be detected as non-silent
-        # Use bytes that are significantly different from 127 (quiet background in u-law)
-        test_audio = bytes([0, 50, 100, 200, 255])  # Values far from 127
+        # Use bytes that are significantly different from 127 and have good variation
+        # Create a pattern that simulates speech with good alternation
+        test_audio = bytes([0, 50, 100, 150, 200, 250, 1, 99, 25, 75, 125, 175, 225, 255, 10, 90] * 10)  # 160 bytes with good variation
         result = basic_buffer.add_audio_data(test_audio, "ulaw")
         
         assert result["buffering_continues"] is True
@@ -300,7 +301,8 @@ class TestAudioBuffer:
     def test_detect_silence_ulaw_speech(self, basic_buffer):
         """Test silence detection with u-law speech data."""
         # Create u-law data that represents speech (values far from 127 and 0xFF)
-        speech_data = bytes([0, 50, 100, 150, 200, 250, 1, 99])
+        # Use more varied data to avoid pattern detection
+        speech_data = bytes([0, 50, 100, 150, 200, 250, 1, 99, 25, 75, 125, 175, 225, 255, 10, 90] * 10)
         result = basic_buffer.detect_silence(speech_data)
         
         assert result is False
@@ -357,7 +359,7 @@ class TestAudioBuffer:
         basic_buffer.start_buffering()
         
         # Add some speech data first (enough to meet frame size requirement)
-        speech_data = bytes([0, 50, 100, 150, 200, 250, 1, 99] * 20)  # 160 bytes
+        speech_data = bytes([0, 50, 100, 150, 200, 250, 1, 99, 25, 75, 125, 175, 225, 255, 10, 90] * 10)  # 160 bytes
         basic_buffer.add_audio_data(speech_data, "ulaw")
         
         # Now add silence data that should trigger silence detection
