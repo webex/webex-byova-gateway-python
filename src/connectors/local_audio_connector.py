@@ -7,7 +7,7 @@ It's useful for testing and development purposes.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Iterator
+from typing import Any, Dict, List, Iterator, Optional
 
 from ..utils.audio_utils import AudioConverter
 from ..utils.audio_buffer import AudioBuffer
@@ -124,7 +124,7 @@ class LocalAudioConnector(IVendorConnector):
             "barge_in_enabled": False,  # Disable barge-in for welcome message
         }
 
-    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Optional[Dict[str, Any]]]:
         """
         Send a message to the local audio connector and get a response.
 
@@ -133,7 +133,8 @@ class LocalAudioConnector(IVendorConnector):
             message_data: Message data containing input (audio, text, or events)
 
         Returns:
-            Iterator yielding responses from the local audio connector
+            Iterator yielding responses from the local audio connector.
+            Yield None when no response is needed.
         """
         self.logger.info(f"Processing message for conversation {conversation_id}, input_type: {message_data.get('input_type')}")
 

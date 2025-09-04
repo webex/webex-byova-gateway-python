@@ -63,7 +63,7 @@ class IVendorConnector(ABC):
     @abstractmethod
     def send_message(
         self, conversation_id: str, message_data: Dict[str, Any]
-    ) -> Iterator[Dict[str, Any]]:
+    ) -> Iterator[Optional[Dict[str, Any]]]:
         """
         Send a message or audio to the virtual agent.
 
@@ -72,7 +72,8 @@ class IVendorConnector(ABC):
             message_data: Message data including audio bytes, text, or events
 
         Returns:
-            Iterator yielding response dictionaries from the virtual agent
+            Iterator yielding response dictionaries from the virtual agent.
+            Yield None when no response is needed.
         """
         pass
 

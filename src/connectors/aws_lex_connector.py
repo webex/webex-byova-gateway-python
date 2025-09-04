@@ -263,7 +263,7 @@ class AWSLexConnector(IVendorConnector):
                 fallback_text="I'm having trouble starting our conversation. Please try again."
             )
 
-    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Optional[Dict[str, Any]]]:
         """
         Send a message to the AWS Lex bot and get a response.
 
@@ -272,7 +272,8 @@ class AWSLexConnector(IVendorConnector):
             message_data: Message data containing input (audio or text)
 
         Returns:
-            Iterator yielding responses from Lex containing audio and text
+            Iterator yielding responses from Lex containing audio and text.
+            Yield None when no response is needed.
         """
         self.logger.debug(f"Processing message for conversation {conversation_id}, input_type: {message_data.get('input_type')}")
 
