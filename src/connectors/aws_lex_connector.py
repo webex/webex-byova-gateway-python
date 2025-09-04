@@ -317,9 +317,11 @@ class AWSLexConnector(IVendorConnector):
             return
 
         # Handle unrecognized input types
-        yield self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+        response = self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+        if response is not None:
+            yield response
 
-    def handle_event(self, conversation_id: str, message_data: Dict[str, Any], logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+    def handle_event(self, conversation_id: str, message_data: Dict[str, Any], logger: Optional[logging.Logger] = None) -> Optional[Dict[str, Any]]:
         """
         Handle event inputs for AWS Lex connector.
 
@@ -329,7 +331,7 @@ class AWSLexConnector(IVendorConnector):
             logger: Optional logger instance
 
         Returns:
-            Response that enables appropriate input mode
+            Response that enables appropriate input mode, or None if no response is needed
         """
         if logger and "event_data" in message_data:
             event_type = message_data.get("event_data", {}).get("event_type")
@@ -344,46 +346,17 @@ class AWSLexConnector(IVendorConnector):
             self.session_manager.add_dtmf_mode_tracking(conversation_id)
             logger.info(f"Added conversation {conversation_id} to DTMF mode tracking - speech detection disabled")
             
-            # Log the response we're about to send
-            logger.info(f"Sending DTMF mode activation response with START_OF_INPUT event for conversation {conversation_id}")
-            
-            # Return a response that enables DTMF input mode WITH START_OF_INPUT event
-            # This explicitly tells WxCC that input is expected
-            return self.create_response(
-                conversation_id=conversation_id,
-                message_type="silence",
-                text="",  # No text response needed
-                audio_content=b"",  # No audio response needed
-                barge_in_enabled=self.barge_in_enabled,
-                output_events=[{
-                    "event_type": "START_OF_INPUT",
-                    "name": "dtmf_mode_enabled",
-                    "metadata": {
-                        "conversation_id": conversation_id,
-                        "dtmf_enabled": True,
-                        "input_mode": "DTMF"
-                    }
-                }],
-                response_type="partial",  # Use partial to keep conversation active for DTMF input
-                input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
-                input_handling_config={
-                    "dtmf_config": {
-                        "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
-                        "dtmf_input_length": 10  # Allow up to 10 digits
-                    }
-                }
-            )
-            
-            # Log that we've sent the response
-            logger.info(f"DTMF mode activation response sent for conversation {conversation_id}")
+            # Return None - START_OF_DTMF event already enables DTMF mode
+            # No need for additional START_OF_INPUT event
+            logger.info(f"START_OF_DTMF event processed for conversation {conversation_id} - DTMF mode enabled")
+            return None
 
-        # For other events, return default silence response
-        return self.create_response(
-            conversation_id=conversation_id,
-            message_type="silence"
-        )
+        # For other events, return None (no response needed)
+        # Most events don't require a response from the connector
+        logger.info(f"Event type {message_data.get('event_data', {}).get('event_type')} for conversation {conversation_id} - returning None")
+        return None
 
-    def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any], bot_id: str, session_id: str, bot_name: str) -> Dict[str, Any]:
+    def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any], bot_id: str, session_id: str, bot_name: str) -> Optional[Dict[str, Any]]:
         """
         Handle DTMF input for the Lex bot.
 
@@ -415,15 +388,12 @@ class AWSLexConnector(IVendorConnector):
             text_input = dtmf_string
             return self._send_text_to_lex(conversation_id, text_input)
 
-        # If no DTMF events, just return silence
-        return self.create_response(
-            conversation_id=conversation_id,
-            message_type="silence",
-            response_type="final"
-        )
+        # If no DTMF events, return None (no response needed)
+        self.logger.debug(f"No DTMF events received for conversation {conversation_id}, returning None")
+        return None
 
     def _handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any],
-                          bot_id: str, session_id: str, bot_name: str) -> Iterator[Dict[str, Any]]:
+                          bot_id: str, session_id: str, bot_name: str) -> Iterator[Optional[Dict[str, Any]]]:
         """
         Handle audio input for the Lex bot.
 
@@ -435,7 +405,8 @@ class AWSLexConnector(IVendorConnector):
             bot_name: Name of the bot
 
         Returns:
-            Response from Lex with processed audio
+            Iterator yielding responses from Lex with processed audio.
+            Yields None when no response is needed (e.g., waiting for speech).
         """
         try:
             # Check if conversation is in DTMF mode - if so, skip speech detection entirely
@@ -463,8 +434,9 @@ class AWSLexConnector(IVendorConnector):
                     yield self.create_start_of_input_response(conversation_id)
                     return  # Return after sending START_OF_INPUT event
                 else:
-                    # Still waiting for speech, don't send START_OF_INPUT yet
-                    self.logger.debug(f"Still waiting for speech in conversation {conversation_id}, audio buffering but no START_OF_INPUT sent")
+                    # Still waiting for speech, yield None (no response needed)
+                    self.logger.debug(f"Still waiting for speech in conversation {conversation_id}, yielding None")
+                    yield None
                     return
 
             # Check if silence threshold was detected, if so send END_OF_INPUT event

@@ -189,7 +189,7 @@ class TestLocalAudioConnector:
         
         response = list(connector.send_message("conv123", message_data))
         assert len(response) == 1
-        assert response[0]["message_type"] == "silence"
+        assert response[0] is None  # Should return None
 
     def test_send_message_dtmf_transfer(self, connector, temp_audio_dir):
         """Test handling of DTMF transfer request (digit 5)."""
@@ -232,9 +232,7 @@ class TestLocalAudioConnector:
         }
         
         response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "silence"
-        assert response[0]["conversation_id"] == "conv123"
+        assert len(response) == 0  # Should return no responses (None was returned)
         connector.logger.info.assert_any_call("DTMF digits entered: 123")
 
     def test_send_message_dtmf_no_events(self, connector):
@@ -246,8 +244,7 @@ class TestLocalAudioConnector:
         }
         
         response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "silence"
+        assert len(response) == 0  # Should return no responses (None was returned)
 
     def test_send_message_event(self, connector):
         """Test handling of event input."""
@@ -288,7 +285,8 @@ class TestLocalAudioConnector:
             response = list(connector.send_message("conv123", message_data))
             
             mock_process.assert_not_called()
-            assert response[0]["message_type"] == "silence"
+            assert len(response) == 1
+            assert response[0] is None  # Should return None
 
     def test_send_message_unrecognized_input(self, connector):
         """Test handling of unrecognized input type."""
@@ -298,8 +296,7 @@ class TestLocalAudioConnector:
         }
         
         response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "silence"
+        assert len(response) == 0  # Should return no responses (None was returned)
 
     def test_end_conversation_success(self, connector):
         """Test successful conversation ending."""
@@ -643,8 +640,7 @@ class TestLocalAudioConnector:
         message_data = {"event": "start"}
         response = connector.handle_conversation_start("conv123", message_data)
         
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        assert response is None  # Should return None
 
     def test_handle_event(self, connector):
         """Test event handling."""
@@ -667,8 +663,7 @@ class TestLocalAudioConnector:
         message_data = {"input_type": "unknown"}
         response = connector.handle_unrecognized_input("conv123", message_data)
         
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        assert response is None  # Should return None
 
 
 if __name__ == "__main__":

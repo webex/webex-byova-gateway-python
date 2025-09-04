@@ -511,7 +511,7 @@ class IVendorConnector(ABC):
         )
 
     def handle_conversation_start(self, conversation_id: str, message_data: Dict[str, Any],
-                                logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+                                logger: Optional[logging.Logger] = None) -> Optional[Dict[str, Any]]:
         """
         Handle conversation start events.
 
@@ -521,15 +521,12 @@ class IVendorConnector(ABC):
             logger: Optional logger instance
 
         Returns:
-            Standardized silence response
+            None - conversation start is handled in start_conversation method
         """
         if logger:
             logger.info(f"Ignoring conversation start event in send_message for conversation {conversation_id}")
 
-        return self.create_response(
-            conversation_id=conversation_id,
-            message_type="silence"
-        )
+        return None
 
     def handle_event(self, conversation_id: str, message_data: Dict[str, Any],
                     logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
@@ -576,9 +573,9 @@ class IVendorConnector(ABC):
         )
 
     def handle_unrecognized_input(self, conversation_id: str, message_data: Dict[str, Any],
-                                 logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+                                 logger: Optional[logging.Logger] = None) -> Optional[Dict[str, Any]]:
         """
-        Handle unrecognized input types by returning a silence response.
+        Handle unrecognized input types by returning None.
 
         Args:
             conversation_id: Unique identifier for the conversation
@@ -586,17 +583,14 @@ class IVendorConnector(ABC):
             logger: Optional logger instance
 
         Returns:
-            Standardized silence response
+            None - unrecognized input types don't need a response
         """
         if logger:
             logger.debug(
-                f"Unhandled input type for conversation {conversation_id}: {message_data.get('input_type')}"
+                f"Unhandled input type for conversation {conversation_id}: {message_data.get('input_type')} - returning None"
             )
 
-        return self.create_response(
-            conversation_id=conversation_id,
-            message_type="silence"
-        )
+        return None
 
     def check_silence_timeout(self, conversation_id: str, record_caller_audio: bool = False,
                             audio_recorders: Optional[Dict[str, Any]] = None,

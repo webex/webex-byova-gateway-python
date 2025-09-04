@@ -284,6 +284,39 @@ class TestConversationProcessor:
         # Verify no responses were generated
         assert len(responses) == 0
 
+    def test_process_audio_input_none_response(self, processor, mock_router, mock_audio_input):
+        """Test that gateway properly handles None responses from connectors."""
+        # Mock connector returning None (when no response is needed)
+        mock_router.route_request.return_value = None
+        
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+        
+        # Should skip None responses and return empty list
+        assert len(responses) == 0
+
+    def test_process_audio_input_generator_with_none_responses(self, processor, mock_router, mock_audio_input):
+        """Test that gateway handles mixed None and valid responses."""
+        # Mock connector returning None followed by valid response
+        def mock_generator():
+            yield None  # No response needed
+            yield {     # Valid response
+                "message_type": "response",
+                "text": "Hello",
+                "audio_content": b"audio",
+                "barge_in_enabled": True
+            }
+            yield None  # No response needed
+
+        mock_router.route_request.return_value = mock_generator()
+        
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+        
+        # Should skip None and process valid response
+        assert len(responses) == 1
+        assert responses[0].prompts[0].text == "Hello"
+
     def test_process_audio_input_router_error(self, processor, mock_router, mock_audio_input):
         """Test processing audio input when router raises an error."""
         # Mock router to raise an error
@@ -555,17 +588,14 @@ class TestConversationProcessor:
         # Process audio input
         responses = list(processor._process_audio_input(mock_audio_input))
 
-        # Verify all responses were processed (None becomes valid responses)
-        assert len(responses) == 3
+        # Verify only valid responses were processed (None responses were filtered out)
+        assert len(responses) == 1
         
-        # First response should be a valid response (None becomes silence response)
-        assert len(responses[0].prompts) == 0  # Silence response has no prompts
+        # First response should be a valid response (None responses were filtered out)
+        assert len(responses[0].prompts) == 1  # Valid response has one prompt
+        assert responses[0].prompts[0].text == "Valid response"
         
-        # Second response should have content
-        assert responses[1].prompts[0].text == "Valid response"
-        
-        # Third response should also be a valid response (None becomes silence response)
-        assert len(responses[2].prompts) == 0  # Silence response has no prompts
+        # Only one response should be processed (None responses were filtered out)
 
     def test_generator_with_empty_dict_responses(self, processor, mock_router, mock_audio_input):
         """Test that generator with empty dict responses is handled correctly."""
