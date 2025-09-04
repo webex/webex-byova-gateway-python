@@ -140,18 +140,20 @@ class AudioBuffer:
         # Convert audio data to the buffer format if needed
         processed_audio = self._convert_audio_to_buffer_format(audio_data, encoding)
         
-        # Check buffer size limit
-        if len(self.audio_buffer) + len(processed_audio) > self.max_buffer_size:
-            self.logger.warning(
-                f"Buffer size limit reached ({self.max_buffer_size} bytes) for conversation {self.conversation_id}, "
-                f"truncating audio data"
-            )
-            # Truncate to fit within buffer limit
-            remaining_space = self.max_buffer_size - len(self.audio_buffer)
-            if remaining_space > 0:
-                processed_audio = processed_audio[:remaining_space]
-            else:
-                # Buffer is full, can't add more data
+        # Check if we have enough data to process
+        # Use frame-aligned buffer sizes based on encoding and bit depth
+        frame_size = self._get_frame_size()
+        
+        # Check for silence first to determine if we should start buffering
+        is_silence = self.detect_silence(processed_audio)
+        
+        if self.waiting_for_speech:
+            if is_silence:
+                # Still waiting for speech, don't start buffering yet
+                self.logger.debug(
+                    f"Still waiting for speech in conversation {self.conversation_id}, "
+                    f"silence detected in audio segment"
+                )
                 return {
                     "buffering_continues": True,
                     "silence_detected": False,
@@ -159,27 +161,30 @@ class AudioBuffer:
                     "speech_detected": self.speech_detected,
                     "waiting_for_speech": self.waiting_for_speech
                 }
-
-        # Add audio data to buffer
-        self.audio_buffer.extend(processed_audio)
-        self.logger.debug(
-            f"Buffer size after adding data: {len(self.audio_buffer)} bytes"
-        )
+            else:
+                # Speech detected! Start buffering now
+                self.waiting_for_speech = False
+                self.speech_detected = True
+                self.last_audio_time = time.time()
+                self.buffering = True
+                self.logger.info(
+                    f"Speech detected! Starting buffering for conversation {self.conversation_id}"
+                )
         
-        # Check if we have enough data to process
-        # Use frame-aligned buffer sizes based on encoding and bit depth
-        frame_size = self._get_frame_size()
-        if len(self.audio_buffer) >= frame_size:
-            # Check for silence first to determine if we should start buffering
-            is_silence = self.detect_silence(processed_audio)
-            
-            if self.waiting_for_speech:
-                if is_silence:
-                    # Still waiting for speech, don't start buffering yet
-                    self.logger.debug(
-                        f"Still waiting for speech in conversation {self.conversation_id}, "
-                        f"silence detected in audio segment"
-                    )
+        # At this point, we're either already buffering or just started
+        if self.buffering:
+            # Check buffer size limit before adding data
+            if len(self.audio_buffer) + len(processed_audio) > self.max_buffer_size:
+                self.logger.warning(
+                    f"Buffer size limit reached ({self.max_buffer_size} bytes) for conversation {self.conversation_id}, "
+                    f"truncating audio data"
+                )
+                # Truncate to fit within buffer limit
+                remaining_space = self.max_buffer_size - len(self.audio_buffer)
+                if remaining_space > 0:
+                    processed_audio = processed_audio[:remaining_space]
+                else:
+                    # Buffer is full, can't add more data
                     return {
                         "buffering_continues": True,
                         "silence_detected": False,
@@ -187,55 +192,42 @@ class AudioBuffer:
                         "speech_detected": self.speech_detected,
                         "waiting_for_speech": self.waiting_for_speech
                     }
-                else:
-                    # Speech detected! Start buffering now
-                    self.waiting_for_speech = False
-                    self.speech_detected = True
-                    self.last_audio_time = time.time()
-                    self.buffering = True
-                    self.logger.info(
-                        f"Speech detected! Starting buffering for conversation {self.conversation_id}"
-                    )
+
+            # Add audio data to buffer only after speech is detected
+            self.audio_buffer.extend(processed_audio)
+            self.logger.debug(
+                f"Buffer size after adding data: {len(self.audio_buffer)} bytes"
+            )
             
-            # At this point, we're either already buffering or just started
-            if self.buffering:
-                # Check for silence after buffering has started
-                if is_silence:
-                    # Check if silence duration threshold exceeded
-                    silence_time = time.time() - self.last_audio_time
-                    self.logger.debug(
-                        f"Silence detected in audio segment, silence duration so far: {silence_time:.2f}s "
-                        f"(threshold: {self.silence_duration}s)"
+            # Check for silence after buffering has started
+            if is_silence:
+                # Check if silence duration threshold exceeded
+                silence_time = time.time() - self.last_audio_time
+                self.logger.debug(
+                    f"Silence detected in audio segment, silence duration so far: {silence_time:.2f}s "
+                    f"(threshold: {self.silence_duration}s)"
+                )
+                if silence_time >= self.silence_duration:
+                    # Silence threshold reached - audio is ready for processing
+                    # The caller should check silence_detected and call get_buffered_audio()
+                    self.logger.info(
+                        f"Silence threshold reached for conversation {self.conversation_id}, "
+                        f"audio ready for processing"
                     )
-                    if silence_time >= self.silence_duration:
-                        # Silence threshold reached - audio is ready for processing
-                        # The caller should check silence_detected and call get_buffered_audio()
-                        self.logger.info(
-                            f"Silence threshold reached for conversation {self.conversation_id}, "
-                            f"audio ready for processing"
-                        )
-                        
-                        return {
-                            "buffering_continues": False,
-                            "silence_detected": True,
-                            "buffer_size": len(self.audio_buffer),
-                            "speech_detected": self.speech_detected,
-                            "waiting_for_speech": False
-                        }
-                        
-                        return {
-                            "buffering_continues": False,
-                            "silence_detected": True,
-                            "buffer_size": 0,  # Buffer was cleared
-                            "speech_detected": False,  # Reset after callback
-                            "waiting_for_speech": True  # Reset after callback
-                        }
-                else:
-                    # Reset the last audio time as we detected non-silence
-                    self.logger.debug(
-                        f"Non-silence detected in audio segment, resetting silence timer for {self.conversation_id}"
-                    )
-                    self.last_audio_time = time.time()
+                    
+                    return {
+                        "buffering_continues": False,
+                        "silence_detected": True,
+                        "buffer_size": len(self.audio_buffer),
+                        "speech_detected": self.speech_detected,
+                        "waiting_for_speech": False
+                    }
+            else:
+                # Reset the last audio time as we detected non-silence
+                self.logger.debug(
+                    f"Non-silence detected in audio segment, resetting silence timer for {self.conversation_id}"
+                )
+                self.last_audio_time = time.time()
 
         return {
             "buffering_continues": True,

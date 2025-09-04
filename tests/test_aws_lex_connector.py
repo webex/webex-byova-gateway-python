@@ -898,7 +898,8 @@ class TestAWSLexConnector:
         audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to the buffer so it's not empty
-        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        # Use bytes that will be detected as non-silent
+        audio_buffer.add_audio_data(bytes([0, 50, 100, 150, 200, 250, 1, 99]), encoding="ulaw")
         assert audio_buffer.get_buffer_size() > 0
         
         # Mock Lex response
@@ -1493,7 +1494,8 @@ class TestAWSLexConnector:
         audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to buffer
-        audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
+        # Use bytes that will be detected as non-silent
+        audio_buffer.add_audio_data(bytes([0, 50, 100, 150, 200, 250, 1, 99]), encoding="ulaw")
         assert audio_buffer.get_buffer_size() > 0
         
         # Set up initial state
@@ -1533,7 +1535,8 @@ class TestAWSLexConnector:
         audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to buffer
-        audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
+        # Use bytes that will be detected as non-silent
+        audio_buffer.add_audio_data(bytes([0, 50, 100, 150, 200, 250, 1, 99]), encoding="ulaw")
         assert audio_buffer.get_buffer_size() > 0
         
         # Set up initial state
@@ -1586,7 +1589,8 @@ class TestAWSLexConnector:
         audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
         
         # Add some audio data to buffer
-        audio_buffer.add_audio_data(b"test_audio", encoding="ulaw")
+        # Use bytes that will be detected as non-silent
+        audio_buffer.add_audio_data(bytes([0, 50, 100, 150, 200, 250, 1, 99]), encoding="ulaw")
         assert audio_buffer.get_buffer_size() > 0
         
         # Set up initial state
@@ -1690,7 +1694,8 @@ class TestAWSLexConnector:
         
         connector.audio_processor.init_audio_buffer(conversation_id)
         audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
-        audio_buffer.add_audio_data(b"test_audio_data", encoding="ulaw")
+        # Use bytes that will be detected as non-silent
+        audio_buffer.add_audio_data(bytes([0, 50, 100, 150, 200, 250, 1, 99]), encoding="ulaw")
         
         # Mock recognize_utterance to capture parameters
         with patch.object(connector.lex_runtime, 'recognize_utterance') as mock_recognize:

@@ -115,7 +115,9 @@ class TestAudioBuffer:
 
     def test_add_audio_data_basic(self, basic_buffer):
         """Test adding basic audio data."""
-        test_audio = b"test audio data"
+        # Create audio data that will be detected as non-silent
+        # Use bytes that are significantly different from 127 (quiet background in u-law)
+        test_audio = bytes([0, 50, 100, 200, 255])  # Values far from 127
         result = basic_buffer.add_audio_data(test_audio, "ulaw")
         
         assert result["buffering_continues"] is True
@@ -128,7 +130,8 @@ class TestAudioBuffer:
         basic_buffer.max_buffer_size = 100
         
         # Add data that exceeds the limit
-        large_audio = b"x" * 150
+        # Use bytes that will be detected as non-silent
+        large_audio = bytes([0, 50, 100, 200, 255] * 30)  # 150 bytes of non-silent audio
         result = basic_buffer.add_audio_data(large_audio, "ulaw")
         
         assert result["buffering_continues"] is True
