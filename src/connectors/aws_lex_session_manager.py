@@ -227,7 +227,7 @@ class AWSLexSessionManager:
             
             return session_info
         else:
-            self.logger.warning(f"Attempted to end non-existent conversation: {conversation_id}")
+            self.logger.debug(f"No session found for conversation: {conversation_id} (this may be normal for early termination)")
             return None
 
     def add_start_of_input_tracking(self, conversation_id: str) -> None:

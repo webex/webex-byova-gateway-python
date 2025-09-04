@@ -7,7 +7,7 @@ It's useful for testing and development purposes.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Iterator
+from typing import Any, Dict, List, Iterator, Optional
 
 from ..utils.audio_utils import AudioConverter
 from ..utils.audio_buffer import AudioBuffer
@@ -124,7 +124,7 @@ class LocalAudioConnector(IVendorConnector):
             "barge_in_enabled": False,  # Disable barge-in for welcome message
         }
 
-    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Optional[Dict[str, Any]]]:
         """
         Send a message to the local audio connector and get a response.
 
@@ -133,7 +133,8 @@ class LocalAudioConnector(IVendorConnector):
             message_data: Message data containing input (audio, text, or events)
 
         Returns:
-            Iterator yielding responses from the local audio connector
+            Iterator yielding responses from the local audio connector.
+            Yield None when no response is needed.
         """
         self.logger.info(f"Processing message for conversation {conversation_id}, input_type: {message_data.get('input_type')}")
 
@@ -153,12 +154,16 @@ class LocalAudioConnector(IVendorConnector):
 
         # Handle DTMF input
         if message_data.get("input_type") == "dtmf":
-            yield self._handle_dtmf_input(conversation_id, message_data)
+            response = self._handle_dtmf_input(conversation_id, message_data)
+            if response is not None:
+                yield response
             return
 
         # Handle event input
         if message_data.get("input_type") == "event":
-            yield self.handle_event(conversation_id, message_data, self.logger)
+            response = self.handle_event(conversation_id, message_data, self.logger)
+            if response is not None:
+                yield response
             return
 
         # Handle audio input
@@ -167,9 +172,11 @@ class LocalAudioConnector(IVendorConnector):
             return
 
         # Handle unrecognized input
-        yield self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+        response = self.handle_unrecognized_input(conversation_id, message_data, self.logger)
+        if response is not None:
+            yield response
 
-    def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle_dtmf_input(self, conversation_id: str, message_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Handle DTMF input for the local audio connector.
 
@@ -178,7 +185,7 @@ class LocalAudioConnector(IVendorConnector):
             message_data: Message data containing DTMF input
 
         Returns:
-            Response based on DTMF input
+            Response based on DTMF input, or None if no response is needed
         """
         dtmf_data = message_data.get("dtmf_data", {})
         dtmf_events = dtmf_data.get("dtmf_events", [])
@@ -255,13 +262,11 @@ class LocalAudioConnector(IVendorConnector):
             conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
         )
 
-        # Return silence response for other DTMF inputs (no audio response)
-        return self.create_response(
-            conversation_id=conversation_id,
-            message_type="silence"
-        )
+        # Return None for unrecognized DTMF inputs (no response needed)
+        self.logger.debug(f"Unrecognized DTMF input for conversation {conversation_id}: {dtmf_events} - returning None")
+        return None
 
-    def _handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    def _handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Optional[Dict[str, Any]]]:
         """
         Handle audio input for the local audio connector.
 
@@ -270,7 +275,8 @@ class LocalAudioConnector(IVendorConnector):
             message_data: Message data containing audio input
 
         Returns:
-            Iterator yielding responses for audio input
+            Iterator yielding responses for audio input.
+            Yields None when no response is needed.
         """
         # Record audio if enabled
         if self.record_caller_audio and "audio_data" in message_data:
@@ -283,7 +289,10 @@ class LocalAudioConnector(IVendorConnector):
             conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
         )
 
-        yield self.handle_audio_input(conversation_id, message_data, self.logger)
+        # For local audio connector, we typically don't need to respond to audio input
+        # unless it's for recording purposes. Return None to reduce unnecessary responses.
+        self.logger.debug(f"Audio input received for conversation {conversation_id} - returning None (no response needed)")
+        yield None
 
     def end_conversation(
         self, conversation_id: str, message_data: Dict[str, Any] = None

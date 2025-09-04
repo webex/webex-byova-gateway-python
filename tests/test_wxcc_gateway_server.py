@@ -284,6 +284,39 @@ class TestConversationProcessor:
         # Verify no responses were generated
         assert len(responses) == 0
 
+    def test_process_audio_input_none_response(self, processor, mock_router, mock_audio_input):
+        """Test that gateway properly handles None responses from connectors."""
+        # Mock connector returning None (when no response is needed)
+        mock_router.route_request.return_value = None
+        
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+        
+        # Should skip None responses and return empty list
+        assert len(responses) == 0
+
+    def test_process_audio_input_generator_with_none_responses(self, processor, mock_router, mock_audio_input):
+        """Test that gateway handles mixed None and valid responses."""
+        # Mock connector returning None followed by valid response
+        def mock_generator():
+            yield None  # No response needed
+            yield {     # Valid response
+                "message_type": "response",
+                "text": "Hello",
+                "audio_content": b"audio",
+                "barge_in_enabled": True
+            }
+            yield None  # No response needed
+
+        mock_router.route_request.return_value = mock_generator()
+        
+        # Process audio input
+        responses = list(processor._process_audio_input(mock_audio_input))
+        
+        # Should skip None and process valid response
+        assert len(responses) == 1
+        assert responses[0].prompts[0].text == "Hello"
+
     def test_process_audio_input_router_error(self, processor, mock_router, mock_audio_input):
         """Test processing audio input when router raises an error."""
         # Mock router to raise an error
@@ -419,6 +452,84 @@ class TestConversationProcessor:
         assert responses[0].prompts[0].text == "Event received"
         assert responses[1].prompts[0].text == "Event processed"
 
+    def test_process_session_end_event(self, processor, mock_router):
+        """Test processing SESSION_END event from client."""
+        from src.generated.byova_common_pb2 import EventInput
+        from src.generated.voicevirtualagent_pb2 import VoiceVAResponse
+        
+        # Create SESSION_END event input
+        mock_session_end_event = EventInput()
+        mock_session_end_event.event_type = EventInput.EventType.SESSION_END
+        mock_session_end_event.name = "call_end"
+        mock_session_end_event.parameters = {}
+        
+        # Mock connector returning response for end_conversation
+        mock_end_response = {
+            "message_type": "session_end",
+            "text": "Conversation ended",
+            "audio_content": b"goodbye_audio",
+            "barge_in_enabled": False
+        }
+        mock_router.route_request.return_value = mock_end_response
+
+        # Process SESSION_END event
+        responses = list(processor._process_event_input(mock_session_end_event))
+
+        # Verify router was called to end conversation
+        mock_router.route_request.assert_called_once_with(
+            "test_agent_456",
+            "end_conversation",
+            "test_conv_123",
+            {
+                "conversation_id": "test_conv_123",
+                "virtual_agent_id": "test_agent_456",
+                "input_type": "conversation_end",
+            }
+        )
+
+        # Verify conversation is marked for cleanup
+        assert processor.can_be_deleted == True
+
+        # Verify response was processed
+        assert len(responses) == 2  # One from connector, one final response
+        
+        # Check the final response has SESSION_END output event
+        final_response = responses[1]
+        assert final_response.response_type == VoiceVAResponse.ResponseType.FINAL
+        assert len(final_response.output_events) == 1
+        assert final_response.output_events[0].event_type == 1  # SESSION_END
+        assert final_response.output_events[0].name == "session_ended_by_client"
+
+    def test_process_session_end_event_with_connector_error(self, processor, mock_router):
+        """Test processing SESSION_END event when connector returns error."""
+        from src.generated.byova_common_pb2 import EventInput
+        from src.generated.voicevirtualagent_pb2 import VoiceVAResponse
+        
+        # Create SESSION_END event input
+        mock_session_end_event = EventInput()
+        mock_session_end_event.event_type = EventInput.EventType.SESSION_END
+        mock_session_end_event.name = "call_end"
+        mock_session_end_event.parameters = {}
+        
+        # Mock connector raising exception
+        mock_router.route_request.side_effect = Exception("Connector error")
+
+        # Process SESSION_END event
+        responses = list(processor._process_event_input(mock_session_end_event))
+
+        # Verify conversation is still marked for cleanup even with error
+        assert processor.can_be_deleted == True
+
+        # Verify final response is still sent
+        assert len(responses) == 1  # Only the final response
+        
+        # Check the final response has SESSION_END output event
+        final_response = responses[0]
+        assert final_response.response_type == VoiceVAResponse.ResponseType.FINAL
+        assert len(final_response.output_events) == 1
+        assert final_response.output_events[0].event_type == 1  # SESSION_END
+        assert final_response.output_events[0].name == "session_ended_by_client"
+
     def test_audio_input_field_access(self, processor, mock_router, mock_audio_input):
         """Test that audio input correctly accesses caller_audio field."""
         # Mock connector returning single response
@@ -477,17 +588,14 @@ class TestConversationProcessor:
         # Process audio input
         responses = list(processor._process_audio_input(mock_audio_input))
 
-        # Verify all responses were processed (None becomes valid responses)
-        assert len(responses) == 3
+        # Verify only valid responses were processed (None responses were filtered out)
+        assert len(responses) == 1
         
-        # First response should be a valid response (None becomes silence response)
-        assert len(responses[0].prompts) == 0  # Silence response has no prompts
+        # First response should be a valid response (None responses were filtered out)
+        assert len(responses[0].prompts) == 1  # Valid response has one prompt
+        assert responses[0].prompts[0].text == "Valid response"
         
-        # Second response should have content
-        assert responses[1].prompts[0].text == "Valid response"
-        
-        # Third response should also be a valid response (None becomes silence response)
-        assert len(responses[2].prompts) == 0  # Silence response has no prompts
+        # Only one response should be processed (None responses were filtered out)
 
     def test_generator_with_empty_dict_responses(self, processor, mock_router, mock_audio_input):
         """Test that generator with empty dict responses is handled correctly."""

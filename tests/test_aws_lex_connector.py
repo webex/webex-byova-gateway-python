@@ -350,7 +350,7 @@ class TestAWSLexConnector:
         assert response["barge_in_enabled"] is False
 
     def test_send_message_conversation_start(self, connector):
-        """Test handling of conversation start message."""
+        """Test handling of conversation start message (should return None)."""
         # Need to set up a session first since send_message checks for active sessions
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
@@ -364,8 +364,8 @@ class TestAWSLexConnector:
         }
         
         response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "silence"
+        assert len(response) == 1  # Should return one response (None was yielded)
+        assert response[0] is None  # The response should be None
 
     def test_send_message_dtmf_transfer(self, connector):
         """Test handling of DTMF transfer request."""
@@ -433,6 +433,24 @@ class TestAWSLexConnector:
             # DTMF digits are now sent to Lex as text "123" instead of "DTMF 123"
             mock_send_text.assert_called_once_with("conv123", "123")
 
+    def test_send_message_dtmf_no_events(self, connector):
+        """Test handling of DTMF input with no events (should return None)."""
+        connector.session_manager._sessions["conv123"] = {
+            "bot_name": "TestBot",
+            "session_id": "session123",
+            "actual_bot_id": "bot123"
+        }
+        
+        message_data = {
+            "input_type": "dtmf",
+            "dtmf_data": {"dtmf_events": []},  # Empty DTMF events
+            "conversation_id": "conv123"
+        }
+        
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1  # Should return one response (None was yielded)
+        assert response[0] is None  # The response should be None
+
     def test_send_message_audio_input(self, connector, mock_lex_runtime):
         """Test handling of audio input."""
         connector.session_manager._sessions["conv123"] = {
@@ -446,6 +464,31 @@ class TestAWSLexConnector:
             "audio_data": b"input_audio",
             "conversation_id": "conv123"
         }
+
+    def test_send_message_audio_input_no_speech(self, connector):
+        """Test handling of audio input with no speech detected (should yield None)."""
+        connector.session_manager._sessions["conv123"] = {
+            "bot_name": "TestBot",
+            "session_id": "session123",
+            "actual_bot_id": "bot123"
+        }
+        
+        message_data = {
+            "input_type": "audio",
+            "audio_data": b"silence_audio",
+            "conversation_id": "conv123"
+        }
+        
+        # Mock audio processor to return no speech detected
+        with patch.object(connector.audio_processor, 'process_audio_for_buffering') as mock_process:
+            mock_process.return_value = {
+                'speech_detected': False,
+                'silence_detected': False
+            }
+            
+            response = list(connector.send_message("conv123", message_data))
+            assert len(response) == 1  # Should yield one response (None was yielded)
+            assert response[0] is None  # The response should be None
         
         # Mock audio extraction and processing to simulate speech detection
         with patch.object(connector, 'extract_audio_data', return_value=b"input_audio"):
@@ -496,7 +539,8 @@ class TestAWSLexConnector:
             }):
                 # Should NOT send START_OF_INPUT when speech is not detected
                 responses = list(connector.send_message("conv123", message_data))
-                assert len(responses) == 0  # No response when waiting for speech
+                assert len(responses) == 1  # One response (None) when waiting for speech
+                assert responses[0] is None  # The response should be None
                 
                 # Verify conversation is NOT in START_OF_INPUT tracking
                 assert "conv123" not in connector.session_manager.conversations_with_start_of_input
@@ -511,7 +555,8 @@ class TestAWSLexConnector:
                     "buffer_size": 50 + (i * 10)
                 }):
                     responses = list(connector.send_message("conv123", message_data))
-                    assert len(responses) == 0  # Still no response
+                    assert len(responses) == 1  # Still one response (None)
+                    assert responses[0] is None  # The response should be None
                     assert "conv123" not in connector.session_manager.conversations_with_start_of_input
         
         # Now test that START_OF_INPUT IS sent when speech is finally detected
@@ -545,7 +590,7 @@ class TestAWSLexConnector:
         assert response[0]["message_type"] == "error"
 
     def test_send_message_event(self, connector):
-        """Test handling of event input."""
+        """Test handling of event input (should return None)."""
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
@@ -559,11 +604,11 @@ class TestAWSLexConnector:
         }
         
         response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "silence"
+        assert len(response) == 1  # Should return one response (None was yielded)
+        assert response[0] is None  # The response should be None
 
     def test_send_message_unrecognized_input(self, connector):
-        """Test handling of unrecognized input type."""
+        """Test handling of unrecognized input type (should return None)."""
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
@@ -576,8 +621,28 @@ class TestAWSLexConnector:
         }
         
         response = list(connector.send_message("conv123", message_data))
-        assert len(response) == 1
-        assert response[0]["message_type"] == "silence"
+        assert len(response) == 0  # Should return no responses (None was not yielded)
+
+    def test_send_message_start_of_dtmf_event(self, connector):
+        """Test handling of START_OF_DTMF event (should return None)."""
+        connector.session_manager._sessions["conv123"] = {
+            "bot_name": "TestBot",
+            "session_id": "session123",
+            "actual_bot_id": "bot123"
+        }
+        
+        message_data = {
+            "input_type": "event",
+            "event_data": {"event_type": 4},  # START_OF_DTMF
+            "conversation_id": "conv123"
+        }
+        
+        response = list(connector.send_message("conv123", message_data))
+        assert len(response) == 1  # Should return one response (None was yielded)
+        assert response[0] is None  # The response should be None
+        
+        # Verify DTMF mode tracking was added
+        assert connector.session_manager.has_dtmf_mode_tracking("conv123")
 
     def test_end_conversation_success(self, connector):
         """Test successful conversation ending."""
@@ -596,7 +661,7 @@ class TestAWSLexConnector:
         """Test ending non-existent conversation."""
         connector.end_conversation("nonexistent")
         
-        connector.session_manager.logger.warning.assert_called()
+        connector.session_manager.logger.debug.assert_called()
 
     def test_end_conversation_with_message_data(self, connector):
         """Test ending conversation with message data."""
@@ -688,22 +753,21 @@ class TestAWSLexConnector:
         message_data = {"event": "start"}
         response = connector.handle_conversation_start("conv123", message_data)
         
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        assert response is None  # Should return None
 
     def test_handle_event(self, connector):
         """Test event handling."""
         message_data = {"event_data": {"name": "test_event"}}
-        response = connector.handle_event("conv123", message_data)
+        response = connector.handle_event("conv123", message_data, connector.logger)
         
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        assert response is None  # Should return None
 
     def test_handle_audio_input(self, connector):
         """Test audio input handling."""
         message_data = {"audio": "data"}
         response = connector.handle_audio_input("conv123", message_data)
         
+        # handle_audio_input returns a silence response, not None
         assert response["message_type"] == "silence"
         assert response["conversation_id"] == "conv123"
 
@@ -712,8 +776,7 @@ class TestAWSLexConnector:
         message_data = {"input_type": "unknown"}
         response = connector.handle_unrecognized_input("conv123", message_data)
         
-        assert response["message_type"] == "silence"
-        assert response["conversation_id"] == "conv123"
+        assert response is None  # Should return None
 
     def test_audio_buffering_initialization(self, mock_boto3_session, mock_lex_client, mock_lex_runtime):
         """Test that audio buffering is properly initialized."""

@@ -48,12 +48,8 @@ class TestMessageHandling(unittest.TestCase):
         
         response = list(self.connector.send_message(self.conversation_id, message_data))
         assert len(response) == 1
-        # Check that the response is a silence message
-        self.assertEqual(response[0]["message_type"], "silence")
-        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
-        self.assertEqual(response[0]["audio_content"], b"")
-        self.assertEqual(response[0]["text"], "")
-        self.assertEqual(response[0]["agent_id"], "test_agent")
+        # Check that the response is None
+        self.assertIsNone(response[0])
 
     def test_event_handling(self):
         """Test handling of event inputs."""
@@ -87,9 +83,8 @@ class TestMessageHandling(unittest.TestCase):
         # Check that _process_audio_for_recording was called
         mock_process_audio.assert_called_once_with(b"test_audio_bytes", self.conversation_id)
         
-        # Check that the response is a silence message
-        self.assertEqual(response[0]["message_type"], "silence")
-        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
+        # Check that the response is None
+        self.assertIsNone(response[0])
 
     def test_dtmf_transfer_handling(self):
         """Test handling of DTMF inputs for transfer (digit 5)."""
@@ -141,12 +136,7 @@ class TestMessageHandling(unittest.TestCase):
         }
         
         response = list(self.connector.send_message(self.conversation_id, message_data))
-        assert len(response) == 1
-        # Check that the response is a silence message
-        self.assertEqual(response[0]["message_type"], "silence")
-        self.assertEqual(response[0]["conversation_id"], self.conversation_id)
-        self.assertEqual(response[0]["audio_content"], b"")
-        self.assertEqual(response[0]["text"], "")
+        assert len(response) == 0  # Should return no responses (None was returned)
 
     def tearDown(self):
         """Clean up after tests."""

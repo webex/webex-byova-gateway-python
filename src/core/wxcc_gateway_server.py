@@ -7,7 +7,7 @@ Webex Contact Center and the virtual agent connectors.
 
 import logging
 import time
-from typing import Any, Dict, Iterator
+from typing import Any, Dict, Iterator, Optional
 
 import grpc
 
@@ -183,14 +183,20 @@ class ConversationProcessor:
             if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
                 # It's a generator/iterator, yield each response
                 for response in connector_response:
-                    grpc_response = self._convert_connector_response_to_grpc(response)
-                    if grpc_response is not None:
-                        yield grpc_response
+                    if response is not None:  # Skip None responses
+                        grpc_response = self._convert_connector_response_to_grpc(response)
+                        if grpc_response is not None:
+                            yield grpc_response
+                    else:
+                        self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
             else:
                 # It's a single response (backward compatibility)
-                grpc_response = self._convert_connector_response_to_grpc(connector_response)
-                if grpc_response is not None:
-                    yield grpc_response
+                if connector_response is not None:  # Skip None responses
+                    grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                    if grpc_response is not None:
+                        yield grpc_response
+                else:
+                    self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
 
         except Exception as e:
             self.logger.error(
@@ -223,18 +229,24 @@ class ConversationProcessor:
             if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
                 # It's a generator/iterator, yield each response
                 for response in connector_response:
+                    if response is not None:  # Skip None responses
+                        grpc_response = self._convert_connector_response_to_grpc(
+                            response, response_type=VoiceVAResponse.ResponseType.FINAL
+                        )
+                        if grpc_response is not None:
+                            yield grpc_response
+                    else:
+                        self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
+            else:
+                # It's a single response (backward compatibility)
+                if connector_response is not None:  # Skip None responses
                     grpc_response = self._convert_connector_response_to_grpc(
-                        response, response_type=VoiceVAResponse.ResponseType.FINAL
+                        connector_response, response_type=VoiceVAResponse.ResponseType.FINAL
                     )
                     if grpc_response is not None:
                         yield grpc_response
-            else:
-                # It's a single response (backward compatibility)
-                grpc_response = self._convert_connector_response_to_grpc(
-                    connector_response, response_type=VoiceVAResponse.ResponseType.FINAL
-                )
-                if grpc_response is not None:
-                    yield grpc_response
+                else:
+                    self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
 
         except Exception as e:
             self.logger.error(
@@ -273,6 +285,66 @@ class ConversationProcessor:
                     )
                 return
 
+            # Handle SESSION_END event explicitly
+            if (
+                event_input.event_type
+                == EventInput.EventType.SESSION_END
+            ):
+                self.logger.info(
+                    f"Processing SESSION_END event for conversation {self.conversation_id}"
+                )
+                # Mark conversation for cleanup
+                self.can_be_deleted = True
+                
+                # End conversation with connector
+                try:
+                    message_data = {
+                        "conversation_id": self.conversation_id,
+                        "virtual_agent_id": self.virtual_agent_id,
+                        "input_type": "conversation_end",
+                    }
+                    
+                    # Route to connector to end conversation
+                    connector_response = self.router.route_request(
+                        self.virtual_agent_id,
+                        "end_conversation",
+                        self.conversation_id,
+                        message_data,
+                    )
+                    
+                    # If connector returns a response, convert and yield it
+                    if connector_response:
+                        if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+                            # It's a generator/iterator, yield each response
+                            for response in connector_response:
+                                grpc_response = self._convert_connector_response_to_grpc(response)
+                                if grpc_response is not None:
+                                    yield grpc_response
+                        else:
+                            # It's a single response (backward compatibility)
+                            grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                            if grpc_response is not None:
+                                yield grpc_response
+                    
+                except Exception as e:
+                    self.logger.warning(
+                        f"Error ending conversation with connector for {self.conversation_id}: {e}"
+                    )
+                
+                # Create a final response indicating session end
+                va_response = VoiceVAResponse()
+                va_response.response_type = VoiceVAResponse.ResponseType.FINAL
+                
+                # Add SESSION_END output event
+                output_event = OutputEvent()
+                output_event.event_type = OutputEvent.EventType.SESSION_END
+                output_event.name = "session_ended_by_client"
+                va_response.output_events.append(output_event)
+                
+                self.logger.info(f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (client-initiated)")
+                yield va_response
+                return
+
             # Handle other event types
             # Convert request to connector format
             message_data = {
@@ -298,14 +370,20 @@ class ConversationProcessor:
             if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
                 # It's a generator/iterator, yield each response
                 for response in connector_response:
-                    grpc_response = self._convert_connector_response_to_grpc(response)
-                    if grpc_response is not None:
-                        yield grpc_response
+                    if response is not None:  # Skip None responses
+                        grpc_response = self._convert_connector_response_to_grpc(response)
+                        if grpc_response is not None:
+                            yield grpc_response
+                    else:
+                        self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
             else:
                 # It's a single response (backward compatibility)
-                grpc_response = self._convert_connector_response_to_grpc(connector_response)
-                if grpc_response is not None:
-                    yield grpc_response
+                if connector_response is not None:  # Skip None responses
+                    grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                    if grpc_response is not None:
+                        yield grpc_response
+                else:
+                    self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
 
         except Exception as e:
             self.logger.error(
@@ -315,12 +393,17 @@ class ConversationProcessor:
 
     def _convert_connector_response_to_grpc(
         self,
-        connector_response: Dict[str, Any],
+        connector_response: Optional[Dict[str, Any]],
         response_type: VoiceVAResponse.ResponseType = None,
         barge_in_enabled: bool = None,
-    ) -> VoiceVAResponse:
+    ) -> Optional[VoiceVAResponse]:
         """Convert connector response to gRPC format with optional response type and barge-in settings."""
         try:
+            # Handle None input
+            if connector_response is None:
+                self.logger.debug(f"Received None response for conversation {self.conversation_id}")
+                return None
+            
             self.logger.debug(
                 f"Converting connector response to gRPC format for {self.conversation_id}"
             )
