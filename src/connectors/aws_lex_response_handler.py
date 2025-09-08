@@ -20,16 +20,18 @@ class AWSLexResponseHandler:
     processing logic to keep the main connector focused on business logic.
     """
 
-    def __init__(self, logger: logging.Logger, error_handler: Optional[AWSLexErrorHandler] = None):
+    def __init__(self, logger: logging.Logger, error_handler: Optional[AWSLexErrorHandler] = None, barge_in_enabled: bool = False):
         """
         Initialize the response handler.
 
         Args:
             logger: Logger instance for the connector
             error_handler: Optional error handler instance
+            barge_in_enabled: Whether barge-in is enabled for responses
         """
         self.logger = logger
         self.error_handler = error_handler or AWSLexErrorHandler(logger)
+        self.barge_in_enabled = barge_in_enabled
 
     def create_session_end_response(self, conversation_id: str, bot_name: str, 
                                   reason: str = "intent_fulfilled", 
@@ -304,7 +306,8 @@ class AWSLexResponseHandler:
                         conversation_id=conversation_id,
                         text_response=text_response,
                         audio_content=wav_audio,
-                        content_type=content_type
+                        content_type=content_type,
+                        barge_in_enabled=self.barge_in_enabled
                     )
                     
                     # Reset conversation state for next audio input cycle
@@ -319,12 +322,39 @@ class AWSLexResponseHandler:
                     session_manager.reset_conversation_for_next_input(conversation_id)
                     self.logger.debug("Audio processing completed but no response generated")
             else:
-                self.logger.error("No audio stream in Lex response")
-                # Reset buffer and log the issue
+                self.logger.debug("No audio stream in Lex response, creating text-only response")
+                
+                # Extract text from response if available
+                text_response = "I processed your input."
+                if messages_data and len(messages_data) > 0:
+                    first_message = messages_data[0]
+                    if isinstance(first_message, dict) and 'content' in first_message:
+                        text_response = first_message['content']
+                        self.logger.debug(f"Extracted text response: {text_response}")
+                
+                # Create text-only response
+                from .i_vendor_connector import IVendorConnector
+                response_dict = {
+                    "conversation_id": conversation_id,
+                    "message_type": "response",
+                    "text": text_response,
+                    "audio_content": b"",
+                    "barge_in_enabled": self.barge_in_enabled,
+                    "response_type": "final",
+                    "input_mode": 3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
+                    "input_handling_config": {
+                        "dtmf_config": {
+                            "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
+                            "dtmf_input_length": 10  # Allow up to 10 digits
+                        }
+                    }
+                }
+                
+                # Reset buffer and conversation state
                 audio_processor.reset_audio_buffer(conversation_id)
-                # Reset conversation state for next audio input cycle
                 session_manager.reset_conversation_for_next_input(conversation_id)
-                self.logger.debug("Audio processing completed but no response generated")
+                
+                yield response_dict
 
         except ClientError as e:
             self.error_handler.handle_lex_api_error(e, conversation_id, ErrorContext.LEX_AUDIO_PROCESSING)

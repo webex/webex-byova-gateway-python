@@ -995,12 +995,19 @@ class TestAWSLexConnector:
         
         # Mock the decode method to return test data
         with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
-            mock_decode.side_effect = [
-                "What type of room would you like?",  # inputTranscript (called first)
-                [{'content': 'What type of room would you like? king, queen, or deluxe?', 'contentType': 'PlainText'}],  # messages (called second)
-                [{'intent': {'name': 'BookRoom', 'state': 'InProgress'}}],  # interpretations (called third)
-                {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}  # sessionState (called fourth)
-            ]
+            def decode_side_effect(field_name, response):
+                if field_name == 'inputTranscript':
+                    return "What type of room would you like?"
+                elif field_name == 'messages':
+                    return [{'content': 'What type of room would you like? king, queen, or deluxe?', 'contentType': 'PlainText'}]
+                elif field_name == 'interpretations':
+                    return [{'intent': {'name': 'BookRoom', 'state': 'InProgress'}}]
+                elif field_name == 'sessionState':
+                    return {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}
+                else:
+                    return None
+            
+            mock_decode.side_effect = decode_side_effect
             
             # Mock audio conversion
             with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
@@ -1262,12 +1269,19 @@ class TestAWSLexConnector:
         
         # Mock the decode method to return test data
         with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
-            mock_decode.side_effect = [
-                "Complex request",  # inputTranscript (called first)
-                [{'content': 'I cannot process this request', 'contentType': 'PlainText'}],  # messages (called second)
-                [{'intent': {'name': 'ComplexRequest', 'state': 'Failed'}, 'nluConfidence': {'score': 0.3}}],  # interpretations (called third)
-                {'dialogAction': {'type': 'ElicitIntent'}, 'activeContexts': []}  # sessionState (called fourth)
-            ]
+            def decode_side_effect(field_name, response):
+                if field_name == 'inputTranscript':
+                    return "Complex request"
+                elif field_name == 'messages':
+                    return [{'content': 'I cannot process this request', 'contentType': 'PlainText'}]
+                elif field_name == 'interpretations':
+                    return [{'intent': {'name': 'ComplexRequest', 'state': 'Failed'}, 'nluConfidence': {'score': 0.3}}]
+                elif field_name == 'sessionState':
+                    return {'dialogAction': {'type': 'ElicitIntent'}, 'activeContexts': []}
+                else:
+                    return None
+            
+            mock_decode.side_effect = decode_side_effect
             
             # Mock audio conversion
             with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
@@ -1279,11 +1293,11 @@ class TestAWSLexConnector:
                     # Process audio input
                     responses = list(connector._send_audio_to_lex(conversation_id))
                 
-                # Verify error response was generated for failed intent
+                # Verify transfer response was generated for failed intent
                 assert len(responses) == 1
                 response = responses[0]
                 assert response["conversation_id"] == conversation_id
-                assert response["message_type"] == "error"
+                assert response["message_type"] == "transfer"
                 assert response["response_type"] == "final"
                 
                 # Verify conversation state was reset
@@ -1387,12 +1401,19 @@ class TestAWSLexConnector:
         
         # Mock the decode method to return test data
         with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
-            mock_decode.side_effect = [
-                "User input",  # inputTranscript (called first)
-                [{'content': 'Please provide more information', 'contentType': 'PlainText'}],  # messages (called second)
-                None,  # No interpretations (called third)
-                {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}  # sessionState (called fourth)
-            ]
+            def decode_side_effect(field_name, response):
+                if field_name == 'inputTranscript':
+                    return "User input"
+                elif field_name == 'messages':
+                    return [{'content': 'Please provide more information', 'contentType': 'PlainText'}]
+                elif field_name == 'interpretations':
+                    return None  # No interpretations
+                elif field_name == 'sessionState':
+                    return {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}
+                else:
+                    return None
+            
+            mock_decode.side_effect = decode_side_effect
             
             # Mock audio stream for normal processing
             mock_audio_stream = MagicMock()
