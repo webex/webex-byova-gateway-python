@@ -139,7 +139,8 @@ class AWSLexResponseHandler:
         return response
 
     def create_audio_response(self, conversation_id: str, text_response: str,
-                            audio_content: bytes, content_type: str = "audio/wav") -> Dict[str, Any]:
+                            audio_content: bytes, content_type: str = "audio/wav",
+                            barge_in_enabled: bool = False) -> Dict[str, Any]:
         """
         Create a standard audio response with DTMF input mode enabled.
 
@@ -148,6 +149,7 @@ class AWSLexResponseHandler:
             text_response: Text content of the response
             audio_content: Audio content in bytes
             content_type: MIME type of the audio content
+            barge_in_enabled: Whether barge-in is enabled for this response
 
         Returns:
             Audio response dictionary with DTMF input mode enabled
@@ -157,7 +159,7 @@ class AWSLexResponseHandler:
             "message_type": "response",
             "text": text_response,
             "audio_content": audio_content,
-            "barge_in_enabled": False,
+            "barge_in_enabled": barge_in_enabled,
             "content_type": content_type,
             "response_type": "final",
             "input_mode": 3,  # INPUT_VOICE_DTMF = 3 (from protobuf)

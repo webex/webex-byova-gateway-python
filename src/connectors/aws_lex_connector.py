@@ -154,7 +154,7 @@ class AWSLexConnector(IVendorConnector):
 
             # Send initial text to Lex and get audio response
             try:
-                # Convert text to bytes for the reques
+                # Convert text to bytes for the request
                 text_input = "I need to book a hotel room"
                 text_bytes = text_input.encode('utf-8')
 
@@ -173,45 +173,8 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.debug(f"Lex API response received: {type(response)}")
                 self.logger.debug(f"Lex API response keys: {list(response.keys()) if hasattr(response, 'keys') else 'No keys'}")
 
-                # Process the Lex response using the unified method
-                response_dict = self._process_lex_response(conversation_id, response, "conversation_start")
-                
-                # Override the response to use welcome message format
-                if response_dict.get('audio_content'):
-                    # If we have audio, use it with welcome message
-                    return self.create_response(
-                        conversation_id=conversation_id,
-                        message_type="welcome",
-                        text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
-                        audio_content=response_dict['audio_content'],
-                        barge_in_enabled=self.barge_in_enabled,
-                        content_type=response_dict.get('content_type', 'audio/wav'),
-                        response_type="final",
-                        input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
-                        input_handling_config={
-                            "dtmf_config": {
-                                "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
-                                "dtmf_input_length": 10  # Allow up to 10 digits
-                            }
-                        }
-                    )
-                else:
-                    # No audio, return welcome message without audio
-                    return self.create_response(
-                        conversation_id=conversation_id,
-                        message_type="welcome",
-                        text=f"Hello! I'm your {bot_name} assistant. How can I help you today?",
-                        audio_content=b"",
-                        barge_in_enabled=self.barge_in_enabled,
-                        response_type="final",
-                        input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
-                        input_handling_config={
-                            "dtmf_config": {
-                                "inter_digit_timeout_msec": 5000,  # 5 second timeout between digits
-                                "dtmf_input_length": 10  # Allow up to 10 digits
-                            }
-                        }
-                    )
+                # Process the Lex response using the unified method and return it directly
+                return self._process_lex_response(conversation_id, response, "conversation_start")
 
             except ClientError as e:
                 error_code = e.response['Error']['Code']
@@ -604,7 +567,8 @@ class AWSLexConnector(IVendorConnector):
                         conversation_id=conversation_id,
                         text_response=text_response,
                         audio_content=wav_audio,
-                        content_type=content_type
+                        content_type=content_type,
+                        barge_in_enabled=self.barge_in_enabled
                     )
                 else:
                     self.logger.warning("Audio stream was empty, falling back to text-only response")
@@ -622,6 +586,7 @@ class AWSLexConnector(IVendorConnector):
                 conversation_id=conversation_id,
                 message_type="response",
                 text=text_response,
+                barge_in_enabled=self.barge_in_enabled,
                 response_type="final",
                 input_mode=3,  # INPUT_VOICE_DTMF = 3 (from protobuf)
                 input_handling_config={

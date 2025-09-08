@@ -254,12 +254,20 @@ class TestAWSLexConnector:
         with patch('src.connectors.aws_lex_connector.AWSLexAudioProcessor.convert_lex_audio_to_wxcc_format') as mock_convert:
             mock_convert.return_value = (b"converted_audio", "audio/wav")
             
-            response = connector.start_conversation("conv123", {
-                "virtual_agent_id": "aws_lex_connector: TestBot"
-            })
+            # Mock the response handler to return proper messages data
+            with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
+                mock_decode.side_effect = lambda field_name, response: {
+                    'messages': [{'content': 'Hello! I\'m your TestBot assistant. How can I help you today?'}],
+                    'sessionState': {},
+                    'interpretations': []
+                }.get(field_name, [])
+                
+                response = connector.start_conversation("conv123", {
+                    "virtual_agent_id": "aws_lex_connector: TestBot"
+                })
             
             assert response["conversation_id"] == "conv123"
-            assert response["message_type"] == "welcome"
+            assert response["message_type"] == "response"
             assert "TestBot" in response["text"]
             assert response["audio_content"] == b"converted_audio"
             assert response["barge_in_enabled"] is False
@@ -293,12 +301,20 @@ class TestAWSLexConnector:
             connector.audio_processor = MagicMock()
             connector.audio_processor.convert_lex_audio_to_wxcc_format.return_value = (b"converted_audio", "audio/wav")
             
-            response = connector.start_conversation("conv123", {
-                "virtual_agent_id": "aws_lex_connector: TestBot"
-            })
+            # Mock the response handler to return proper messages data
+            with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
+                mock_decode.side_effect = lambda field_name, response: {
+                    'messages': [{'content': 'Hello! I\'m your TestBot assistant. How can I help you today?'}],
+                    'sessionState': {},
+                    'interpretations': []
+                }.get(field_name, [])
+                
+                response = connector.start_conversation("conv123", {
+                    "virtual_agent_id": "aws_lex_connector: TestBot"
+                })
             
             assert response["conversation_id"] == "conv123"
-            assert response["message_type"] == "welcome"
+            assert response["message_type"] == "response"
             assert "TestBot" in response["text"]
             assert response["audio_content"] == b"converted_audio"
             assert response["barge_in_enabled"] is True
@@ -345,7 +361,7 @@ class TestAWSLexConnector:
             "virtual_agent_id": "aws_lex_connector: TestBot"
         })
         
-        assert response["message_type"] == "welcome"
+        assert response["message_type"] == "response"
         assert response["audio_content"] == b""
         assert response["barge_in_enabled"] is False
 
