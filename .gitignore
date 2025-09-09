@@ -235,6 +235,10 @@ temp/
 *.backup
 *.old
 
+# Generated protobuf files (generated in src/generated/ directory)
+src/generated/*_pb2.py
+src/generated/*_pb2_grpc.py
+
 # IDE specific
 *.swp
 *.swo
@@ -247,8 +251,4 @@ temp/
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db
-
-# Generated protobuf files (DO NOT COMMIT)
-src/generated/*_pb2.py
-src/generated/*_pb2_grpc.py 
+Thumbs.db 

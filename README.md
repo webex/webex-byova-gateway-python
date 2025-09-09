@@ -244,6 +244,7 @@ webex-byova-gateway-python/
 │   │   └── wxcc_gateway_server.py
 │   ├── generated/           # Generated gRPC stubs
 │   │   ├── byova_common_pb2.py
+│   │   ├── byova_common_pb2_grpc.py
 │   │   ├── voicevirtualagent_pb2.py
 │   │   └── voicevirtualagent_pb2_grpc.py
 │   ├── monitoring/          # Web monitoring interface
