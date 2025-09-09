@@ -29,16 +29,19 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
    cd webex-byova-gateway-python
    ```
 
-2. **Create Virtual Environment**
+2. **Create and Activate Virtual Environment**
    ```bash
    # Create virtual environment
    python -m venv venv
 
-   # Activate virtual environment
+   # Activate virtual environment (REQUIRED before running any commands)
    # On macOS/Linux:
    source venv/bin/activate
    # On Windows:
    # venv\Scripts\activate
+   
+   # Verify activation - you should see (venv) in your prompt
+   which python  # Should show path to venv/bin/python
    ```
 
 3. **Install Dependencies**
@@ -54,12 +57,9 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
    
    Generated protobuf files are stored in the `src/generated` directory to separate auto-generated code from hand-written code.
    
-   **Note**: The generated files use relative imports within the `src.generated` package. To use them in your code, import the package first:
-   ```python
-   import src.generated
-   import byova_common_pb2
-   import voicevirtualagent_pb2
-   ```
+   **Important**: The generated protobuf files (`*_pb2.py` and `*_pb2_grpc.py`) are **NOT committed to the repository**. They must be generated locally after cloning the repository. The `__init__.py` file in the generated directory is committed to maintain the package structure.
+   
+   **Note**: The generated files are automatically imported by the gateway. No manual import is required for normal operation.
 
 5. **Prepare Audio Files**
    
@@ -69,6 +69,31 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
    - `goodbye.wav` - Goodbye message
    - `transferring.wav` - Transfer message
    - `error.wav` - Error message
+
+## Quick Start
+
+For a quick test of the gateway:
+
+1. **Activate virtual environment** (if not already active):
+   ```bash
+   source venv/bin/activate
+   ```
+
+2. **Generate gRPC stubs** (if not already done):
+   ```bash
+   python -m grpc_tools.protoc -I./proto --python_out=src/generated --grpc_python_out=src/generated proto/*.proto
+   ```
+
+3. **Start the server**:
+   ```bash
+   python main.py
+   ```
+
+4. **Access the monitoring interface**:
+   - Open http://localhost:8080 in your browser
+   - Check the status at http://localhost:8080/api/status
+
+The gateway will start with the local audio connector by default, which uses the audio files in the `audio/` directory.
 
 ## Usage
 
@@ -90,19 +115,19 @@ monitoring:
 
 # Connectors
 connectors:
-  - name: "my_local_test_agent"
+  local_audio_connector:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
     config:
-      agent_id: "Local Playback"
-      audio_base_path: "audio"
       audio_files:
         welcome: "welcome.wav"
         transfer: "transferring.wav"
         goodbye: "goodbye.wav"
         error: "error.wav"
         default: "default_response.wav"
+      agents:
+        - "Local Playback"
 ```
 
 ### Running the Server
@@ -185,9 +210,19 @@ curl http://localhost:8080/api/test/create-session
 - **gRPC Server**: Handles communication with Webex Contact Center
 - **Virtual Agent Router**: Dynamically routes requests to different connector implementations
 - **Local Audio Connector**: Simulates virtual agents using local audio files
+- **AWS Lex Connector**: Integration with Amazon Lex v2 for production virtual agents
 - **Web Monitoring Interface**: Real-time dashboard for monitoring connections and status
 - **Session Management**: Tracks active sessions and connection events
 - **Extensible Architecture**: Easy to add new connector implementations
+
+## Connector Documentation
+
+This gateway supports multiple virtual agent connectors. Each connector has its own documentation:
+
+- **[Connectors Overview](src/connectors/README.md)**: Complete guide to all available connectors and how to create new ones
+- **[Local Audio Connector](src/connectors/README.md#local-audio-connector-local_audio_connectorpy)**: Testing and development with local audio files
+- **[AWS Lex Connector](src/connectors/README.md#aws-lex-connector-aws_lex_connectorpy)**: Production integration with Amazon Lex v2
+- **[Audio Files Guide](audio/README.md)**: Audio file formats, organization, and configuration
 
 ## Project Structure
 
@@ -195,19 +230,26 @@ curl http://localhost:8080/api/test/create-session
 webex-byova-gateway-python/
 ├── audio/                    # Audio files for local connector
 ├── config/
-│   └── config.yaml          # Main configuration file
+│   ├── config.yaml          # Main configuration file
+│   └── aws_lex_example.yaml # AWS Lex configuration example
 ├── proto/                    # Protocol Buffer definitions
 ├── src/
 │   ├── connectors/           # Virtual agent connector implementations
 │   │   ├── i_vendor_connector.py
-│   │   └── local_audio_connector.py
+│   │   ├── local_audio_connector.py
+│   │   ├── aws_lex_connector.py
+│   │   └── README.md
 │   ├── core/                # Core gateway components
 │   │   ├── virtual_agent_router.py
-│   │   ├── wxcc_gateway_server.py
-│   │   └── *.py            # Generated gRPC stubs
-│   └── monitoring/          # Web monitoring interface
-│       ├── app.py
-│       └── templates/
+│   │   └── wxcc_gateway_server.py
+│   ├── generated/           # Generated gRPC stubs
+│   │   ├── byova_common_pb2.py
+│   │   ├── voicevirtualagent_pb2.py
+│   │   └── voicevirtualagent_pb2_grpc.py
+│   ├── monitoring/          # Web monitoring interface
+│   │   ├── app.py
+│   │   └── templates/
+│   └── utils/               # Utility modules
 ├── main.py                  # Main entry point
 ├── requirements.txt          # Python dependencies
 └── README.md
@@ -225,12 +267,14 @@ webex-byova-gateway-python/
 
 ### gRPC Stub Generation
 
-If you modify the `.proto` files:
+If you modify the `.proto` files, you must regenerate the Python stubs:
 
 ```bash
 # Regenerate stubs
-python -m grpc_tools.protoc -Iproto --python_out=src/core --grpc_python_out=src/core proto/byova_common.proto proto/voicevirtualagent.proto
+python -m grpc_tools.protoc -I./proto --python_out=src/generated --grpc_python_out=src/generated proto/*.proto
 ```
+
+**Note**: The generated files are automatically ignored by git (see `.gitignore`). After regenerating, the files will be available locally but won't be committed to the repository.
 
 ## Troubleshooting
 
@@ -250,13 +294,28 @@ kill <PID>
 
 ### Virtual Environment Issues
 
+**Problem**: `python: command not found` or import errors
+
+**Solution**: Ensure virtual environment is activated before running any Python commands:
+
 ```bash
-# Recreate virtual environment
+# Check if virtual environment is activated
+echo $VIRTUAL_ENV  # Should show path to venv directory
+
+# If not activated, activate it
+source venv/bin/activate
+
+# Verify Python is from virtual environment
+which python  # Should show .../venv/bin/python
+
+# Recreate virtual environment if needed
 rm -rf venv
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+**Important**: Always activate the virtual environment before running `python main.py` or any other Python commands.
 
 ### Logs
 

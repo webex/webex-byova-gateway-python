@@ -247,4 +247,8 @@ temp/
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
+
+# Generated protobuf files (DO NOT COMMIT)
+src/generated/*_pb2.py
+src/generated/*_pb2_grpc.py 
