@@ -547,30 +547,12 @@ class AWSLexConnector(IVendorConnector):
             
             # Log response details
             self.logger.debug(f"Lex response for conversation {conversation_id}: {len(messages_data)} messages, audio: {'yes' if audio_stream else 'no'}")
-            self.logger.debug(f"Session state type: {type(session_state)}, content: {session_state}")
             
-            # Debug print interpretations data from Lex
+            # Check if conversation should end based on intent state
             interpretations = self.response_handler._decode_lex_response('interpretations', lex_response) or []
-            self.logger.debug(f"Interpretations data: {interpretations}")
-            if interpretations:
-                for i, interpretation in enumerate(interpretations):
-                    if isinstance(interpretation, dict):
-                        intent_name = interpretation.get('intent', {}).get('name', 'Unknown')
-                        confidence = interpretation.get('nluConfidence', {}).get('score', 'Unknown')
-                        slots = interpretation.get('slots', {})
-                        self.logger.debug(f"Interpretation {i}: Intent='{intent_name}', Confidence={confidence}, Slots={slots}")
-                    else:
-                        self.logger.debug(f"Interpretation {i}: {interpretation}")
-            
-            # Check if session should end
-            if session_state and isinstance(session_state, dict) and session_state.get('intent', {}).get('state') == 'Fulfilled':
-                self.logger.info(f"Intent fulfilled for conversation {conversation_id}, ending session")
-                return self.create_response(
-                    conversation_id=conversation_id,
-                    message_type="goodbye",
-                    text="Thank you for using our service.",
-                    response_type="final"
-                )
+            intent_response = self.response_handler.handle_intent_state(conversation_id, interpretations, session_state, self.session_manager)
+            if intent_response:
+                return intent_response
             
             # Process audio response if available
             if audio_stream:
@@ -719,99 +701,17 @@ class AWSLexConnector(IVendorConnector):
                 if messages_data is None:
                     self.logger.debug("No messages in response")
 
-                # Log key Lex V2 response fields for conversation state monitoring
-                interpretations_data = self.response_handler._decode_lex_response('interpretations', response)
-                if interpretations_data is None:
-                    self.logger.debug("No interpretations in response")
-                else:
-                    # Consolidate interpretation logging into a single INFO log with summary
-                    interpretation_summary = []
-                    primary_intent_state = None
-                    primary_intent_name = None
-                    
-                    for interpretation in interpretations_data:
-                        intent = interpretation.get('intent', {})
-                        intent_name = intent.get('name', 'unknown')
-                        intent_state = intent.get('state', 'unknown')
-                        confidence = interpretation.get('nluConfidence', {}).get('score', 'unknown')
-                        interpretation_summary.append(f"{intent_name}({intent_state}, conf:{confidence})")
-                        
-                        # Track the primary interpretation (first one)
-                        if primary_intent_state is None:
-                            primary_intent_state = intent_state
-                            primary_intent_name = intent_name
-                    
-                    self.logger.info(f"Lex response: {len(interpretations_data)} interpretation(s) - {', '.join(interpretation_summary)}")
-                    self.logger.debug(f"Full interpretation details: {interpretations_data}")
-                    
-                    # Check if primary intent indicates conversation completion or failure
-                    if primary_intent_state == 'Fulfilled':
-                        self.logger.info(f"Primary intent '{primary_intent_name}' is fulfilled - conversation complete")
-                        # Create a SESSION_END response for fulfilled intent
-                        session_end_response = self.response_handler.create_session_end_response(
-                            conversation_id=conversation_id,
-                            bot_name=self.session_manager.get_bot_name(conversation_id) or "unknown",
-                            intent_name=primary_intent_name
-                        )
-                        
-                        # Reset audio buffer and conversation state
-                        self.audio_processor.reset_audio_buffer(conversation_id)
-                        self.session_manager.reset_conversation_for_next_input(conversation_id)
-                        yield session_end_response
-                        return
-                        
-                    elif primary_intent_state == 'ReadyForFulfillment':
-                        self.logger.info(f"Primary intent '{primary_intent_name}' - escalation needed")
-                        # Create a TRANSFER_TO_AGENT response
-                        transfer_response = self.response_handler.create_transfer_response(
-                            conversation_id=conversation_id,
-                            bot_name=self.session_manager.get_bot_name(conversation_id) or "unknown",
-                            intent_name=primary_intent_name
-                        )
-                        
-                        # Reset audio buffer and conversation state
-                        self.audio_processor.reset_audio_buffer(conversation_id)
-                        self.session_manager.reset_conversation_for_next_input(conversation_id)
-                        yield transfer_response
-                        return
-
-                # Check session state and dialog actions BEFORE audio processing
+                # Check if conversation should end based on intent state
+                interpretations_data = self.response_handler._decode_lex_response('interpretations', response) or []
                 session_state_data = self.response_handler._decode_lex_response('sessionState', response)
-                if session_state_data is None:
-                    self.logger.debug("No session state in response")
-                else:
-                    # Extract key session state info for INFO level logging
-                    dialog_action = session_state_data.get('dialogAction', {})
-                    action_type = dialog_action.get('type', 'unknown') if dialog_action else 'none'
-                    
-                    # Log active contexts count
-                    active_contexts = session_state_data.get('activeContexts', [])
-                    
-                    # Provide summary at INFO level, full details at DEBUG level
-                    self.logger.info(f"Session state: dialog_action={action_type}, contexts={len(active_contexts)}")
-                    self.logger.debug(f"Full session state: {session_state_data}")
-                    
-                    # Log individual context names at DEBUG level
-                    if active_contexts:
-                        for context in active_contexts:
-                            context_name = context.get('name', 'unknown')
-                            self.logger.debug(f"  Context: {context_name}")
+                intent_response = self.response_handler.handle_intent_state(conversation_id, interpretations_data, session_state_data, self.session_manager)
+                if intent_response:
+                    # Reset audio buffer and conversation state
+                    self.audio_processor.reset_audio_buffer(conversation_id)
+                    self.session_manager.reset_conversation_for_next_input(conversation_id)
+                    yield intent_response
+                    return
 
-                    # Check if Lex is closing the conversation and handle accordingly
-                    if action_type == 'Close':
-                        self.logger.info(f"Lex dialog action is 'Close' - ending conversation {conversation_id}")
-                        
-                        # Create a SESSION_END response
-                        session_end_response = self.response_handler.create_lex_dialog_close_response(
-                            conversation_id=conversation_id,
-                            bot_name=self.session_manager.get_bot_name(conversation_id) or "unknown"
-                        )
-                        
-                        # Reset audio buffer and conversation state
-                        self.audio_processor.reset_audio_buffer(conversation_id)
-                        self.session_manager.reset_conversation_for_next_input(conversation_id)
-                        yield session_end_response
-                        return
 
                 # Process the Lex response using the unified method
                 response_dict = self._process_lex_response(conversation_id, response, "audio")

@@ -69,6 +69,111 @@ class AWSLexResponseHandler:
         
         return response
 
+    def handle_intent_state(self, conversation_id: str, interpretations_data: List[Dict[str, Any]], 
+                           session_state_data: Optional[Dict[str, Any]] = None,
+                           session_manager=None) -> Optional[Dict[str, Any]]:
+        """
+        Handle intent state processing and determine if conversation should end or escalate.
+        
+        Args:
+            conversation_id: Conversation identifier
+            interpretations_data: List of interpretations from Lex response
+            session_state_data: Optional session state data
+            session_manager: Session manager instance for getting bot name
+            
+        Returns:
+            Response dict if conversation should end/escalate, None if conversation should continue
+        """
+        if not interpretations_data:
+            return None
+            
+        # Get primary intent information
+        primary_intent = interpretations_data[0]
+        primary_intent_name = primary_intent.get('intent', {}).get('name', 'unknown')
+        primary_intent_state = primary_intent.get('intent', {}).get('state', 'unknown')
+        
+        # Log interpretation summary
+        interpretation_summary = []
+        for interpretation in interpretations_data:
+            intent = interpretation.get('intent', {})
+            intent_name = intent.get('name', 'unknown')
+            intent_state = intent.get('state', 'unknown')
+            confidence = interpretation.get('nluConfidence', {}).get('score', 'unknown')
+            interpretation_summary.append(f"{intent_name}({intent_state}, conf:{confidence})")
+        
+        self.logger.info(f"Lex response: {len(interpretations_data)} interpretation(s) - {', '.join(interpretation_summary)}")
+        self.logger.debug(f"Full interpretation details: {interpretations_data}")
+        
+        # Handle intent states based on both intent name and state
+        if primary_intent_state == 'Fulfilled':
+            self.logger.info(f"Primary intent '{primary_intent_name}' is fulfilled - conversation complete")
+            return self.create_session_end_response(
+                conversation_id=conversation_id,
+                bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
+                intent_name=primary_intent_name,
+                reason="intent_fulfilled"
+            )
+            
+        elif primary_intent_state == 'ReadyForFulfillment':
+            # Different intents have different behaviors when ready for fulfillment
+            if primary_intent_name.lower() == 'agent':
+                self.logger.info(f"Agent intent '{primary_intent_name}' is ready for fulfillment - escalating to human agent")
+                return self.create_transfer_response(
+                    conversation_id=conversation_id,
+                    bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
+                    intent_name=primary_intent_name
+                )
+            else:
+                # For business intents like BookHotel, ReadyForFulfillment means successful completion
+                self.logger.info(f"Business intent '{primary_intent_name}' is ready for fulfillment - conversation complete")
+                return self.create_session_end_response(
+                    conversation_id=conversation_id,
+                    bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
+                    intent_name=primary_intent_name,
+                    reason="intent_ready_for_fulfillment"
+                )
+            
+        elif primary_intent_state == 'Failed':
+            self.logger.info(f"Primary intent '{primary_intent_name}' failed - escalation needed")
+            return self.create_transfer_response(
+                conversation_id=conversation_id,
+                bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
+                intent_name=primary_intent_name
+            )
+        
+        # Check session state as fallback (for older Lex responses)
+        if session_state_data and isinstance(session_state_data, dict):
+            intent_state = session_state_data.get('intent', {}).get('state')
+            intent_name = session_state_data.get('intent', {}).get('name', primary_intent_name)
+            
+            if intent_state == 'Fulfilled':
+                self.logger.info(f"Session state intent '{intent_name}' fulfilled for conversation {conversation_id}, ending session")
+                return self.create_session_end_response(
+                    conversation_id=conversation_id,
+                    bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
+                    intent_name=intent_name,
+                    reason="session_state_fulfilled"
+                )
+            elif intent_state == 'ReadyForFulfillment':
+                # Apply same intent-specific logic for session state
+                if intent_name.lower() == 'agent':
+                    self.logger.info(f"Session state Agent intent ready for fulfillment for conversation {conversation_id}, escalating to human agent")
+                    return self.create_transfer_response(
+                        conversation_id=conversation_id,
+                        bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
+                        intent_name=intent_name
+                    )
+                else:
+                    self.logger.info(f"Session state business intent '{intent_name}' ready for fulfillment for conversation {conversation_id}, ending session")
+                    return self.create_session_end_response(
+                        conversation_id=conversation_id,
+                        bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
+                        intent_name=intent_name,
+                        reason="session_state_ready_for_fulfillment"
+                    )
+        
+        return None
+
     def create_transfer_response(self, conversation_id: str, bot_name: str,
                                intent_name: str = "unknown") -> Dict[str, Any]:
         """
@@ -105,38 +210,6 @@ class AWSLexResponseHandler:
         
         return response
 
-    def create_lex_dialog_close_response(self, conversation_id: str, bot_name: str) -> Dict[str, Any]:
-        """
-        Create a session end response when Lex dialog action is 'Close'.
-
-        Args:
-            conversation_id: Conversation identifier
-            bot_name: Name of the bot
-
-        Returns:
-            Session end response dictionary
-        """
-        response = {
-            "conversation_id": conversation_id,
-            "message_type": "session_end",
-            "text": "Thank you for calling. Have a great day!",
-            "audio_content": b"",  # No audio for session end
-            "barge_in_enabled": False,
-            "response_type": "final"
-        }
-        
-        # Add SESSION_END output event
-        response["output_events"] = [{
-            "event_type": "SESSION_END",
-            "name": "lex_conversation_ended",
-            "metadata": {
-                "reason": "lex_dialog_closed",
-                "bot_name": bot_name,
-                "conversation_id": conversation_id
-            }
-        }]
-        
-        return response
 
     def create_audio_response(self, conversation_id: str, text_response: str,
                             audio_content: bytes, content_type: str = "audio/wav") -> Dict[str, Any]:
