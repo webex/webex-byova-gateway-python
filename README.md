@@ -104,31 +104,68 @@ The gateway is configured via `config/config.yaml`. Key configuration options:
 ```yaml
 # Gateway settings
 gateway:
-  host: "0.0.0.0"
-  port: 50051
+   host: "0.0.0.0"
+   port: 50051
 
 # Monitoring interface
 monitoring:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8080
+   enabled: true
+   host: "0.0.0.0"
+   port: 8080
 
 # Connectors
 connectors:
-  local_audio_connector:
-    type: "local_audio_connector"
-    class: "LocalAudioConnector"
-    module: "connectors.local_audio_connector"
-    config:
-      audio_files:
-        welcome: "welcome.wav"
-        transfer: "transferring.wav"
-        goodbye: "goodbye.wav"
-        error: "error.wav"
-        default: "default_response.wav"
-      agents:
-        - "Local Playback"
+   local_audio_connector:
+      type: "local_audio_connector"
+      class: "LocalAudioConnector"
+      module: "connectors.local_audio_connector"
+      config:
+         audio_files:
+            welcome: "welcome.wav"
+            transfer: "transferring.wav"
+            goodbye: "goodbye.wav"
+            error: "error.wav"
+            default: "default_response.wav"
+         agents:
+            - "Local Playback"
+
+   # Example: AWS Lex Connector for Dev Environment with Explicit Credentials
+   aws_lex_connector_dev:
+      type: "aws_lex_connector"
+      class: "AWSLexConnector"
+      module: "connectors.aws_lex_connector"
+      config:
+         region_name: "us-east-1"  # Set your AWS region
+         bot_alias_id: "TSTALIASID"  # Set your Lex bot alias
+         aws_access_key_id: "YOUR_DEV_ACCESS_KEY"  # Explicit AWS access key
+         aws_secret_access_key: "YOUR_DEV_SECRET_KEY"  # Explicit AWS secret
+         barge_in_enabled: false
+         audio_logging:
+            enabled: true
+            output_dir: "logs/audio_recordings"
+            filename_format: "{conversation_id}_{timestamp}_{source}.wav"
+            log_all_audio: true
+            max_file_size: 10485760
+            sample_rate: 8000
+            bit_depth: 8
+            channels: 1
+            encoding: "ulaw"
+         agents: []
 ```
+
+
+**Note:** For security, prefer using environment variables for credentials in production. Explicit credentials in config files are for development/testing only.
+
+### Setting AWS Credentials with Environment Variables
+
+For production or secure development, set your AWS credentials as environment variables instead of hardcoding them in your config file:
+
+```sh
+export AWS_ACCESS_KEY_ID=your_access_key
+export AWS_SECRET_ACCESS_KEY=your_secret_key
+```
+
+You can add these lines to your shell profile (e.g., `.bashrc`, `.zshrc`) or set them in your deployment environment. The gateway will automatically use these credentials if they are set.
 
 ### Running the Server
 

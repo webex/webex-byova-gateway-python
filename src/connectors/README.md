@@ -95,18 +95,42 @@ connectors:
 **Configuration**:
 ```yaml
 connectors:
-  - name: "aws_lex_connector"
+  - name: "aws_lex_connector_dev"
     type: "aws_lex_connector"
     class: "AWSLexConnector"
     module: "connectors.aws_lex_connector"
     config:
       region_name: "us-east-1"  # Your AWS region
-      # Optional: Explicit credentials
-      # aws_access_key_id: "${AWS_ACCESS_KEY_ID}"
-      # aws_secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
-      # aws_session_token: "${AWS_SESSION_TOKEN}"
-    agents: []  # Auto-populated from Lex bots
+      bot_alias_id: "TSTALIASID"  # Your Lex bot alias
+      aws_access_key_id: "YOUR_DEV_ACCESS_KEY"  # Explicit AWS access key (for dev only)
+      aws_secret_access_key: "YOUR_DEV_SECRET_KEY"  # Explicit AWS secret (for dev only)
+      barge_in_enabled: false
+      audio_logging:
+        enabled: true
+        output_dir: "logs/audio_recordings"
+        filename_format: "{conversation_id}_{timestamp}_{source}.wav"
+        log_all_audio: true
+        max_file_size: 10485760
+        sample_rate: 8000
+        bit_depth: 8
+        channels: 1
+        encoding: "ulaw"
+      agents: []
 ```
+
+
+**Note:** For production, use environment variables or IAM roles for credentials. Explicit credentials in config files are for development/testing only.
+
+### Setting AWS Credentials with Environment Variables
+
+For production or secure development, set your AWS credentials as environment variables instead of hardcoding them in your config file:
+
+```sh
+export AWS_ACCESS_KEY_ID=your_access_key
+export AWS_SECRET_ACCESS_KEY=your_secret_key
+```
+
+You can add these lines to your shell profile (e.g., `.bashrc`, `.zshrc`) or set them in your deployment environment. The connector will automatically use these credentials if they are set.
 
 **AWS Credentials**:
 The connector supports multiple ways to provide AWS credentials:
