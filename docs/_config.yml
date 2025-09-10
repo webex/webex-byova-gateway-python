@@ -2,8 +2,8 @@
 
 title: Webex Contact Center BYOVA Gateway
 description: A Python-based gateway for Webex Contact Center that provides virtual agent integration capabilities
-author: Webex Contact Center Team
-email: webex-contact-center@cisco.com
+author: Webex Developer Relations Team
+email: devsupport@webex.com
 
 # GitHub Pages settings
 baseurl: "/webex-byova-gateway-python"

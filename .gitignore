@@ -239,6 +239,12 @@ temp/
 src/generated/*_pb2.py
 src/generated/*_pb2_grpc.py
 
+# Jekyll generated files
+docs/_site/
+docs/.sass-cache/
+docs/.jekyll-cache/
+docs/.jekyll-metadata
+
 # IDE specific
 *.swp
 *.swo
