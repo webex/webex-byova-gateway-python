@@ -1,0 +1,70 @@
+# GitHub Pages Configuration for BYOVA Gateway Documentation
+
+title: Webex Contact Center BYOVA Gateway
+description: A Python-based gateway for Webex Contact Center that provides virtual agent integration capabilities
+author: Webex Contact Center Team
+email: webex-contact-center@cisco.com
+
+# GitHub Pages settings
+baseurl: "/webex-byova-gateway-python"
+url: "https://webex.github.io"
+
+# Navigation
+navigation:
+  - title: Home
+    url: /
+  - title: Setup Guide
+    url: /guides/byova-aws-lex-setup.html
+  - title: API Reference
+    url: /api/
+  - title: GitHub Repository
+    url: https://github.com/webex/webex-byova-gateway-python
+
+# Markdown settings
+markdown: kramdown
+highlighter: rouge
+theme: minima
+
+# Plugins
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+
+# Exclude files from processing
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor
+  - README.md
+
+# Include files
+include:
+  - _pages
+
+# Collections
+collections:
+  guides:
+    output: true
+    permalink: /:collection/:name/
+  api:
+    output: true
+    permalink: /:collection/:name/
+
+# Default front matter
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: "default"
+  - scope:
+      path: ""
+      type: "guides"
+    values:
+      layout: "guide"
+  - scope:
+      path: ""
+      type: "api"
+    values:
+      layout: "api"

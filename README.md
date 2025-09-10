@@ -4,6 +4,16 @@
 
 A Python-based gateway for Webex Contact Center (WxCC) that provides virtual agent integration capabilities. This gateway acts as a bridge between WxCC and various virtual agent providers, enabling seamless voice interactions.
 
+## 📚 Documentation
+
+**Complete Setup Guide**: [BYOVA with AWS Lex Setup Guide](docs/guides/byova-aws-lex-setup.md)
+
+This comprehensive guide walks you through:
+- Setting up a Webex Contact Center sandbox
+- Configuring BYOVA and BYODS
+- Creating AWS Lex bots
+- Deploying and testing the gateway
+
 ## Table of Contents
 
 - [Install](#install)
@@ -25,7 +35,7 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
 
 1. **Clone the Repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/webex/webex-byova-gateway-python.git
    cd webex-byova-gateway-python
    ```
 
