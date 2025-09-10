@@ -196,6 +196,91 @@ ps aux | grep "python main.py"
 pkill -f "python main.py"
 ```
 
+### Public URL Hosting with ngrok
+
+The [Bring Your Own Data Source (BYODS) framework](https://developer.webex.com/create/docs/bring-your-own-datasource) requires a publicly accessible URL for data exchange with Webex Contact Center. For development and testing, you can use ngrok to create a public URL that tunnels to your local gateway.
+
+#### Prerequisites
+
+1. **Install ngrok**
+   - Download from [ngrok.com](https://ngrok.com/download)
+   - Or install via package manager:
+     ```bash
+     # macOS with Homebrew
+     brew install ngrok/ngrok/ngrok
+     
+     # Or download directly from ngrok.com
+     ```
+
+2. **Sign up for ngrok account** (free tier available)
+   - Create account at [ngrok.com](https://ngrok.com)
+   - Get your authtoken from the dashboard
+
+3. **Configure ngrok**
+   ```bash
+   # Add your authtoken
+   ngrok config add-authtoken YOUR_AUTHTOKEN
+   ```
+
+#### Running with ngrok
+
+1. **Start the gateway** (in one terminal):
+   ```bash
+   # Activate virtual environment
+   source venv/bin/activate
+   
+   # Start the gateway
+   python main.py
+   ```
+
+2. **Start ngrok tunnel** (in another terminal):
+   ```bash
+   # Create public tunnel to the gRPC server
+   ngrok http --upstream-protocol=http2 50051
+   ```
+
+   **Important**: Use the `--upstream-protocol=http2` flag as gRPC requires HTTP/2 protocol.
+
+3. **Access your public gateway**:
+   - ngrok will display a public URL like: `https://abc123.ngrok.io`
+   - This URL can be used by external services to connect to your gateway
+   - The monitoring interface will still be available locally at `http://localhost:8080`
+
+4. **Register with Webex Data Sources API**:
+   - Use the ngrok URL to register your data source with the [Webex Data Sources API](https://developer.webex.com/admin/docs/api/v1/data-sources/register-a-data-source)
+   - This registration is required for Webex Contact Center to establish the BYODS connection
+   - The registered URL will be used for all data exchange between Webex and your gateway
+
+#### ngrok Dashboard
+
+- Access the ngrok web interface at `http://localhost:4040` to monitor requests
+- View real-time traffic, request/response details, and connection status
+- Useful for debugging external connections to your gateway
+
+#### Security Considerations
+
+- **Development Only**: ngrok is intended for development and testing
+- **Temporary URLs**: Free ngrok URLs change each time you restart ngrok
+- **Public Access**: Anyone with the URL can access your gateway
+- **Credentials**: Never expose production credentials through ngrok
+
+#### Example Usage
+
+```bash
+# Terminal 1: Start gateway
+source venv/bin/activate
+python main.py
+
+# Terminal 2: Start ngrok tunnel
+ngrok http --upstream-protocol=http2 50051
+
+# Output example:
+# Forwarding  https://abc123.ngrok.io -> http://localhost:50051
+# 
+# Use this URL in your Webex Contact Center configuration:
+# https://abc123.ngrok.io
+```
+
 ### Monitoring Interface
 
 Once the server is running, access the web monitoring interface at:
@@ -304,6 +389,8 @@ webex-byova-gateway-python/
 5. Restart the server
 
 ### gRPC Stub Generation
+
+The protobuf definitions used in this gateway are sourced from the [Webex dataSourceSchemas repository](https://github.com/webex/dataSourceSchemas), specifically the Voice Virtual Agent schema. These definitions define the structure for BYOVA (Bring Your Own Virtual Agent) data exchange with Webex Contact Center.
 
 If you modify the `.proto` files, you must regenerate the Python stubs:
 
