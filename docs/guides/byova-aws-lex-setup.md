@@ -141,35 +141,48 @@ Before configuring BYOVA, we need to set up a Service App for data source integr
 
 3. **Configure the Service App**
    - **Name**: `BYOVA Gateway Service App` (or your preferred name)
-   - **Data Exchange Schema**: Select `VA_service_schema` for voice virtual agent interactions
-     - This schema (ID: `5397013b-7920-4ffc-807c-e8a3e0a18f43`) is specifically designed for voice virtual agent services
-     - Reference: [VoiceVirtualAgent Schema](https://github.com/webex/dataSourceSchemas/tree/v1.10/Services/VoiceVirtualAgent/5397013b-7920-4ffc-807c-e8a3e0a18f43)
-   - **Domains**: Specify your gateway domain (e.g., `your-domain.com` or `your-ip-address`)
-     - Avoid registering ports in the domain - all ports will be accepted later
    - **Scopes**: Ensure you select:
      - `spark-admin:datasource_read`
      - `spark-admin:datasource_write`
+   - **Domains**: Specify your gateway domain (e.g., `your-domain.com` or `ngrok-free.app`)
+     - Avoid registering ports in the domain - all ports will be accepted later
+   - **Data Exchange Schema**: Select `VA_service_schema` for voice virtual agent interactions
+     - This schema (ID: `5397013b-7920-4ffc-807c-e8a3e0a18f43`) is specifically designed for voice virtual agent services
+     - Reference: [VoiceVirtualAgent Schema](https://github.com/webex/dataSourceSchemas/tree/v1.10/Services/VoiceVirtualAgent/5397013b-7920-4ffc-807c-e8a3e0a18f43)
+   
    - Complete any other required information
 
-4. **Submit for Admin Approval**
+4. **Save the Service App Client ID and Client Secret**
+   - Under **Authentication**, locate the **Client ID** and **Client Secret**
+   - Save these credentials for later use
+
+5. **Submit for Admin Approval**
    - In your sandbox, select **"Request Admin Approval"**
    - This makes the Service App visible in Control Hub for admin authorization
 
 ### 2.3 Register Your Data Source
 
 1. **Get Admin Authorization**
-   - In Control Hub (admin.webex.com), navigate to **Services** → **Data Sources**
+   - In Control Hub (admin.webex.com), navigate to **Apps** → **Service Apps**
    - Find your Service App and click **"Authorize"**
    - This generates org-specific access and refresh tokens
 
-2. **Register the Data Source**
+2. **Get Service App Token**
+   - After admin approval, return to [developer.webex.com](https://developer.webex.com)
+   - Go to **My Apps** and select your Service App
+   - Under **Org Authorizations**, locate your org in the list and select it
+   - Paste the **Client Secret** from step 1 into the **Client Secret** field and click **"Generate Tokens"**
+   - Save the returned `access_token` - you'll need it to register your data source
+   - Note: Tokens expire and will need to be refreshed using the refresh token provided
+
+3. **Register the Data Source**
    - Use the access token from step 1 to register your data source
    - Make a POST request to `/v1/datasources` with the following payload:
    - **API Reference**: [Register a Data Source](https://developer.webex.com/admin/docs/api/v1/data-sources/register-a-data-source)
 
    ```json
    {
-     "schemaId": ["5397013b-7920-4ffc-807c-e8a3e0a18f43"],
+     "schemaId": "5397013b-7920-4ffc-807c-e8a3e0a18f43",
      "url": "https://your-gateway-ip:50051",
      "audience": "BYOVAGateway",
      "subject": "callAudioData",
@@ -178,31 +191,22 @@ Before configuring BYOVA, we need to set up a Service App for data source integr
    }
    ```
 
-3. **Save the JWS Token**
-   - The response will include a `jwsToken` for authenticating requests
-   - Save this token and the `tokenExpiryTime` for later use
-   - **Important**: Tokens expire in 1-24 hours and must be refreshed before expiration
-   - Update the data source with a new `nonce` to refresh the token
+   - Save the data source ID for later use
 
 **Reference**: For detailed BYODS setup instructions, see the [Bring Your Own Data Source documentation](https://developer.webex.com/create/docs/bring-your-own-datasource).
 
 ### 2.4 Configure BYOVA Virtual Agent
 
 1. **Navigate to Virtual Agents**
-   - In Control Hub, go to **Services** → **Virtual Agents**
-   - Click **"Add Virtual Agent"**
+   - In Control Hub, go to **Contact Center** → **Integrations** → **Features**
+   - Click **"Create Feature"**
 
 2. **Configure Virtual Agent Settings**
    - **Name**: `AWS Lex Virtual Agent`
-   - **Type**: Select **"External"** or **"Custom"**
-   - **Endpoint**: `http://your-gateway-ip:50051`
-   - **Protocol**: `gRPC`
-   - **Data Source**: Select the data source you registered in step 2.3
-   - **Status**: `Active`
-
-3. **Configure Authentication**
-   - Use the JWS token from your data source registration
-   - Ensure the token is refreshed before expiration (max 24 hours)
+   - **Type of Connector**: Select **"Service App"**
+   - **Authorized Service App**: Select your Service App from step 2.2
+   - **Resource Identifier**: Enter the data source ID you saved in step 2.3
+   - Click **"Create"**
 
 ### 2.5 Import the BYOVA Flow Template
 
