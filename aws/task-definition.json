@@ -1,0 +1,77 @@
+{
+  "family": "byova-gateway",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<YOUR_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<YOUR_ACCOUNT_ID>:role/BYOVAGatewayTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "byova-gateway",
+      "image": "<YOUR_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/byova-gateway:latest",
+      "portMappings": [
+        {
+          "containerPort": 50051,
+          "protocol": "tcp"
+        },
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "AWS_LEX_BOT_ALIAS_ID",
+          "value": "TSTALIASID"
+        },
+        {
+          "name": "AWS_LEX_LOCALE",
+          "value": "en_US"
+        },
+        {
+          "name": "GATEWAY_HOST",
+          "value": "0.0.0.0"
+        },
+        {
+          "name": "GATEWAY_PORT",
+          "value": "50051"
+        },
+        {
+          "name": "MONITORING_HOST",
+          "value": "0.0.0.0"
+        },
+        {
+          "name": "MONITORING_PORT",
+          "value": "8080"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "value": "INFO"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/byova-gateway",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8080/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

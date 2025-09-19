@@ -7,6 +7,7 @@ creates the gRPC server, and starts listening for requests.
 """
 
 import logging
+import os
 import sys
 import threading
 from concurrent import futures
@@ -14,6 +15,35 @@ from pathlib import Path
 
 import grpc
 import yaml
+
+def load_env_file(env_file_path=".env"):
+    """Load environment variables from .env file."""
+    if not os.path.exists(env_file_path):
+        return False
+    
+    with open(env_file_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            
+            # Skip empty lines and comments
+            if not line or line.startswith('#'):
+                continue
+            
+            # Parse KEY=VALUE format
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                # Remove quotes if present
+                if value.startswith('"') and value.endswith('"'):
+                    value = value[1:-1]
+                elif value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                
+                os.environ[key] = value
+    
+    return True
 
 # Add src and src/core to Python path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -112,9 +142,51 @@ def setup_logging(config: dict) -> None:
             print(f"Warning: Could not create web log file {web_log_file}: {e}")
 
 
+def override_config_with_env(config: dict) -> dict:
+    """
+    Override configuration values with environment variables.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Updated configuration dictionary
+    """
+    # Override gateway settings
+    if os.getenv("GATEWAY_HOST"):
+        config.setdefault("gateway", {})["host"] = os.getenv("GATEWAY_HOST")
+    if os.getenv("GATEWAY_PORT"):
+        config.setdefault("gateway", {})["port"] = int(os.getenv("GATEWAY_PORT"))
+    
+    # Override monitoring settings
+    if os.getenv("MONITORING_HOST"):
+        config.setdefault("monitoring", {})["host"] = os.getenv("MONITORING_HOST")
+    if os.getenv("MONITORING_PORT"):
+        config.setdefault("monitoring", {})["port"] = int(os.getenv("MONITORING_PORT"))
+    
+    # Override logging settings
+    if os.getenv("LOG_LEVEL"):
+        config.setdefault("logging", {}).setdefault("gateway", {})["level"] = os.getenv("LOG_LEVEL")
+    
+    # Override AWS Lex connector settings
+    if "connectors" in config and "aws_lex_connector" in config["connectors"]:
+        lex_config = config["connectors"]["aws_lex_connector"].setdefault("config", {})
+        
+        if os.getenv("AWS_REGION"):
+            lex_config["region_name"] = os.getenv("AWS_REGION")
+        if os.getenv("AWS_LEX_BOT_ALIAS_ID"):
+            lex_config["bot_alias_id"] = os.getenv("AWS_LEX_BOT_ALIAS_ID")
+        if os.getenv("AWS_LEX_BOT_NAME"):
+            lex_config["bot_name"] = os.getenv("AWS_LEX_BOT_NAME")
+        if os.getenv("AWS_LEX_LOCALE"):
+            lex_config["locale"] = os.getenv("AWS_LEX_LOCALE")
+    
+    return config
+
+
 def load_config(config_path: str = "config/config.yaml") -> dict:
     """
-    Load configuration from YAML file.
+    Load configuration from YAML file and override with environment variables.
 
     Args:
         config_path: Path to the configuration file
@@ -129,6 +201,9 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     try:
         with open(config_path) as file:
             config = yaml.safe_load(file)
+
+        # Override with environment variables
+        config = override_config_with_env(config)
 
         logging.info(f"Configuration loaded from {config_path}")
         return config
@@ -175,7 +250,8 @@ def main():
     Main entry point for the BYOVA Gateway.
 
     This function:
-    1. Loads configuration from YAML file
+    1. Loads environment variables from .env file
+    2. Loads configuration from YAML file
     2. Sets up logging
     3. Creates and configures the VirtualAgentRouter
     4. Creates the WxCCGatewayServer
@@ -184,6 +260,12 @@ def main():
     logger = None
     server = None
     try:
+        # Load environment variables from .env file
+        if load_env_file():
+            print("✅ Environment variables loaded from .env file")
+        else:
+            print("⚠️  No .env file found, using system environment variables")
+        
         # Load configuration
         config_path = "config/config.yaml"
         config = load_config(config_path)

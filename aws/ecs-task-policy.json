@@ -1,0 +1,50 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lex:RecognizeText",
+        "lex:RecognizeUtterance",
+        "lex:StartConversation",
+        "lex:GetSession",
+        "lex:PutSession",
+        "lex:DeleteSession",
+        "lex:ListBots",
+        "lex:DescribeBot",
+        "lex:DescribeBotAlias",
+        "lex:ListBotAliases",
+        "lex:ListBotLocales",
+        "lex:DescribeBotLocale",
+        "lex:ListIntents",
+        "lex:DescribeIntent",
+        "lex:ListSlots",
+        "lex:DescribeSlot",
+        "lex:ListSlotTypes",
+        "lex:DescribeSlotType"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
