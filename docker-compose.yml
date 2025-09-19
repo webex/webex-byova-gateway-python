@@ -1,0 +1,59 @@
+# Docker Compose for BYOVA Gateway
+# Works for both local testing and production deployment
+
+services:
+  byova-gateway:
+    build: .
+    ports:
+      - "50051:50051"  # gRPC port
+      - "8080:8080"    # Monitoring web interface
+    volumes:
+      - ./config:/app/config:ro
+      - ./audio:/app/audio:ro
+      - ./logs:/app/logs
+      # Mount AWS credentials if they exist (for local testing)
+      - ${HOME}/.aws:/home/appuser/.aws:ro
+    environment:
+      - PYTHONPATH=/app/src:/app/src/core
+      # AWS Configuration
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_DEFAULT_REGION=${AWS_REGION:-us-east-1}
+      # AWS Credentials (for local testing - not needed in production with IAM roles)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      # AWS Lex Configuration
+      - AWS_LEX_BOT_ALIAS_ID=${AWS_LEX_BOT_ALIAS_ID:-TSTALIASID}
+      - AWS_LEX_BOT_NAME=${AWS_LEX_BOT_NAME}
+      - AWS_LEX_LOCALE=${AWS_LEX_LOCALE:-en_US}
+      # Gateway Configuration
+      - GATEWAY_HOST=${GATEWAY_HOST:-0.0.0.0}
+      - GATEWAY_PORT=${GATEWAY_PORT:-50051}
+      - MONITORING_HOST=${MONITORING_HOST:-0.0.0.0}
+      - MONITORING_PORT=${MONITORING_PORT:-8080}
+      # Logging Configuration
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Security (optional - only needed if using security features)
+      - JWT_SECRET=${JWT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Resource limits for production
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+
+
+
+
