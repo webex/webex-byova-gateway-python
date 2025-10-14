@@ -16,12 +16,14 @@ date: 2025-09-10
 1. [Introduction](#introduction)
 2. [Prerequisites](#prerequisites)
 3. [Step 1: Setting Up Your Webex Contact Center Sandbox](#step-1-setting-up-your-webex-contact-center-sandbox)
-4. [Step 2: Configuring BYOVA and BYODS](#step-2-configuring-byova-and-byds)
-5. [Step 3: Setting Up AWS Lex](#step-3-setting-up-aws-lex)
-6. [Step 4: Configuring the BYOVA Gateway](#step-4-configuring-the-byova-gateway)
-7. [Step 5: Testing Your Integration](#step-5-testing-your-integration)
-8. [Troubleshooting](#troubleshooting)
-9. [Next Steps](#next-steps)
+4. [Step 2: Configuring BYOVA and BYODS](#step-2-configuring-byova-and-byods)
+5. [Step 3: Testing with Local Audio Connector](#step-3-testing-with-local-audio-connector)
+6. [Step 4: Setting Up AWS Lex](#step-4-setting-up-aws-lex)
+7. [Step 5: Configuring the BYOVA Gateway](#step-5-configuring-the-byova-gateway)
+8. [Step 6: Testing Your Integration](#step-6-testing-your-integration)
+9. [Troubleshooting](#troubleshooting)
+10. [Next Steps](#next-steps)
+11. [Conclusion](#conclusion)
 
 ---
 
@@ -32,7 +34,7 @@ Webex Contact Center's BYOVA (Bring Your Own Virtual Agent) feature allows you t
 This guide will walk you through the complete process of:
 - Setting up a Webex Contact Center sandbox environment
 - Configuring BYOVA and BYODS (Bring Your Own Data Source)
-- Creating and configuring an AWS Lex bot
+- Creating and configuring a AWS Lex bot
 - Deploying and configuring the BYOVA Gateway
 - Testing your voice AI integration end-to-end
 
@@ -357,90 +359,107 @@ Once the local connector is working correctly, you can proceed to set up AWS Lex
 
 ## Step 4: Setting Up AWS Lex
 
-### 4.1 Create an AWS Lex Bot
+### 4.1 Create a AWS account
 
-1. **Sign in to AWS Console**
-   - Go to [aws.amazon.com](https://aws.amazon.com)
-   - Sign in to your AWS account
+If you already have an AWS account, skip this step. If you don't have an AWS account, use the following procedure to create one.
 
-2. **Navigate to Amazon Lex**
-   - Search for "Lex" in the AWS services search
-   - Click on **Amazon Lex V2**
+1. Open https://portal.aws.amazon.com/billing/signup.
 
-3. **Create a New Bot**
-   - Click **"Create Bot"**
-   - Choose **"Create a blank bot"**
+2. Follow the online instructions. Part of the sign-up procedure involves receiving a phone call or text message and entering a verification code on the phone keypad.
 
-4. **Configure Bot Settings**
-   - **Bot name**: `webex-contact-center-bot`
-   - **IAM role**: Create new role or use existing
-   - **Data privacy**: Configure as needed
-   - **Idle session timeout**: `5 minutes`
+   When you sign up for an AWS account, an AWS account root user is created. The root user has access to all AWS services and resources in the account. As a security best practice, assign administrative access to a user, and use only the root user to perform tasks that require root user access.
 
-### 4.2 Design Your Bot's Intent
+### 4.2 Create Your AWS Lex Bot
 
-1. **Create an Intent**
-   - Click **"Create Intent"**
-   - **Intent name**: `CustomerServiceIntent`
+You can create a bot with Amazon Lex V2 in multiple ways. If you want to learn more about all the ways, refer to [this](https://docs.aws.amazon.com/lexv2/latest/dg/create-bot.html) guide.
 
-2. **Add Sample Utterances**
+In this section, you create an Amazon Lex bot (BookTrip).
+
+1. Sign in to the AWS Management Console and open the Amazon Lex console at https://console.aws.amazon.com/lex/.
+
+2. On the **Bots** page, choose **Create**.
+3. On the **Create your Lex bot** page,
+   - Choose **BookTrip** blueprint.
+   - Leave the default bot name (BookTrip).
+4. Choose **Create**. The console sends a series of requests to Amazon Lex to create the bot. Note the following:
+
+5. The console shows the BookTrip bot. On the **Editor** tab, review the details of the preconfigured intents (BookCar and BookHotel).
+
+6. Test the bot in the test window.
+
+If you would like to use generative AI to optimize LexV2 bot creation and performance, please refer to this [guide](https://docs.aws.amazon.com/lexv2/latest/dg/generative-features.html)
+
+If you wish to use AWS Bedrock Agents with a custom knowledge base—as part of your autonomous bot workflow, here are some guides that can help you [setup agents](https://docs.aws.amazon.com/bedrock/latest/userguide/agents.html) and [knowledge base](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base-create.html)
+
+### 4.3 Lex Bot Configuration & Testing
+
+Once you have successfully created the Lex bot following the documentations provided above, please make sure to add Agent Intent to your bot.
+
+1. Sign in to the AWS Management Console and open the Amazon Lex console at https://console.aws.amazon.com/lex/.
+
+2. From the list of bots, choose the bot that you created, then from **Add languages** choose **View languages**.
+
+3. Choose the language to add the intent to, then choose **Intents**.
+4. Choose **Add intent**, give your intent a name, and then choose **Add**.
+5. Add **Sample Utterances**
+
    ```
-   I need help with my account
-   How do I reset my password
-   I want to speak to a human agent
-   What are your business hours
-   I have a billing question
+   Agent
+   Can I talk to an agent
+   Can I talk to a person
+   Representative please
+   Connect me to a person
    ```
 
-3. **Configure Slots (Optional)**
-   - Add slots for customer information if needed
-   - Example: `customerId`, `issueType`, `priority`
+   Feel free to add or remove utterances, but please keep it specific to the agent
 
-4. **Set Up Responses**
-   - **Fulfillment**: Use Lambda function or return static responses
-   - **Confirmation prompt**: "Is there anything else I can help you with?"
-   - **Follow-up prompt**: "What else can I help you with today?"
+6. Set up **Fulfillment** response<br/>
+   - On successful fulfillment
+     ```
+     Okay, transferring you to a human agent.
+     ```
+   - In case of failure
+     ```
+     I'm sorry, but I couldn't connect you to a human agent. Please try again.
+     ```
 
-### 4.3 Configure Bot Alias
+After creation, test your bot inside the AWS Lex UI and ensure that all basic and agent-related intents work as expected.
 
-1. **Create Bot Alias**
-   - Go to **Bot Aliases** tab
-   - Click **"Create Bot Alias"**
-   - **Alias name**: `TSTALIASID` (or your preferred name)
-   - **Bot version**: Select the latest version
+### 4.4 Collect Lex Bot Identifiers
 
-2. **Configure Alias Settings**
-   - **Description**: `Test alias for Webex integration`
-   - **Language**: `English (US)`
-   - **Voice settings**: Configure as needed
+Once your bot is ready, note the following identifiers:
 
-### 4.4 Set Up IAM Permissions
+- Bot name
+- Bot ID
+- Bot alias name
+- Alias bot ID
 
-1. **Create IAM User for BYOVA Gateway**
-   - Go to **IAM** → **Users** → **Create User**
-   - **Username**: `webex-byova-gateway`
-   - **Access type**: Programmatic access
+You will enter these into your Webex Lex connector configuration.
 
-2. **Attach Policies**
-   - Attach the following policies:
-     - `AmazonLexFullAccess`
-     - `AmazonPollyReadOnlyAccess` (for text-to-speech)
+### 4.5 IAM Policy and Permissions
 
-3. **Create Access Keys**
-   - Go to **Security credentials** tab
-   - Click **"Create access key"**
-   - **Use case**: Application running outside AWS
-   - **Save the Access Key ID and Secret Access Key**
+To allow Lex and its integrations to function, attach these managed policies to your IAM user:
 
-### 4.5 Test Your Bot
+- AmazonLexFullAccess
+- AmazonPollyReadOnlyAccess (required for text-to-speech features)​
 
-1. **Test in Lex Console**
-   - Use the test window in the Lex console
-   - Try various utterances to ensure your bot responds correctly
+For Bedrock/advanced integrations, you may to add extra policies. Please refer to this [documentation](https://docs.aws.amazon.com/lexv2/latest/dg/bedrock-agent-intent-permissions.html) to learn more.
 
-2. **Verify Bot Alias**
-   - Ensure your bot alias is working
-   - Note the bot ID and alias ID for configuration
+### 4.6 Create access keys
+
+1. Use your AWS account ID or account alias, your IAM user name, and your password to sign in to the [IAM console](https://console.aws.amazon.com/iam).
+
+2. In the navigation bar on the upper right, choose your user name, and then choose **Security credentials**.
+
+3. In the **Access keys** section, choose **Create access key**. If you already have two access keys, this button is deactivated and you must delete an access key before you can create a new one.
+
+4. On the **Access key best practices & alternatives** page, choose your use case to learn about additional options which can help you avoid creating a long-term access key. If you determine that your use case still requires an access key, choose **Other** and then choose **Next**.
+
+5. (Optional) Set a description tag value for the access key. This adds a tag key-value pair to your IAM user. This can help you identify and update access keys later. The tag key is set to the access key id. The tag value is set to the access key description that you specify. When you are finished, choose **Create access key**.
+
+6. On the **Retrieve access keys** page, choose either **Show** to reveal the value of your user's secret access key, or **Download .csv file**. This is your only opportunity to save your secret access key. After you've saved your secret access key in a secure location, choose **Done**.
+
+Please save this Access Key and Secret Access Key very safely.
 
 ---
 
@@ -683,22 +702,18 @@ aws lex-models-v2 describe-bot --bot-id YOUR_BOT_ID
 
 ### Enhance Your Integration
 
-1. **Improve Bot Intelligence**
-   - Add more intents and utterances
-   - Implement slot filling for complex interactions
-   - Add Lambda functions for dynamic responses
 
-2. **Add Advanced Features**
+1. **Add Advanced Features**
    - Implement sentiment analysis
    - Add multi-language support
    - Integrate with CRM systems
 
-3. **Scale Your Solution**
+2. **Scale Your Solution**
    - Deploy to production AWS environment
    - Implement load balancing
    - Add monitoring and alerting
 
-4. **Customize the Gateway**
+3.. **Customize the Gateway**
    - Add new connector types
    - Implement custom audio processing
    - Add advanced logging and analytics
