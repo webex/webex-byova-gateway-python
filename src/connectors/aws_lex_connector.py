@@ -73,6 +73,7 @@ class AWSLexConnector(IVendorConnector):
         self.audio_request_content_type = self.config_manager.get_audio_request_content_type()
         self.response_content_type = self.config_manager.get_response_content_type()
         self.barge_in_enabled = self.config_manager.is_barge_in_enabled()
+        self.initial_trigger_text = self.config_manager.get_initial_trigger_text()
         self.aws_credentials = self.config_manager.get_aws_credentials()
 
         # Initialize error handler first (needed for AWS client initialization)
@@ -154,11 +155,13 @@ class AWSLexConnector(IVendorConnector):
 
             # Send initial text to Lex and get audio response
             try:
-                # Convert text to bytes for the reques
-                text_input = "I need to book a hotel room"
+                # Send minimal trigger for Bedrock agent welcome
+                # Bedrock agents work best with a simple greeting rather than a specific request
+                # The trigger text is configurable via initial_trigger_text in config
+                text_input = self.initial_trigger_text
                 text_bytes = text_input.encode('utf-8')
 
-                self.logger.debug(f"Sending initial text to Lex: '{text_input}'")
+                self.logger.debug(f"Sending welcome trigger to Lex: '{text_input}'")
 
                 response = self.lex_runtime.recognize_utterance(
                     botId=actual_bot_id,

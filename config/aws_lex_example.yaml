@@ -14,6 +14,12 @@ aws_lex_connector:
   # Change this if your bot uses a different alias
   bot_alias_id: "TSTALIASID"
   
+  # Optional: Initial trigger text sent when starting a conversation
+  # Default: "hello"
+  # For Bedrock agents, use a simple greeting rather than a specific request
+  # to avoid triggering function calls before the agent is ready
+  initial_trigger_text: "hello"
+  
   # Optional: Barge-in configuration
   # When enabled, users can interrupt the bot's response
   # Default: false (disabled)
@@ -27,16 +33,19 @@ aws_lex_connector:
 aws_lex_connector_dev:
   region_name: "us-east-1"
   bot_alias_id: "TSTALIASID"
+  initial_trigger_text: "hello"  # Simple greeting for testing
   barge_in_enabled: true  # Enable barge-in for development
 
 # Production
 aws_lex_connector_prod:
   region_name: "us-east-1"
   bot_alias_id: "PRODALIASID"  # Your production bot alias
+  initial_trigger_text: "hello"  # Simple greeting
   barge_in_enabled: false  # Disable barge-in for production (default)
 
 # Custom bot with specific alias
 aws_lex_connector_custom:
   region_name: "us-west-2"
   bot_alias_id: "CUSTOMALIAS"  # Your custom bot alias
+  initial_trigger_text: "hi"  # Different greeting for custom bot
   barge_in_enabled: true  # Enable barge-in for custom bot

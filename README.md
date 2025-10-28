@@ -149,6 +149,7 @@ connectors:
          bot_alias_id: "TSTALIASID"  # Set your Lex bot alias
          aws_access_key_id: "YOUR_DEV_ACCESS_KEY"  # Explicit AWS access key
          aws_secret_access_key: "YOUR_DEV_SECRET_KEY"  # Explicit AWS secret
+         initial_trigger_text: "hello"  # Text sent when starting conversation (default: "hello")
          barge_in_enabled: false
          audio_logging:
             enabled: true

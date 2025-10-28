@@ -31,6 +31,11 @@ connectors:
       region_name: "us-east-1"
       bot_alias_id: "TSTALIASID"
       
+      # Initial trigger text sent when starting a conversation (default: "hello")
+      # For Bedrock agents, use a simple greeting rather than a specific request
+      # to avoid triggering function calls before the agent is ready
+      initial_trigger_text: "hello"
+      
       # Barge-in configuration (default: false)
       # When enabled, users can interrupt the bot's response
       barge_in_enabled: false
