@@ -25,6 +25,7 @@ class AWSLexConfig:
     DEFAULT_AUDIO_REQUEST_CONTENT_TYPE = "audio/l16; rate=16000; channels=1"
     DEFAULT_RESPONSE_CONTENT_TYPE = "audio/pcm"
     DEFAULT_BARGE_IN_ENABLED = False
+    DEFAULT_INITIAL_TRIGGER_TEXT = "hello"
     
     # Required configuration keys
     REQUIRED_CONFIG_KEYS = ["region_name"]
@@ -92,6 +93,9 @@ class AWSLexConfig:
             
             # Process barge-in configuration
             self._validated_config["barge_in_enabled"] = self._config.get("barge_in_enabled", self.DEFAULT_BARGE_IN_ENABLED)
+            
+            # Process initial trigger text for conversation start
+            self._validated_config["initial_trigger_text"] = self._config.get("initial_trigger_text", self.DEFAULT_INITIAL_TRIGGER_TEXT)
             
             # Process audio logging configuration
             self._validated_config["audio_logging"] = self._process_audio_logging_config()
@@ -208,6 +212,15 @@ class AWSLexConfig:
             True if barge-in is enabled, False otherwise
         """
         return self._validated_config["barge_in_enabled"]
+
+    def get_initial_trigger_text(self) -> str:
+        """
+        Get the initial trigger text to send when starting a conversation.
+        
+        Returns:
+            Initial trigger text (e.g., "hello")
+        """
+        return self._validated_config["initial_trigger_text"]
 
     def get_audio_logging_config(self) -> Dict[str, Any]:
         """

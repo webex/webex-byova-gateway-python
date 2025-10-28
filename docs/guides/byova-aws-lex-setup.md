@@ -189,7 +189,7 @@ Before configuring BYOVA, we need to set up a Service App for data source integr
      "audience": "BYOVAGateway",
      "subject": "callAudioData",
      "nonce": "123456",
-     "tokenLifeMinutes": "1440"
+     "tokenLifetimeMinutes": "1440"
    }
    ```
 
@@ -529,11 +529,12 @@ Please save this Access Key and Secret Access Key very safely.
        type: "aws_lex_connector"
        class: "AWSLexConnector"
        module: "connectors.aws_lex_connector"
-       config:
-         region_name: "us-east-1"  # Your AWS region
-         bot_alias_id: "TSTALIASID"  # Your bot alias
-         barge_in_enabled: false
-         audio_logging:
+      config:
+        region_name: "us-east-1"  # Your AWS region
+        bot_alias_id: "TSTALIASID"  # Your bot alias
+        initial_trigger_text: "hello"  # Text sent when starting conversation
+        barge_in_enabled: false
+        audio_logging:
            enabled: true
            output_dir: "logs/audio_recordings"
            filename_format: "{conversation_id}_{timestamp}_{source}.wav"

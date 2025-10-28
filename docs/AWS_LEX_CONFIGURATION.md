@@ -9,6 +9,9 @@ The AWS Lex connector integrates with AWS Lex v2 bots to provide virtual agent c
 
 ### Optional
 - **`bot_alias_id`**: Bot alias ID (default: TSTALIASID)
+- **`initial_trigger_text`**: Text sent when starting a conversation (default: "hello")
+  - For Bedrock agents, use a simple greeting to avoid triggering function calls prematurely
+- **`barge_in_enabled`**: Allow users to interrupt bot responses (default: false)
 - **`aws_access_key_id`**: Explicit AWS access key
 - **`aws_secret_access_key`**: Explicit AWS secret key
 
@@ -26,6 +29,8 @@ aws_lex_connector:
   config:
     region_name: "us-east-1"
     bot_alias_id: "TSTALIASID"
+    initial_trigger_text: "hello"  # Text sent when starting conversation
+    barge_in_enabled: false
   agents: []
 ```
 
