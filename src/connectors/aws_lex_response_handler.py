@@ -106,6 +106,17 @@ class AWSLexResponseHandler:
         
         # Handle intent states based on both intent name and state
         if primary_intent_state == 'Fulfilled':
+            # Special handling for Bedrock Agent integration
+            # AIAgent intent is used by Bedrock and shows as Fulfilled even when conversation continues
+            if primary_intent_name == 'AIAgent':
+                self.logger.debug(f"Bedrock AIAgent primary intent detected with Fulfilled state - continuing conversation (not ending)")
+                return None
+            
+            # FallbackIntent with Fulfilled also doesn't mean conversation is done for Bedrock agents
+            if primary_intent_name == 'FallbackIntent':
+                self.logger.debug(f"FallbackIntent primary intent detected with Fulfilled state - continuing conversation (not ending)")
+                return None
+                
             self.logger.info(f"Primary intent '{primary_intent_name}' is fulfilled - conversation complete")
             return self.create_session_end_response(
                 conversation_id=conversation_id,
@@ -123,6 +134,10 @@ class AWSLexResponseHandler:
                     bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
                     intent_name=primary_intent_name
                 )
+            # FallbackIntent with ReadyForFulfillment doesn't mean conversation is done for Bedrock agents
+            elif primary_intent_name == 'FallbackIntent':
+                self.logger.debug(f"FallbackIntent primary intent detected with ReadyForFulfillment state - continuing conversation (not ending)")
+                return None
             else:
                 # For business intents like BookHotel, ReadyForFulfillment means successful completion
                 self.logger.info(f"Business intent '{primary_intent_name}' is ready for fulfillment - conversation complete")
@@ -147,6 +162,17 @@ class AWSLexResponseHandler:
             intent_name = session_state_data.get('intent', {}).get('name', primary_intent_name)
             
             if intent_state == 'Fulfilled':
+                # Special handling for Bedrock Agent integration
+                # AIAgent intent is used by Bedrock and shows as Fulfilled even when conversation continues
+                if intent_name == 'AIAgent':
+                    self.logger.debug(f"Bedrock AIAgent intent detected with Fulfilled state - continuing conversation (not ending)")
+                    return None
+                
+                # FallbackIntent with Fulfilled also doesn't mean conversation is done for Bedrock agents
+                if intent_name == 'FallbackIntent':
+                    self.logger.debug(f"FallbackIntent session state intent detected with Fulfilled state - continuing conversation (not ending)")
+                    return None
+                    
                 self.logger.info(f"Session state intent '{intent_name}' fulfilled for conversation {conversation_id}, ending session")
                 return self.create_session_end_response(
                     conversation_id=conversation_id,
@@ -163,6 +189,10 @@ class AWSLexResponseHandler:
                         bot_name=session_manager.get_bot_name(conversation_id) if session_manager else "unknown",
                         intent_name=intent_name
                     )
+                # FallbackIntent with ReadyForFulfillment doesn't mean conversation is done for Bedrock agents
+                elif intent_name == 'FallbackIntent':
+                    self.logger.debug(f"FallbackIntent session state intent detected with ReadyForFulfillment state - continuing conversation (not ending)")
+                    return None
                 else:
                     self.logger.info(f"Session state business intent '{intent_name}' ready for fulfillment for conversation {conversation_id}, ending session")
                     return self.create_session_end_response(
