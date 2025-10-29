@@ -438,12 +438,62 @@ You will enter these into your Webex Lex connector configuration.
 
 ### 4.5 IAM Policy and Permissions
 
-To allow Lex and its integrations to function, attach these managed policies to your IAM user:
+The AWS Lex connector requires specific IAM permissions to discover bots, retrieve aliases, and process conversations. You have two options:
 
-- AmazonLexFullAccess
-- AmazonPollyReadOnlyAccess (required for text-to-speech features)​
+#### Option 1: Use Managed Policy (Easiest)
 
-For Bedrock/advanced integrations, you may to add extra policies. Please refer to this [documentation](https://docs.aws.amazon.com/lexv2/latest/dg/bedrock-agent-intent-permissions.html) to learn more.
+Attach these managed policies to your IAM user or role:
+
+- **AmazonLexFullAccess** - Provides all necessary Lex permissions
+- **AmazonPollyReadOnlyAccess** - Required for text-to-speech features (optional)
+
+#### Option 2: Use Custom Policy (Recommended for Production)
+
+For tighter security control, create a custom IAM policy with only the required permissions:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lex:ListBots",
+        "lex:ListBotAliases",
+        "lex:RecognizeUtterance",
+        "lex:RecognizeText"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Required Permissions Explained:**
+
+- `lex:ListBots` - Allows the connector to discover available bots in your AWS account
+- `lex:ListBotAliases` - **Required for automatic bot alias discovery** (new feature)
+- `lex:RecognizeUtterance` - Allows sending audio/text to bots and receiving responses
+- `lex:RecognizeText` - Allows text-based interactions with bots
+
+**Optional Permissions:**
+
+If you're using Polly for text-to-speech features, add:
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "polly:SynthesizeSpeech"
+  ],
+  "Resource": "*"
+}
+```
+
+**For Bedrock/Advanced Integrations:**
+
+If your Lex bot uses Amazon Bedrock agents, you may need additional policies. Refer to [AWS Bedrock Agent Permissions Documentation](https://docs.aws.amazon.com/lexv2/latest/dg/bedrock-agent-intent-permissions.html) for details.
+
+**Note:** The connector automatically discovers bot aliases. If you encounter permission errors during bot discovery, ensure your IAM user/role has the `lex:ListBotAliases` permission.
 
 ### 4.6 Create access keys
 
@@ -531,7 +581,7 @@ Please save this Access Key and Secret Access Key very safely.
        module: "connectors.aws_lex_connector"
       config:
         region_name: "us-east-1"  # Your AWS region
-        bot_alias_id: "TSTALIASID"  # Your bot alias
+        # Note: Bot aliases are discovered automatically. The connector uses the most recent alias for each bot.
         initial_trigger_text: "hello"  # Text sent when starting conversation
         barge_in_enabled: false
         audio_logging:

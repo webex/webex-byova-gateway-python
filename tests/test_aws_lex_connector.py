@@ -30,7 +30,6 @@ class TestAWSLexConnector:
             "region_name": "us-east-1",
             "aws_access_key_id": "test_key",
             "aws_secret_access_key": "test_secret",
-            "bot_alias_id": "TESTALIAS",
             "barge_in_enabled": False
         }
 
@@ -39,7 +38,6 @@ class TestAWSLexConnector:
         """Provide a mock configuration without explicit credentials."""
         return {
             "region_name": "us-east-1",
-            "bot_alias_id": "TESTALIAS",
             "barge_in_enabled": False
         }
 
@@ -50,7 +48,6 @@ class TestAWSLexConnector:
             "region_name": "us-east-1",
             "aws_access_key_id": "test_key",
             "aws_secret_access_key": "test_secret",
-            "bot_alias_id": "TESTALIAS",
             "barge_in_enabled": True
         }
 
@@ -64,6 +61,18 @@ class TestAWSLexConnector:
                 {"botId": "bot456", "botName": "AnotherBot"}
             ]
         }
+        # Mock bot aliases for the dynamic discovery
+        def mock_list_bot_aliases(botId):
+            return {
+                "botAliasSummaries": [
+                    {
+                        "botAliasId": "TESTALIAS",
+                        "botAliasName": "TestAlias",
+                        "lastUpdatedDateTime": "2024-01-01T00:00:00Z"
+                    }
+                ]
+            }
+        mock_client.list_bot_aliases.side_effect = mock_list_bot_aliases
         return mock_client
 
     @pytest.fixture
@@ -129,9 +138,10 @@ class TestAWSLexConnector:
             assert connector.config_manager.is_barge_in_enabled() is True
             assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] == "test_key"
             assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] == "test_secret"
-            assert connector.config_manager.get_bot_alias_id() == "TESTALIAS"
+            # Bot aliases are discovered dynamically, not from config
             assert connector.session_manager._available_bots is None
             assert connector.session_manager._bot_name_to_id_map == {}
+            assert connector.session_manager._bot_alias_map == {}
             assert connector.session_manager._sessions == {}
 
     def test_init_without_credentials(self, mock_config_no_creds):
@@ -149,7 +159,7 @@ class TestAWSLexConnector:
             assert connector.config_manager.get_region_name() == "us-east-1"
             assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] is None
             assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] is None
-            assert connector.config_manager.get_bot_alias_id() == "TESTALIAS"
+            # Bot aliases are discovered dynamically, not from config
 
     def test_init_missing_region_name(self):
         """Test connector initialization fails without region_name."""
@@ -194,6 +204,9 @@ class TestAWSLexConnector:
         assert agents == expected_agents
         assert connector.session_manager._bot_name_to_id_map["aws_lex_connector: TestBot"] == "bot123"
         assert connector.session_manager._bot_name_to_id_map["aws_lex_connector: AnotherBot"] == "bot456"
+        # Check bot alias mapping was created
+        assert connector.session_manager._bot_alias_map["bot123"] == "TESTALIAS"
+        assert connector.session_manager._bot_alias_map["bot456"] == "TESTALIAS"
 
     def test_get_available_agents_client_error(self, connector):
         """Test handling of AWS client errors when getting agents."""
@@ -235,8 +248,9 @@ class TestAWSLexConnector:
 
     def test_start_conversation_success(self, connector, mock_lex_runtime):
         """Test successful conversation start."""
-        # Setup bot mapping
+        # Setup bot mapping and alias mapping
         connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_alias_map = {"bot123": "TESTALIAS"}
         
         # Mock successful Lex response
         mock_audio_stream = MagicMock()
@@ -278,8 +292,9 @@ class TestAWSLexConnector:
             connector.logger = MagicMock()
             connector.session_manager.logger = MagicMock()
             
-            # Mock the bot discovery
+            # Mock the bot discovery and alias mapping
             connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+            connector.session_manager._bot_alias_map = {"bot123": "TESTALIAS"}
             
             # Mock the Lex response
             mock_response = MagicMock()
@@ -317,6 +332,7 @@ class TestAWSLexConnector:
     def test_start_conversation_lex_api_error(self, connector, mock_lex_runtime):
         """Test conversation start with Lex API error."""
         connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_alias_map = {"bot123": "TESTALIAS"}
         
         mock_lex_runtime.recognize_utterance.side_effect = ClientError(
             {'Error': {'Code': 'BotNotFound', 'Message': 'Bot not found'}},
@@ -335,6 +351,7 @@ class TestAWSLexConnector:
     def test_start_conversation_no_audio_response(self, connector, mock_lex_runtime):
         """Test conversation start with no audio response from Lex."""
         connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_alias_map = {"bot123": "TESTALIAS"}
         
         # Mock response without audio stream
         mock_response = {}
@@ -355,7 +372,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -372,7 +390,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -394,7 +413,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -416,7 +436,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -438,7 +459,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -456,7 +478,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -470,7 +493,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -520,7 +544,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -594,7 +619,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -612,7 +638,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -628,7 +655,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {
@@ -649,7 +677,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         connector.end_conversation("conv123")
@@ -668,7 +697,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions["conv123"] = {
             "bot_name": "TestBot",
             "session_id": "session123",
-            "actual_bot_id": "bot123"
+            "actual_bot_id": "bot123",
+            "bot_alias_id": "TESTALIAS"
         }
         
         message_data = {"generate_response": True}
@@ -953,7 +983,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1041,7 +1072,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up initial state
@@ -1078,7 +1110,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1145,7 +1178,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1220,7 +1254,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1287,7 +1322,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1347,7 +1383,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1418,7 +1455,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up initial state
@@ -1450,7 +1488,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": "session_123",
             "actual_bot_id": "test_bot_123",
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up initial state
@@ -1477,7 +1516,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1519,7 +1559,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1574,7 +1615,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1630,7 +1672,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         # Set up audio buffer
@@ -1685,7 +1728,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         connector.audio_processor.init_audio_buffer(conversation_id)
@@ -1720,7 +1764,7 @@ class TestAWSLexConnector:
             # Verify specific values
             assert call_args.kwargs['botId'] == bot_id
             assert call_args.kwargs['sessionId'] == session_id
-            assert call_args.kwargs['botAliasId'] == connector.bot_alias_id
+            assert call_args.kwargs['botAliasId'] == "TESTALIAS"  # Bot alias from session
             assert call_args.kwargs['localeId'] == connector.locale_id
             assert call_args.kwargs['requestContentType'] == 'audio/l16; rate=16000; channels=1'
             assert call_args.kwargs['responseContentType'] == connector.response_content_type
@@ -1728,8 +1772,9 @@ class TestAWSLexConnector:
 
     def test_recognize_utterance_parameters_text_input(self, connector):
         """Test that recognize_utterance is called with all required parameters for text input."""
-        # Set up bot mapping first
+        # Set up bot mapping and alias mapping
         connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_alias_map = {"bot123": "TESTALIAS"}
         
         # Set up session
         conversation_id = "test_conv_params_text"
@@ -1771,7 +1816,7 @@ class TestAWSLexConnector:
             # Verify specific values
             assert call_args.kwargs['botId'] == bot_id
             assert call_args.kwargs['sessionId'] == expected_session_id
-            assert call_args.kwargs['botAliasId'] == connector.bot_alias_id
+            assert call_args.kwargs['botAliasId'] == "TESTALIAS"  # Bot alias from session
             assert call_args.kwargs['localeId'] == connector.locale_id
             assert call_args.kwargs['requestContentType'] == connector.text_request_content_type
             assert call_args.kwargs['responseContentType'] == connector.response_content_type
@@ -1787,7 +1832,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         connector.audio_processor.init_audio_buffer(conversation_id)
@@ -1835,7 +1881,8 @@ class TestAWSLexConnector:
             connector.session_manager._sessions[conversation_id] = {
                 "session_id": session_id,
                 "actual_bot_id": bot_id,
-                "bot_name": "TestBot"
+                "bot_name": "TestBot",
+                "bot_alias_id": "TESTALIAS"
             }
             
             connector.audio_processor.init_audio_buffer(conversation_id)
@@ -1880,7 +1927,8 @@ class TestAWSLexConnector:
         connector.session_manager._sessions[conversation_id] = {
             "session_id": session_id,
             "actual_bot_id": bot_id,
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
+            "bot_alias_id": "TESTALIAS"
         }
         
         connector.audio_processor.init_audio_buffer(conversation_id)
@@ -1917,8 +1965,9 @@ class TestAWSLexConnector:
 
     def test_recognize_utterance_parameters_consistency(self, connector):
         """Test that both text and audio recognize_utterance calls use consistent parameters."""
-        # Set up bot mapping first
+        # Set up bot mapping and alias mapping
         connector.session_manager._bot_name_to_id_map = {"aws_lex_connector: TestBot": "bot123"}
+        connector.session_manager._bot_alias_map = {"bot123": "TESTALIAS"}
         
         # Set up session
         conversation_id = "test_conv_consistency"
@@ -2051,6 +2100,7 @@ class TestAWSLexConnector:
         connector.session_manager.get_bot_id = MagicMock(return_value="test-bot")
         connector.session_manager.get_session_id = MagicMock(return_value="test-session")
         connector.session_manager.get_bot_name = MagicMock(return_value="Test Bot")
+        connector.session_manager.get_bot_alias_id_for_session = MagicMock(return_value="TESTALIAS")
         
         # Mock audio processor
         connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
@@ -2167,6 +2217,7 @@ class TestAWSLexConnector:
         connector.session_manager.get_bot_id = MagicMock(return_value="test-bot")
         connector.session_manager.get_session_id = MagicMock(return_value="test-session")
         connector.session_manager.get_bot_name = MagicMock(return_value="Test Bot")
+        connector.session_manager.get_bot_alias_id_for_session = MagicMock(return_value="TESTALIAS")
         
         # Mock audio processor to return silence detected
         connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={

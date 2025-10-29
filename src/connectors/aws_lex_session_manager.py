@@ -34,6 +34,9 @@ class AWSLexSessionManager:
         # Mapping from display names to actual bot IDs
         self._bot_name_to_id_map = {}
         
+        # Mapping from bot IDs to their most recent alias IDs
+        self._bot_alias_map = {}
+        
         # Simple session storage for conversations
         self._sessions = {}
         
@@ -46,6 +49,8 @@ class AWSLexSessionManager:
     def get_available_agents(self, lex_client) -> List[str]:
         """
         Get available virtual agent IDs from AWS Lex.
+        
+        This method discovers bots and their most recent aliases automatically.
 
         Args:
             lex_client: AWS Lex client for bot discovery
@@ -66,16 +71,27 @@ class AWSLexSessionManager:
                 for bot in bots:
                     bot_id = bot['botId']
                     bot_name = bot.get('botName', bot_id)  # Use bot name if available, fallback to ID
-                    display_name = f"aws_lex_connector: {bot_name}"
-
-                    # Store the mapping: display_name -> actual_bot_id
-                    self._bot_name_to_id_map[display_name] = bot_id
-
-                    bot_identifiers.append(display_name)
+                    
+                    # Discover the most recent alias for this bot
+                    alias_id = self._discover_most_recent_alias(lex_client, bot_id, bot_name)
+                    
+                    # Only include bots that have at least one alias
+                    if alias_id:
+                        display_name = f"aws_lex_connector: {bot_name}"
+                        
+                        # Store the mappings
+                        self._bot_name_to_id_map[display_name] = bot_id
+                        self._bot_alias_map[bot_id] = alias_id
+                        
+                        bot_identifiers.append(display_name)
+                        self.logger.debug(f"Bot '{bot_name}' (ID: {bot_id}) will use alias: {alias_id}")
+                    else:
+                        self.logger.warning(f"Skipping bot '{bot_name}' (ID: {bot_id}) - no aliases found")
 
                 self._available_bots = bot_identifiers
-                self.logger.info(f"Found {len(bot_identifiers)} available Lex bots: {bot_identifiers}")
+                self.logger.info(f"Found {len(bot_identifiers)} available Lex bots with aliases: {bot_identifiers}")
                 self.logger.debug(f"Bot mappings: {self._bot_name_to_id_map}")
+                self.logger.debug(f"Bot alias mappings: {self._bot_alias_map}")
 
             except ClientError as e:
                 error_code = e.response['Error']['Code']
@@ -87,6 +103,54 @@ class AWSLexSessionManager:
                 self._available_bots = []
 
         return self._available_bots
+    
+    def _discover_most_recent_alias(self, lex_client, bot_id: str, bot_name: str) -> Optional[str]:
+        """
+        Discover the most recent alias for a bot.
+        
+        Args:
+            lex_client: AWS Lex client
+            bot_id: The bot ID to get aliases for
+            bot_name: The bot name (for logging)
+            
+        Returns:
+            The most recent alias ID, or None if no aliases exist
+        """
+        try:
+            self.logger.debug(f"Fetching aliases for bot '{bot_name}' (ID: {bot_id})")
+            
+            # List all aliases for this bot
+            response = lex_client.list_bot_aliases(botId=bot_id)
+            aliases = response.get('botAliasSummaries', [])
+            
+            if not aliases:
+                self.logger.warning(f"No aliases found for bot '{bot_name}' (ID: {bot_id})")
+                return None
+            
+            # Sort aliases by lastUpdatedDateTime (most recent first)
+            # If lastUpdatedDateTime is not available, fall back to createdDateTime
+            sorted_aliases = sorted(
+                aliases,
+                key=lambda a: a.get('lastUpdatedDateTime', a.get('createdDateTime')),
+                reverse=True
+            )
+            
+            # Get the most recent alias
+            most_recent = sorted_aliases[0]
+            alias_id = most_recent.get('botAliasId')
+            alias_name = most_recent.get('botAliasName', alias_id)
+            
+            self.logger.info(f"Selected most recent alias '{alias_name}' (ID: {alias_id}) for bot '{bot_name}'")
+            return alias_id
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            self.logger.error(f"AWS Lex API error fetching aliases for bot '{bot_name}' ({error_code}): {error_message}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching aliases for bot '{bot_name}': {e}")
+            return None
 
     def create_session(self, conversation_id: str, display_name: str) -> Dict[str, Any]:
         """
@@ -107,23 +171,29 @@ class AWSLexSessionManager:
         if not actual_bot_id:
             raise ValueError(f"Bot not found in mapping: {display_name}. Available bots: {list(self._bot_name_to_id_map.keys())}")
 
+        # Get the bot alias ID for this bot
+        bot_alias_id = self._bot_alias_map.get(actual_bot_id)
+        if not bot_alias_id:
+            raise ValueError(f"No alias found for bot ID: {actual_bot_id}")
+
         # Extract the friendly bot name for display
         bot_name = display_name.split(": ", 1)[1] if ": " in display_name else display_name
 
         # Create a simple session ID for Lex
         session_id = f"session_{conversation_id}"
 
-        # Store session info with both names
+        # Store session info with both names and alias
         session_info = {
             "session_id": session_id,
             "display_name": display_name,      # "aws_lex_connector: Booking"
             "actual_bot_id": actual_bot_id,    # "E7LNGX7D2J"
-            "bot_name": bot_name               # "Booking"
+            "bot_name": bot_name,              # "Booking"
+            "bot_alias_id": bot_alias_id       # "TSTALIASID" or other discovered alias
         }
         
         self._sessions[conversation_id] = session_info
 
-        self.logger.info(f"Started Lex conversation: {conversation_id} with bot: {bot_name} (ID: {actual_bot_id})")
+        self.logger.info(f"Started Lex conversation: {conversation_id} with bot: {bot_name} (ID: {actual_bot_id}, Alias: {bot_alias_id})")
         self.logger.debug(f"Session created: {session_info}")
         
         return session_info
@@ -190,6 +260,31 @@ class AWSLexSessionManager:
         """
         session_info = self._sessions.get(conversation_id)
         return session_info.get("bot_name") if session_info else None
+    
+    def get_bot_alias_id(self, bot_id: str) -> Optional[str]:
+        """
+        Get the bot alias ID for a specific bot.
+
+        Args:
+            bot_id: Bot identifier
+
+        Returns:
+            Bot alias ID or None if not found
+        """
+        return self._bot_alias_map.get(bot_id)
+    
+    def get_bot_alias_id_for_session(self, conversation_id: str) -> Optional[str]:
+        """
+        Get the bot alias ID for a conversation's session.
+
+        Args:
+            conversation_id: Conversation identifier
+
+        Returns:
+            Bot alias ID or None if session not found
+        """
+        session_info = self._sessions.get(conversation_id)
+        return session_info.get("bot_alias_id") if session_info else None
 
     def end_session(self, conversation_id: str, message_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
@@ -330,10 +425,11 @@ class AWSLexSessionManager:
             # Don't raise the exception, continue with conversation
 
     def refresh_bot_cache(self) -> None:
-        """Refresh the cached list of available bots."""
+        """Refresh the cached list of available bots and their aliases."""
         self._available_bots = None
         self._bot_name_to_id_map = {}  # Clear the mapping cache too
-        self.logger.debug("Bot cache cleared, will refresh on next get_available_agents call")
+        self._bot_alias_map = {}  # Clear the alias mapping cache too
+        self.logger.debug("Bot cache and alias mappings cleared, will refresh on next get_available_agents call")
 
     def get_bot_mapping(self, display_name: str) -> Optional[str]:
         """
@@ -404,6 +500,7 @@ class AWSLexSessionManager:
             'session_id': session_info.get('session_id'),
             'bot_id': session_info.get('actual_bot_id'),
             'bot_name': session_info.get('bot_name'),
+            'bot_alias_id': session_info.get('bot_alias_id'),
             'display_name': session_info.get('display_name'),
             'has_start_of_input_tracking': conversation_id in self.conversations_with_start_of_input,
             'has_dtmf_mode_tracking': conversation_id in self.conversations_in_dtmf_mode

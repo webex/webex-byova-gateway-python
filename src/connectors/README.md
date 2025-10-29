@@ -91,6 +91,8 @@ connectors:
 1. AWS account with Lex v2 bots configured
 2. AWS credentials configured (via AWS CLI, environment variables, or IAM roles)
 3. Python packages: `boto3` and `botocore`
+4. IAM permissions: `lex:ListBots`, `lex:ListBotAliases`, `lex:RecognizeUtterance`, `lex:RecognizeText`
+   - See [AWS Lex Configuration Guide](../../docs/AWS_LEX_CONFIGURATION.md#required-aws-iam-permissions) for detailed permission requirements
 
 **Configuration**:
 ```yaml
@@ -101,7 +103,7 @@ connectors:
     module: "connectors.aws_lex_connector"
     config:
       region_name: "us-east-1"  # Your AWS region
-      bot_alias_id: "TSTALIASID"  # Your Lex bot alias
+      # Note: Bot aliases are discovered automatically. The connector uses the most recent alias for each bot.
       aws_access_key_id: "YOUR_DEV_ACCESS_KEY"  # Explicit AWS access key (for dev only)
       aws_secret_access_key: "YOUR_DEV_SECRET_KEY"  # Explicit AWS secret (for dev only)
       initial_trigger_text: "hello"  # Text sent when starting conversation (default: "hello")

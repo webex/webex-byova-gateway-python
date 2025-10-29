@@ -9,10 +9,9 @@ aws_lex_connector:
   # aws_access_key_id: "YOUR_ACCESS_KEY"
   # aws_secret_access_key: "YOUR_SECRET_KEY"
   
-  # Optional: Bot alias ID to use for conversations
-  # Default: "TSTALIASID" (most Lex bots have this by default)
-  # Change this if your bot uses a different alias
-  bot_alias_id: "TSTALIASID"
+  # Note: Bot aliases are discovered automatically. The connector will use
+  # the most recent alias for each bot. WxCC admins select which bot to
+  # route to on the WxCC side.
   
   # Optional: Initial trigger text sent when starting a conversation
   # Default: "hello"
@@ -32,20 +31,17 @@ aws_lex_connector:
 # Development/Testing
 aws_lex_connector_dev:
   region_name: "us-east-1"
-  bot_alias_id: "TSTALIASID"
   initial_trigger_text: "hello"  # Simple greeting for testing
   barge_in_enabled: true  # Enable barge-in for development
 
 # Production
 aws_lex_connector_prod:
   region_name: "us-east-1"
-  bot_alias_id: "PRODALIASID"  # Your production bot alias
   initial_trigger_text: "hello"  # Simple greeting
   barge_in_enabled: false  # Disable barge-in for production (default)
 
-# Custom bot with specific alias
+# Custom bot configuration
 aws_lex_connector_custom:
   region_name: "us-west-2"
-  bot_alias_id: "CUSTOMALIAS"  # Your custom bot alias
   initial_trigger_text: "hi"  # Different greeting for custom bot
   barge_in_enabled: true  # Enable barge-in for custom bot
