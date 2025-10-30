@@ -22,11 +22,13 @@ class AWSLexConnector(IVendorConnector):
     """
     AWS Lex v2 connector for virtual agent integration.
 
-    This connector provides a simple interface to AWS Lex bots using the
-    standard TSTALIASID alias that most Lex bots have by default.
+    This connector provides a simple interface to AWS Lex bots and automatically
+    discovers and uses the most recent alias for each bot.
 
-    Bot Configuration:
-    - bot_alias_id: Bot alias ID to use for conversations (default: TSTALIASID)
+    Bot Selection:
+    - Bot aliases are discovered automatically from AWS Lex
+    - The connector uses the most recent alias for each bot
+    - WxCC admins select which bot to route calls to on the WxCC side
 
     WxCC Audio Requirements:
     - Sample Rate: 8000 Hz (8kHz) - REQUIRED to avoid 5-second delays
@@ -52,12 +54,12 @@ class AWSLexConnector(IVendorConnector):
                 - region_name: AWS region (required)
                 - aws_access_key_id: AWS access key (optional, uses default chain)
                 - aws_secret_access_key: AWS secret key (optional, uses default chain)
-                - bot_alias_id: Bot alias ID to use for conversations (default: TSTALIASID)
                 - audio_logging: Audio logging configuration (optional)
 
-        Note: WxCC requires 8kHz, 8-bit u-law, mono audio to avoid 5-second delays.
-        AWS Lex returns 16kHz, 16-bit PCM, which this connector automatically converts
-        using the shared audio utilities.
+        Note: Bot aliases are discovered automatically. The connector will use the
+        most recent alias for each bot. WxCC requires 8kHz, 8-bit u-law, mono audio
+        to avoid 5-second delays. AWS Lex returns 16kHz, 16-bit PCM, which this
+        connector automatically converts using the shared audio utilities.
         """
         # Set up logging first
         self.logger = logging.getLogger(__name__)
@@ -67,7 +69,6 @@ class AWSLexConnector(IVendorConnector):
 
         # Extract commonly used configuration values for efficiency
         self.region_name = self.config_manager.get_region_name()
-        self.bot_alias_id = self.config_manager.get_bot_alias_id()
         self.locale_id = self.config_manager.get_locale_id()
         self.text_request_content_type = self.config_manager.get_text_request_content_type()
         self.audio_request_content_type = self.config_manager.get_audio_request_content_type()
@@ -150,8 +151,9 @@ class AWSLexConnector(IVendorConnector):
             actual_bot_id = session_info["actual_bot_id"]
             bot_name = session_info["bot_name"]
             session_id = session_info["session_id"]
+            bot_alias_id = session_info["bot_alias_id"]
 
-            self.logger.debug(f"Using bot alias: {self.bot_alias_id}")
+            self.logger.debug(f"Using bot alias: {bot_alias_id} for bot: {bot_name}")
 
             # Send initial text to Lex and get audio response
             try:
@@ -165,7 +167,7 @@ class AWSLexConnector(IVendorConnector):
 
                 response = self.lex_runtime.recognize_utterance(
                     botId=actual_bot_id,
-                    botAliasId=self.bot_alias_id,
+                    botAliasId=bot_alias_id,
                     localeId=self.locale_id,
                     sessionId=session_id,
                     requestContentType=self.text_request_content_type,
@@ -478,9 +480,10 @@ class AWSLexConnector(IVendorConnector):
             # Get session details
             bot_id = self.session_manager.get_bot_id(conversation_id)
             session_id = self.session_manager.get_session_id(conversation_id)
+            bot_alias_id = self.session_manager.get_bot_alias_id_for_session(conversation_id)
             
             # Log session details for debugging
-            self.logger.debug(f"Session details for conversation {conversation_id}: bot_id={bot_id}, session_id={session_id}")
+            self.logger.debug(f"Session details for conversation {conversation_id}: bot_id={bot_id}, session_id={session_id}, bot_alias_id={bot_alias_id}")
             
             # Validate session details
             if not session_id:
@@ -489,17 +492,20 @@ class AWSLexConnector(IVendorConnector):
             if not bot_id:
                 self.logger.error(f"No bot ID found for conversation {conversation_id}")
                 return self.error_handler.create_session_error_response(conversation_id, ErrorContext.SESSION_NO_SESSION)
+            if not bot_alias_id:
+                self.logger.error(f"No bot alias ID found for conversation {conversation_id}")
+                return self.error_handler.create_session_error_response(conversation_id, ErrorContext.SESSION_NO_SESSION)
 
             # Send text to AWS Lex using recognize_utterance
             try:
                 # Convert text to bytes for the request
                 text_bytes = text_input.encode('utf-8')
                 
-                self.logger.debug(f"Sending text to AWS Lex: botId={bot_id}, botAliasId={self.bot_alias_id}, localeId={self.locale_id}, sessionId={session_id}, text='{text_input}'")
+                self.logger.debug(f"Sending text to AWS Lex: botId={bot_id}, botAliasId={bot_alias_id}, localeId={self.locale_id}, sessionId={session_id}, text='{text_input}'")
 
                 response = self.lex_runtime.recognize_utterance(
                     botId=bot_id,
-                    botAliasId=self.bot_alias_id,
+                    botAliasId=bot_alias_id,
                     localeId=self.locale_id,
                     sessionId=session_id,
                     requestContentType=self.text_request_content_type,
@@ -661,9 +667,10 @@ class AWSLexConnector(IVendorConnector):
             # Extract session details
             bot_id = self.session_manager.get_bot_id(conversation_id)
             session_id = self.session_manager.get_session_id(conversation_id)
+            bot_alias_id = self.session_manager.get_bot_alias_id_for_session(conversation_id)
             
             # Log session details for debugging
-            self.logger.debug(f"Session details for conversation {conversation_id}: bot_id={bot_id}, session_id={session_id}")
+            self.logger.debug(f"Session details for conversation {conversation_id}: bot_id={bot_id}, session_id={session_id}, bot_alias_id={bot_alias_id}")
             
             # Validate session details
             if not session_id:
@@ -671,6 +678,9 @@ class AWSLexConnector(IVendorConnector):
                 return
             if not bot_id:
                 self.logger.error(f"No bot ID found for conversation {conversation_id}")
+                return
+            if not bot_alias_id:
+                self.logger.error(f"No bot alias ID found for conversation {conversation_id}")
                 return
 
             # Send audio to AWS Lex
@@ -681,11 +691,11 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.debug(f"Converted {len(buffered_audio)} bytes u-law to {len(pcm_audio)} bytes 16-bit PCM at 16kHz")
 
                 # Log the parameters being sent to AWS Lex for debugging
-                self.logger.debug(f"Sending to AWS Lex: botId={bot_id}, botAliasId={self.bot_alias_id}, localeId={self.locale_id}, sessionId={session_id}")
+                self.logger.debug(f"Sending to AWS Lex: botId={bot_id}, botAliasId={bot_alias_id}, localeId={self.locale_id}, sessionId={session_id}")
 
                 response = self.lex_runtime.recognize_utterance(
                     botId=bot_id,
-                    botAliasId=self.bot_alias_id,
+                    botAliasId=bot_alias_id,
                     localeId=self.locale_id,
                     sessionId=session_id,
                     requestContentType=self.audio_request_content_type,  # 16-bit PCM, 16kHz, little-endian

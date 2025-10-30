@@ -29,7 +29,6 @@ connectors:
     module: "connectors.aws_lex_connector"
     config:
       region_name: "us-east-1"
-      bot_alias_id: "TSTALIASID"
       
       # Initial trigger text sent when starting a conversation (default: "hello")
       # For Bedrock agents, use a simple greeting rather than a specific request

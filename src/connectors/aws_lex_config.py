@@ -19,7 +19,6 @@ class AWSLexConfig:
     """
 
     # Default configuration values
-    DEFAULT_BOT_ALIAS_ID = "TSTALIASID"
     DEFAULT_LOCALE_ID = "en_US"
     DEFAULT_TEXT_REQUEST_CONTENT_TYPE = "text/plain; charset=utf-8"
     DEFAULT_AUDIO_REQUEST_CONTENT_TYPE = "audio/l16; rate=16000; channels=1"
@@ -79,9 +78,6 @@ class AWSLexConfig:
             # Process AWS credentials (optional)
             self._validated_config["aws_access_key_id"] = self._config.get("aws_access_key_id")
             self._validated_config["aws_secret_access_key"] = self._config.get("aws_secret_access_key")
-            
-            # Process bot alias ID
-            self._validated_config["bot_alias_id"] = self._config.get("bot_alias_id", self.DEFAULT_BOT_ALIAS_ID)
             
             # Process locale ID
             self._validated_config["locale_id"] = self._config.get("locale_id", self.DEFAULT_LOCALE_ID)
@@ -158,15 +154,6 @@ class AWSLexConfig:
             "aws_access_key_id": self._validated_config["aws_access_key_id"],
             "aws_secret_access_key": self._validated_config["aws_secret_access_key"]
         }
-
-    def get_bot_alias_id(self) -> str:
-        """
-        Get the bot alias ID.
-        
-        Returns:
-            Bot alias ID
-        """
-        return self._validated_config["bot_alias_id"]
 
     def get_locale_id(self) -> str:
         """
@@ -287,7 +274,6 @@ class AWSLexConfig:
         """
         summary_parts = [
             f"region: {self.get_region_name()}",
-            f"bot_alias: {self.get_bot_alias_id()}",
             f"locale: {self.get_locale_id()}",
             f"barge_in: {'enabled' if self.is_barge_in_enabled() else 'disabled'}",
             f"audio_logging: {'enabled' if self.is_audio_logging_enabled() else 'disabled'}",
@@ -329,9 +315,6 @@ class AWSLexConfig:
         # Check for environment variables
         if os.getenv("AWS_LEX_REGION"):
             env_config["region_name"] = os.getenv("AWS_LEX_REGION")
-            
-        if os.getenv("AWS_LEX_BOT_ALIAS_ID"):
-            env_config["bot_alias_id"] = os.getenv("AWS_LEX_BOT_ALIAS_ID")
             
         if os.getenv("AWS_LEX_LOCALE_ID"):
             env_config["locale_id"] = os.getenv("AWS_LEX_LOCALE_ID")
