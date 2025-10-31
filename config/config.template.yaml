@@ -1,10 +1,11 @@
-# Webex Contact Center BYOVA Gateway Configuration
-# This is the actual configuration file for local development
+# Webex Contact Center BYOVA Gateway Configuration Template
+# This template supports environment variable substitution
+# Use this for production deployments
 
 # Gateway settings
 gateway:
-  host: "0.0.0.0"
-  port: 50051
+  host: "${GATEWAY_HOST:-0.0.0.0}"
+  port: ${GATEWAY_PORT:-50051}
 
 # Connectors configuration
 connectors:
@@ -29,13 +30,10 @@ connectors:
     class: "AWSLexConnector"
     module: "connectors.aws_lex_connector"
     config:
-      region_name: "us-east-1"
-      
-      # Initial trigger text sent when starting a conversation (default: "hello")
-      # For Bedrock agents, use a simple greeting rather than a specific request
-      # to avoid triggering function calls before the agent is ready
-      initial_trigger_text: "hello"
-      locale: "en_US"
+      region_name: "${AWS_REGION:-us-east-1}"
+      bot_alias_id: "${AWS_LEX_BOT_ALIAS_ID:-TSTALIASID}"
+      bot_name: "${AWS_LEX_BOT_NAME:-}"
+      locale: "${AWS_LEX_LOCALE:-en_US}"
       
       # Barge-in configuration (default: false)
       # When enabled, users can interrupt the bot's response
@@ -44,7 +42,7 @@ connectors:
       # Audio logging configuration
       audio_logging:
         enabled: true
-        output_dir: "logs/audio_recordings"
+        output_dir: "/app/logs/audio_recordings"
         filename_format: "{conversation_id}_{timestamp}_{source}.wav"
         log_all_audio: true
         max_file_size: 10485760
@@ -57,24 +55,24 @@ connectors:
 # Monitoring interface
 monitoring:
   enabled: true
-  host: "0.0.0.0"
-  port: 8080
+  host: "${MONITORING_HOST:-0.0.0.0}"
+  port: ${MONITORING_PORT:-8080}
   metrics_enabled: true
   health_check_interval: 30
 
 # Logging configuration
 logging:
   gateway:
-    level: "INFO"
+    level: "${LOG_LEVEL:-INFO}"
     format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    file: "logs/gateway.log"
+    file: "/app/logs/gateway.log"
     max_size: "10MB"
     backup_count: 5
   
   web:
     level: "WARNING"
     format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    file: "logs/web.log"
+    file: "/app/logs/web.log"
     max_size: "5MB"
     backup_count: 3
 
@@ -93,3 +91,8 @@ audio:
     - "mp3"
     - "flac"
     - "ogg"
+
+
+
+
+
