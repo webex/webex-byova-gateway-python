@@ -4,12 +4,12 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "512",
   "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::<YOUR_ACCOUNT_ID>:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::<YOUR_ACCOUNT_ID>:role/BYOVAGatewayTaskRole",
+  "executionRoleArn": "arn:aws:iam::865377665177:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::865377665177:role/BYOVAGatewayTaskRole",
   "containerDefinitions": [
     {
       "name": "byova-gateway",
-      "image": "<YOUR_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/byova-gateway:latest",
+      "image": "865377665177.dkr.ecr.us-east-1.amazonaws.com/byova-gateway:latest",
       "portMappings": [
         {
           "containerPort": 50051,

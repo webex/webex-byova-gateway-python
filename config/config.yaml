@@ -34,7 +34,7 @@ connectors:
       # Initial trigger text sent when starting a conversation (default: "hello")
       # For Bedrock agents, use a simple greeting rather than a specific request
       # to avoid triggering function calls before the agent is ready
-      initial_trigger_text: "hello"
+      initial_trigger_text: "Book a hotel"
       locale: "en_US"
       
       # Barge-in configuration (default: false)
