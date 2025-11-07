@@ -15,15 +15,14 @@ date: 2025-09-10
 
 1. [Introduction](#introduction)
 2. [Prerequisites](#prerequisites)
-3. [Step 1: Setting Up Your Webex Contact Center Sandbox](#step-1-setting-up-your-webex-contact-center-sandbox)
-4. [Step 2: Configuring BYOVA and BYODS](#step-2-configuring-byova-and-byods)
-5. [Step 3: Testing with Local Audio Connector](#step-3-testing-with-local-audio-connector)
-6. [Step 4: Setting Up AWS Lex](#step-4-setting-up-aws-lex)
-7. [Step 5: Configuring the BYOVA Gateway](#step-5-configuring-the-byova-gateway)
-8. [Step 6: Testing Your Integration](#step-6-testing-your-integration)
-9. [Troubleshooting](#troubleshooting)
-10. [Next Steps](#next-steps)
-11. [Conclusion](#conclusion)
+3. [Step 1: Setting Up AWS Lex](#step-1-setting-up-aws-lex)
+4. [Step 2: Configuring the BYOVA Gateway](#step-2-configuring-the-byova-gateway)
+5. [Step 3: Setting Up Your Webex Contact Center Sandbox](#step-3-setting-up-your-webex-contact-center-sandbox)
+6. [Step 4: Configuring BYOVA and BYODS](#step-4-configuring-byova-and-byods)
+7. [Step 5: Testing Your Integration](#step-5-testing-your-integration)
+8. [Troubleshooting](#troubleshooting)
+9. [Next Steps](#next-steps)
+10. [Conclusion](#conclusion)
 
 ---
 
@@ -47,12 +46,19 @@ A fully functional voice AI system where customers can call your contact center,
 
 Before starting, ensure you have:
 
-- **Webex Account**: A free Webex account (create one at [webex.com](https://webex.com) if needed)
+- **Webex Account**: A Webex account (create one at [webex.com](https://webex.com) if needed)
 - **AWS Account**: An active AWS account with appropriate permissions
 - **Development Environment**: 
   - Python 3.8 or higher
   - Git
   - Terminal/Command Prompt access
+- **Gateway Hosting**: Plan how you will publicly host the BYOVA Gateway:
+  - **For Testing**: Use [ngrok](https://ngrok.com) (free tier available) or similar tunneling service to expose your local gateway
+  - **For Production**: Prepare a public IP address or domain name where you'll deploy the gateway
+    - Cloud hosting (AWS EC2, Azure VM, Google Cloud, etc.)
+    - On-premises server with public IP
+    - Container orchestration platform (Kubernetes, ECS, etc.)
+  - **Note**: You'll need this domain/IP information in Step 2 when creating the Service App and registering the data source
 - **Basic Knowledge**: Familiarity with:
   - Webex Contact Center concepts
   - AWS services (Lex, IAM)
@@ -61,315 +67,14 @@ Before starting, ensure you have:
 
 ---
 
-## Step 1: Setting Up Your Webex Contact Center Sandbox
+## Step 1: Setting Up AWS Lex
 
-### 1.1 Request a Sandbox
+### 1.1 Sign in to your AWS account
 
-1. **Sign in to Webex Developer Portal**
-   - Go to [developer.webex.com](https://developer.webex.com)
-   - Sign in with your Webex account
+1. Sign in to the AWS Management Console and open the Amazon Lex console at https://console.aws.amazon.com.
 
-2. **Navigate to Contact Center Sandbox**
-   - Go to [Contact Center Sandbox](https://developer.webex.com/create/docs/sandbox_cc)
-   - Click **"Request a Sandbox"**
 
-3. **Complete the Request Process**
-   - Read and accept the Terms and Conditions
-   - Check "By creating this app, I accept the Terms of Service"
-   - Click **"Request a Sandbox"**
-
-4. **Wait for Provisioning**
-   - Sandbox creation takes up to 15 minutes
-   - You'll receive several emails with account details
-   - **Save the final provisioning email** - it contains critical information
-
-### 1.2 Access Your Sandbox
-
-Your provisioning email will contain:
-
-**Administrator Account:**
-- **Username**: `admin@xxxxxx-xxxx.wbx.ai`
-- **Password**: `********`
-- **Webex Site URL**: `xxxxxx-xxxx.webex.com`
-
-**Agent Accounts:**
-- **Premium Agent**: `user1@xxxxxx-xxxx.wbx.ai` (Extension: 1001)
-- **Supervisor Agent**: `user2@xxxxxx-xxxx.wbx.ai` (Extension: 1002)
-
-**Phone Numbers:**
-- **Main PSTN Number**: `+1nnnnnnnnnn` (for Webex calling)
-- **Entrypoint Number**: `+1nnnnnnnnnn` (for Contact Center)
-
-### 1.3 Access the Administrator Portal
-
-1. **Open a Private/Incognito Browser Window**
-   - Chrome: `Ctrl+Shift+N` (Windows) or `Cmd+Shift+N` (Mac)
-   - Firefox: `Ctrl+Shift+P` (Windows) or `Cmd+Shift+P` (Mac)
-
-2. **Navigate to the Administrator Portal**
-   - Go to [https://admin.webex.com](https://admin.webex.com)
-   - Enter your administrator email and password from the provisioning email
-
-3. **Verify Access**
-   - You should see the Webex Contact Center Administrator Portal
-   - Note the site configuration and available features
-
----
-
-## Step 2: Configuring BYOVA and BYODS
-
-### 2.1 Understanding BYOVA and BYODS
-
-- **BYOVA (Bring Your Own Virtual Agent)**: Allows you to integrate external AI services as virtual agents
-- **BYODS (Bring Your Own Data Source)**: Enables integration with external data sources for enhanced AI capabilities
-  - BYOVA builds on top of the BYODS framework
-  - Provides secure, standardized data exchange between Webex and third-party providers
-  - Uses JWS (JSON Web Signature) tokens for authentication
-  - Requires Service App creation and admin authorization
-
-**Important**: BYOVA requires BYODS setup first, as the virtual agent configuration depends on having a registered data source.
-
-### 2.2 Create a Service App for BYODS
-
-Before configuring BYOVA, we need to set up a Service App for data source integration, as BYOVA builds on top of the BYODS (Bring Your Own Data Source) framework.
-
-1. **Navigate to Webex Developer Portal**
-   - Go to [developer.webex.com](https://developer.webex.com)
-   - Sign in with your Webex account
-
-2. **Create a New Service App**
-   - Go to **My Apps** → **Create a New App**
-   - Choose **Service App** as the application type
-
-3. **Configure the Service App**
-   - **Name**: `BYOVA Gateway Service App` (or your preferred name)
-   - **Scopes**: Ensure you select:
-     - `spark-admin:datasource_read`
-     - `spark-admin:datasource_write`
-   - **Domains**: Specify your gateway domain (e.g., `your-domain.com` or `ngrok-free.app`)
-     - Avoid registering ports in the domain - all ports will be accepted later
-   - **Data Exchange Schema**: Select `VA_service_schema` for voice virtual agent interactions
-     - This schema (ID: `5397013b-7920-4ffc-807c-e8a3e0a18f43`) is specifically designed for voice virtual agent services
-     - Reference: [VoiceVirtualAgent Schema](https://github.com/webex/dataSourceSchemas/tree/v1.10/Services/VoiceVirtualAgent/5397013b-7920-4ffc-807c-e8a3e0a18f43)
-   
-   - Complete any other required information
-
-4. **Save the Service App Client ID and Client Secret**
-   - Under **Authentication**, locate the **Client ID** and **Client Secret**
-   - Save these credentials for later use
-
-5. **Submit for Admin Approval**
-   - In your sandbox, select **"Request Admin Approval"**
-   - This makes the Service App visible in Control Hub for admin authorization
-
-### 2.3 Register Your Data Source
-
-1. **Get Admin Authorization**
-   - In Control Hub (admin.webex.com), navigate to **Apps** → **Service Apps**
-   - Find your Service App and click **"Authorize"**
-   - This generates org-specific access and refresh tokens
-
-2. **Get Service App Token**
-   - After admin approval, return to [developer.webex.com](https://developer.webex.com)
-   - Go to **My Apps** and select your Service App
-   - Under **Org Authorizations**, locate your org in the list and select it
-   - Paste the **Client Secret** from step 1 into the **Client Secret** field and click **"Generate Tokens"**
-   - Save the returned `access_token` - you'll need it to register your data source
-   - Note: Tokens expire and will need to be refreshed using the refresh token provided
-
-3. **Register the Data Source**
-   - Use the access token from step 1 to register your data source
-   - Make a POST request to `/v1/datasources` with the following payload:
-   - **API Reference**: [Register a Data Source](https://developer.webex.com/admin/docs/api/v1/data-sources/register-a-data-source)
-
-   ```json
-   {
-     "schemaId": "5397013b-7920-4ffc-807c-e8a3e0a18f43",
-     "url": "https://your-gateway-ip:50051",
-     "audience": "BYOVAGateway",
-     "subject": "callAudioData",
-     "nonce": "123456",
-     "tokenLifetimeMinutes": "1440"
-   }
-   ```
-
-   - Save the data source ID for later use
-
-**Reference**: For detailed BYODS setup instructions, see the [Bring Your Own Data Source documentation](https://developer.webex.com/create/docs/bring-your-own-datasource).
-
-### 2.4 Configure BYOVA Virtual Agent
-
-1. **Navigate to Virtual Agents**
-   - In Control Hub, go to **Contact Center** → **Integrations** → **Features**
-   - Click **"Create Feature"**
-
-2. **Configure Virtual Agent Settings**
-   - **Name**: `AWS Lex Virtual Agent`
-   - **Type of Connector**: Select **"Service App"**
-   - **Authorized Service App**: Select your Service App from step 2.2
-   - **Resource Identifier**: Enter the data source ID you saved in step 2.3
-   - Click **"Create"**
-
-### 2.5 Import the BYOVA Flow Template
-
-1. **Navigate to Control Hub**
-   - Go to [https://admin.webex.com/login](https://admin.webex.com/login)
-   - Sign in with your administrator credentials from the provisioning email
-
-2. **Access Contact Center Flows**
-   - In Control Hub, navigate to **Contact Center**
-   - Click on **Flows**
-   - Select **Manage Flows**
-   - Click **Import Flow**
-
-   **Reference**: For detailed information about Flow Designer and flow management, see the [Build and manage flows with Flow Designer documentation](https://help.webex.com/en-us/article/nhovcy4/Build-and-manage-flows-with-Flow-Designer#Cisco_Task.dita_0e76fcdd-29a3-47c3-8544-f6613dfeb8f0).
-
-3. **Import the BYOVA Flow Template**
-   - Download the `BYOVA_Gateway_Flow.json` file from the gateway repository (located in the project root)
-   - In the import dialog, choose the `BYOVA_Gateway_Flow.json` file
-   - The flow will be imported with the name "BYOVA"
-
-4. **Configure the Virtual Agent**
-   - In the imported flow, locate the **VirtualAgentV2_q2c** activity
-   - Click on the activity to open its properties
-   - Update the **Virtual Agent** selection:
-     - **Connector Name**: Select your BYOVA connector (e.g., "AWS Lex Connector")
-     - **Virtual Agent ID**: Select your configured virtual agent
-   - Save the activity configuration
-
-5. **Review Flow Structure**
-   The imported flow includes:
-   - **Start**: Entry point for calls
-   - **Virtual Agent**: Routes to your BYOVA virtual agent
-   - **Decision Logic**: Handles agent disconnection and transfer scenarios
-   - **Play Message**: Provides feedback to callers
-   - **End**: Terminates the call
-
-6. **Save and Activate the Flow**
-   - Save your flow configuration
-   - Activate the flow for testing
-
-### 2.6 Assign Flow to Entry Point
-
-1. **Navigate to Channels**
-   - In Control Hub, go to **Contact Center** → **Channels**
-   - Select **Entry Point 1** (or your configured entry point)
-
-2. **Configure Entry Point Routing**
-   - In the Entry Point 1 configuration, locate the **Routing Flow** setting
-   - Change the routing flow from the default to your **BYOVA** flow
-   - Save the configuration
-
-3. **Verify Assignment**
-   - Confirm that Entry Point 1 is now using the BYOVA flow
-   - The entry point will now route calls through your virtual agent integration
-
----
-
-## Step 3: Testing with Local Audio Connector
-
-Before setting up AWS Lex, let's test the BYOVA integration using the local audio connector. This allows you to verify that your BYOVA configuration is working correctly with pre-recorded audio files.
-
-### 3.1 Configure the Local Audio Connector
-
-1. **Update Gateway Configuration**
-   - Edit `config/config.yaml` to ensure the local audio connector is enabled
-   - The local connector should already be configured by default:
-
-   ```yaml
-   connectors:
-     local_audio_connector:
-       type: "local_audio_connector"
-       class: "LocalAudioConnector"
-       module: "connectors.local_audio_connector"
-       config:
-         audio_files:
-           welcome: "welcome.wav"
-           transfer: "transferring.wav"
-           goodbye: "goodbye.wav"
-           error: "error.wav"
-           default: "default_response.wav"
-         agents:
-           - "Local Playback"
-   ```
-
-2. **Prepare Audio Files**
-   - Ensure audio files are in the `audio/` directory
-   - Default files should already be present:
-     - `welcome.wav` - Welcome message
-     - `default_response.wav` - Response messages
-     - `goodbye.wav` - Goodbye message
-     - `transferring.wav` - Transfer message
-     - `error.wav` - Error message
-
-### 3.2 Start the Gateway
-
-1. **Activate Virtual Environment**
-   ```bash
-   source venv/bin/activate
-   ```
-
-2. **Start the Gateway**
-   ```bash
-   python main.py
-   ```
-
-3. **Verify Startup**
-   - Check that both gRPC server (port 50051) and web interface (port 8080) are running
-   - Access the monitoring interface at `http://localhost:8080`
-
-### 3.3 Test the Local Connector
-
-1. **Make a Test Call**
-   - Call the entrypoint number from your sandbox provisioning email
-   - You should hear the welcome message from the local audio connector
-
-2. **Verify Audio Playback**
-   - The local connector will play the configured audio files
-   - Check the monitoring interface for active connections
-   - Review logs to ensure proper audio file playback
-
-3. **Test Flow Integration**
-   - Verify the call flows through your imported BYOVA flow
-   - Test different scenarios (welcome, responses, goodbye)
-   - Ensure proper call termination
-
-### 3.4 Troubleshoot Local Connector Issues
-
-**Common Issues:**
-- **No Audio**: Check that audio files exist in the `audio/` directory
-- **Wrong Audio**: Verify audio file names match the configuration
-- **Connection Issues**: Ensure the gateway is accessible from Webex Contact Center
-
-**Debug Commands:**
-```bash
-# Check gateway status
-curl http://localhost:8080/api/status
-
-# View available agents
-curl http://localhost:8080/api/agents
-
-# Check active connections
-curl http://localhost:8080/api/connections
-```
-
-Once the local connector is working correctly, you can proceed to set up AWS Lex for more sophisticated voice AI interactions.
-
----
-
-## Step 4: Setting Up AWS Lex
-
-### 4.1 Create a AWS account
-
-If you already have an AWS account, skip this step. If you don't have an AWS account, use the following procedure to create one.
-
-1. Open https://portal.aws.amazon.com/billing/signup.
-
-2. Follow the online instructions. Part of the sign-up procedure involves receiving a phone call or text message and entering a verification code on the phone keypad.
-
-   When you sign up for an AWS account, an AWS account root user is created. The root user has access to all AWS services and resources in the account. As a security best practice, assign administrative access to a user, and use only the root user to perform tasks that require root user access.
-
-### 4.2 Create Your AWS Lex Bot
+### 1.2 Create Your AWS Lex Bot
 
 You can create a bot with Amazon Lex V2 in multiple ways. If you want to learn more about all the ways, refer to [this](https://docs.aws.amazon.com/lexv2/latest/dg/create-bot.html) guide.
 
@@ -391,7 +96,7 @@ If you would like to use generative AI to optimize LexV2 bot creation and perfor
 
 If you wish to use AWS Bedrock Agents with a custom knowledge base—as part of your autonomous bot workflow, here are some guides that can help you [setup agents](https://docs.aws.amazon.com/bedrock/latest/userguide/agents.html) and [knowledge base](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base-create.html)
 
-### 4.3 Lex Bot Configuration & Testing
+### 1.3 Lex Bot Configuration & Testing
 
 Once you have successfully created the Lex bot following the documentations provided above, please make sure to add Agent Intent to your bot.
 
@@ -403,7 +108,7 @@ Once you have successfully created the Lex bot following the documentations prov
 4. Choose **Add intent**, give your intent a name, and then choose **Add**.
 5. Add **Sample Utterances**
 
-   ```
+   ```text
    Agent
    Can I talk to an agent
    Can I talk to a person
@@ -415,17 +120,17 @@ Once you have successfully created the Lex bot following the documentations prov
 
 6. Set up **Fulfillment** response<br/>
    - On successful fulfillment
-     ```
+     ```text
      Okay, transferring you to a human agent.
      ```
    - In case of failure
-     ```
+     ```text
      I'm sorry, but I couldn't connect you to a human agent. Please try again.
      ```
 
 After creation, test your bot inside the AWS Lex UI and ensure that all basic and agent-related intents work as expected.
 
-### 4.4 Collect Lex Bot Identifiers
+### 1.4 Collect Lex Bot Identifiers
 
 Once your bot is ready, note the following identifiers:
 
@@ -436,66 +141,16 @@ Once your bot is ready, note the following identifiers:
 
 You will enter these into your Webex Lex connector configuration.
 
-### 4.5 IAM Policy and Permissions
+### 1.5 IAM Policy and Permissions
 
-The AWS Lex connector requires specific IAM permissions to discover bots, retrieve aliases, and process conversations. You have two options:
+To allow Lex and its integrations to function, attach these managed policies to your IAM user:
 
-#### Option 1: Use Managed Policy (Easiest)
+- AmazonLexFullAccess
+- AmazonPollyReadOnlyAccess (required for text-to-speech features)​
 
-Attach these managed policies to your IAM user or role:
+For Bedrock/advanced integrations, you may to add extra policies. Please refer to this [documentation](https://docs.aws.amazon.com/lexv2/latest/dg/bedrock-agent-intent-permissions.html) to learn more.
 
-- **AmazonLexFullAccess** - Provides all necessary Lex permissions
-- **AmazonPollyReadOnlyAccess** - Required for text-to-speech features (optional)
-
-#### Option 2: Use Custom Policy (Recommended for Production)
-
-For tighter security control, create a custom IAM policy with only the required permissions:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "lex:ListBots",
-        "lex:ListBotAliases",
-        "lex:RecognizeUtterance",
-        "lex:RecognizeText"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-**Required Permissions Explained:**
-
-- `lex:ListBots` - Allows the connector to discover available bots in your AWS account
-- `lex:ListBotAliases` - **Required for automatic bot alias discovery** (new feature)
-- `lex:RecognizeUtterance` - Allows sending audio/text to bots and receiving responses
-- `lex:RecognizeText` - Allows text-based interactions with bots
-
-**Optional Permissions:**
-
-If you're using Polly for text-to-speech features, add:
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "polly:SynthesizeSpeech"
-  ],
-  "Resource": "*"
-}
-```
-
-**For Bedrock/Advanced Integrations:**
-
-If your Lex bot uses Amazon Bedrock agents, you may need additional policies. Refer to [AWS Bedrock Agent Permissions Documentation](https://docs.aws.amazon.com/lexv2/latest/dg/bedrock-agent-intent-permissions.html) for details.
-
-**Note:** The connector automatically discovers bot aliases. If you encounter permission errors during bot discovery, ensure your IAM user/role has the `lex:ListBotAliases` permission.
-
-### 4.6 Create access keys
+### 1.6 Create access keys
 
 1. Use your AWS account ID or account alias, your IAM user name, and your password to sign in to the [IAM console](https://console.aws.amazon.com/iam).
 
@@ -513,13 +168,13 @@ Please save this Access Key and Secret Access Key very safely.
 
 ---
 
-## Step 5: Configuring the BYOVA Gateway
+## Step 2: Configuring the BYOVA Gateway
 
-### 5.1 Clone and Set Up the Gateway
+### 2.1 Clone and Set Up the Gateway
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/your-org/webex-byova-gateway-python.git
+   git clone https://github.com/webex/webex-byova-gateway-python.git
    cd webex-byova-gateway-python
    ```
 
@@ -548,7 +203,7 @@ Please save this Access Key and Secret Access Key very safely.
    python -m grpc_tools.protoc -I./proto --python_out=src/generated --grpc_python_out=src/generated proto/*.proto
    ```
 
-### 5.2 Configure AWS Lex Connector
+### 2.2 Configure AWS Lex Connector
 
 1. **Set AWS Credentials**
    ```bash
@@ -579,12 +234,14 @@ Please save this Access Key and Secret Access Key very safely.
        type: "aws_lex_connector"
        class: "AWSLexConnector"
        module: "connectors.aws_lex_connector"
-      config:
-        region_name: "us-east-1"  # Your AWS region
-        # Note: Bot aliases are discovered automatically. The connector uses the most recent alias for each bot.
-        initial_trigger_text: "hello"  # Text sent when starting conversation
-        barge_in_enabled: false
-        audio_logging:
+       config:
+         region_name: "us-east-1"  # Your AWS region
+         # Initial trigger text sent when starting a conversation (default: "hello")
+         # For Bedrock agents, use a simple greeting rather than a specific request
+         # to avoid triggering function calls before the agent is ready
+         initial_trigger_text: "hello"
+         barge_in_enabled: false
+         audio_logging:
            enabled: true
            output_dir: "logs/audio_recordings"
            filename_format: "{conversation_id}_{timestamp}_{source}.wav"
@@ -597,26 +254,7 @@ Please save this Access Key and Secret Access Key very safely.
          agents: []
    ```
 
-### 5.3 Configure Network Access
-
-1. **Determine Your Gateway's IP Address**
-   ```bash
-   # On macOS/Linux:
-   ifconfig | grep "inet " | grep -v 127.0.0.1
-   
-   # On Windows:
-   ipconfig
-   ```
-
-2. **Update Webex Contact Center Configuration**
-   - In the Administrator Portal, update your virtual agent endpoint
-   - Use: `http://your-gateway-ip:50051`
-
-3. **Configure Firewall (if needed)**
-   - Ensure port 50051 is accessible from Webex Contact Center
-   - For testing, you may need to configure port forwarding
-
-### 5.4 Start the Gateway
+### 2.3 Start the Gateway
 
 1. **Start the Server**
    ```bash
@@ -642,9 +280,251 @@ Please save this Access Key and Secret Access Key very safely.
 
 ---
 
-## Step 6: Testing Your Integration
+## Step 3: Setting Up Your Webex Contact Center Sandbox
 
-### 6.1 Set Up Agent Desktop
+### 3.1 Request a Sandbox
+
+1. **Sign in to Webex Developer Portal**
+   - Go to [developer.webex.com](https://developer.webex.com)
+   - Sign in with your Webex account
+
+2. **Navigate to Contact Center Sandbox**
+   - Go to [Contact Center Sandbox](/create/docs/sandbox_cc)
+   - Click **"Request a Sandbox"**
+
+3. **Complete the Request Process**
+   - Read and accept the Terms and Conditions
+   - Check "By creating this app, I accept the Terms of Service"
+   - Click **"Request a Sandbox"**
+
+4. **Wait for Provisioning**
+   - Sandbox creation takes up to 15 minutes
+   - You'll receive several emails with account details
+   - **Save the final provisioning email** - it contains critical information
+
+### 3.2 Access Your Sandbox
+
+Your provisioning email will contain:
+
+**Administrator Account:**
+- **Username**: `admin@xxxxxx-xxxx.wbx.ai`
+- **Password**: `********`
+- **Webex Site URL**: `xxxxxx-xxxx.webex.com`
+
+**Agent Accounts:**
+- **Premium Agent**: `user1@xxxxxx-xxxx.wbx.ai` (Extension: 1001)
+- **Supervisor Agent**: `user2@xxxxxx-xxxx.wbx.ai` (Extension: 1002)
+
+**Phone Numbers:**
+- **Main PSTN Number**: `+1nnnnnnnnnn` (for Webex calling)
+- **Entrypoint Number**: `+1nnnnnnnnnn` (for Contact Center)
+
+### 3.3 Access the Administrator Portal
+
+1. **Open a Private/Incognito Browser Window**
+   - Chrome: `Ctrl+Shift+N` (Windows) or `Cmd+Shift+N` (Mac)
+   - Firefox: `Ctrl+Shift+P` (Windows) or `Cmd+Shift+P` (Mac)
+
+2. **Navigate to the Administrator Portal**
+   - Go to [https://admin.webex.com](https://admin.webex.com)
+   - Enter your administrator email and password from the provisioning email
+
+3. **Verify Access**
+   - You should see the Webex Contact Center Administrator Portal
+   - Note the site configuration and available features
+
+### 3.4 Request the BYOVA Feature for your Sandbox
+
+**NOTE:** Service apps created for "Voice Virtual Agent" will be disabled unless there is an active BYO Virtual Agent Subscription in a production organization. To request access for Voice Virtual Agent apps in Sandboxes, Gold Tenants, and EFT orgs, please reach out to [Developer Support](https://developer.webex.com/explore/support). Here are the steps to do so:
+
+1. **Copy your Organization ID**
+   - In the Administrator Portal, navigate to **Settings** → **Organization**
+   - Copy the Organization ID
+
+2. **Submit a Developer Support Ticket**
+   - Go to the [Webex Developer Support](/support) page.
+   - Click **"Contact Support"** and fill out the ticket.
+     - Subject: Request to Enable BYOVA Feature for Webex Contact Center Sandbox
+     - Description:
+       - Hello Webex Developer Support Team,
+       - I would like to request the activation of the **BYOVA (Bring Your Own Virtual Agent)** feature for my Webex Contact Center sandbox environment.
+       - **Organization Name:** ACME Test Org
+       - **Organization ID:** `your-organization-id-here`
+       - **Sandbox Email Used for Request:** `admin@xxxxxx-xxxx.wbx.ai`
+       - **Sandbox URL:** `https://xxxxxx-xxxx.webex.com`
+       - This feature is required to continue development and testing for virtual agent integrations. Please let me know if you need any additional information.
+   - Wait for confirmation from the support team. You'll receive an email when BYOVA is enabled for your org.
+---
+
+## Step 4: Configuring BYOVA and BYODS
+
+### 4.1 Understanding BYOVA and BYODS
+
+- **BYOVA (Bring Your Own Virtual Agent)**: Allows you to integrate external AI services as virtual agents
+- **BYODS (Bring Your Own Data Source)**: Enables integration with external data sources for enhanced AI capabilities
+  - BYOVA builds on top of the BYODS framework
+  - Provides secure, standardized data exchange between Webex and third-party providers
+  - Uses JWS (JSON Web Signature) tokens for authentication
+  - Requires Service App creation and admin authorization
+
+**Important**: BYOVA requires BYODS setup first, as the virtual agent configuration depends on having a registered data source.
+
+### 4.2 Create a Service App for BYODS
+
+Before configuring BYOVA, we need to set up a Service App for data source integration, as BYOVA builds on top of the BYODS (Bring Your Own Data Source) framework.
+
+1. **Navigate to Webex Developer Portal**
+   - Go to [developer.webex.com](https://developer.webex.com)
+   - Sign in with your Webex account
+
+2. **Create a New Service App**
+   - Go to **My Apps** → **Create a New App**
+   - Choose **Service App** as the application type
+
+3. **Configure the Service App**
+   - **App Name**: `BYOVA Gateway Service App` (or your preferred name)
+   - **Icon**: Choose a suitable icon for your app or upload your own
+   - **Description**: Enter a brief description of your app
+   - **Contact Email**: Enter your admin email address
+   - **Scopes**: Ensure you select:
+     - `spark-admin:datasource_read`
+     - `spark-admin:datasource_write`
+   - **Domains**: Specify your public gateway domain (e.g., `your-domain.com` or `ngrok-free.app`)
+     - Avoid registering ports in the domain - all ports will be accepted later
+     - **For Testing with ngrok**: If you're using ngrok for testing, start it now (in a separate terminal):
+       ```bash
+       # Create public tunnel to the gRPC server
+       ngrok http --upstream-protocol=http2 50051
+       ```
+       **Important**: Use the `--upstream-protocol=http2` flag as gRPC requires HTTP/2 protocol.
+       
+       Use the provided HTTPS URL (without the `https://` prefix, e.g., `abc123.ngrok-free.app`)
+     - **For Production**: Use your planned production domain or IP address from the Prerequisites
+   - **Data Exchange Schema**: Select `VA_service_schema` for voice virtual agent interactions
+     - This schema (ID: `5397013b-7920-4ffc-807c-e8a3e0a18f43`) is specifically designed for voice virtual agent services
+     - Reference: [VoiceVirtualAgent Schema](https://github.com/webex/dataSourceSchemas/tree/v1.10/Services/VoiceVirtualAgent/5397013b-7920-4ffc-807c-e8a3e0a18f43)
+   
+   - Complete any other required information
+
+4. **Save the Service App Client ID and Client Secret**
+   - Under **Authentication**, locate the **Client ID** and **Client Secret**
+   - Save these credentials for later use
+
+5. **Submit for Admin Approval**
+   - In your sandbox, select **"Request Admin Approval"**
+   - This makes the Service App visible in Control Hub for admin authorization
+
+### 4.3 Register Your Data Source
+
+1. **Get Admin Authorization**
+   - In Control Hub (admin.webex.com), navigate to **Apps** → **Service Apps**
+   - Find your Service App and click **"Authorize"**
+   - This generates org-specific access and refresh tokens
+
+2. **Get Service App Token**
+   - After admin approval, return to [developer.webex.com](https://developer.webex.com)
+   - Go to **My Apps** and select your Service App
+   - Under **Org Authorizations**, locate your org in the list and select it
+   - Paste the **Client Secret** from step 1 into the **Client Secret** field and click **"Generate Tokens"**
+   - Save the returned `access_token` - you'll need it to register your data source
+   - Note: Tokens expire and will need to be refreshed using the refresh token provided
+
+3. **Register the Data Source**
+   - Use the access token from step 1 to register your data source
+   - Make a POST request to `/v1/datasources` with the following payload:
+   - **API Reference**: [Register a Data Source](/admin/docs/api/v1/data-sources/register-a-data-source)
+
+   ```json
+   {
+     "schemaId": "5397013b-7920-4ffc-807c-e8a3e0a18f43",
+     "url": "https://your-gateway-ip:50051",
+     "audience": "BYOVAGateway",
+     "subject": "callAudioData",
+     "nonce": "123456",
+     "tokenLifetimeMinutes": "1440"
+   }
+   ```
+
+   - **Important**: Replace `your-gateway-ip` with your actual gateway URL:
+     - **For Testing with ngrok**: Use your ngrok URL (e.g., `https://abc123.ngrok-free.app:50051`)
+     - **For Production**: Use your production domain or public IP address (e.g., `https://gateway.yourdomain.com:50051`)
+   - Save the data source ID for later use
+
+**Reference**: For detailed BYODS setup instructions, see the [Bring Your Own Data Source documentation](/create/docs/bring-your-own-datasource).
+
+### 4.4 Configure BYOVA Virtual Agent
+
+1. **Navigate to Virtual Agents**
+   - In Control Hub, go to **Contact Center** → **Integrations** → **Features**
+   - Click **"Create Feature"**
+
+2. **Configure Virtual Agent Settings**
+   - **Name**: `AWS Lex Virtual Agent`
+   - **Type of Connector**: Select **"Service App"**
+   - **Authorized Service App**: Select your Service App from step 4.2
+   - **Resource Identifier**: Enter the datasource ID you saved in step 4.3
+   - Click **"Create"**
+
+### 4.5 Import the BYOVA Flow Template
+
+
+1. **Navigate to Control Hub**
+   - Go to [https://admin.webex.com/login](https://admin.webex.com/login)
+   - Sign in with your administrator credentials from the provisioning email
+
+2. **Access Contact Center Flows**
+   - In Control Hub, navigate to **Contact Center**
+   - Click on **Flows**
+   - Select **Manage Flows**
+   - Click **Import Flow**
+
+   **Reference**: For detailed information about Flow Designer and flow management, see the [Build and manage flows with Flow Designer documentation](https://help.webex.com/en-us/article/nhovcy4/Build-and-manage-flows-with-Flow-Designer#Cisco_Task.dita_0e76fcdd-29a3-47c3-8544-f6613dfeb8f0).
+
+3. **Import the BYOVA Flow Template**
+   - Download the [`BYOVA_Gateway_Flow.json`](https://github.com/Webex/webex-byova-gateway-python/blob/main/BYOVA_Gateway_Flow.json) file from the gateway repository 
+   - In the import dialog, choose the `BYOVA_Gateway_Flow.json` file
+   - The flow will be imported with the name "BYOVA"
+
+4. **Configure the Virtual Agent**
+   - In the imported flow, locate the **VirtualAgentV2_q2c** activity
+   - Click on the activity to open its properties
+   - Update the **Virtual Agent** selection:
+     - **Connector Name**: Select your BYOVA connector (e.g., "AWS Lex Connector")
+     - **Virtual Agent ID**: Select your configured virtual agent
+   - Save the activity configuration
+
+5. **Review Flow Structure**
+   The imported flow includes:
+   - **Start**: Entry point for calls
+   - **Virtual Agent**: Routes to your BYOVA virtual agent
+   - **Decision Logic**: Handles agent disconnection and transfer scenarios
+   - **Play Message**: Provides feedback to callers
+   - **End**: Terminates the call
+
+6. **Save and Activate the Flow**
+   - Save your flow configuration
+   - Activate the flow for testing
+
+### 4.6 Assign Flow to Entry Point
+
+1. **Navigate to Channels**
+   - In Control Hub, go to **Contact Center** → **Channels**
+   - Select **Entry Point 1** (or your configured entry point)
+
+2. **Configure Entry Point Routing**
+   - In the Entry Point 1 configuration, locate the **Routing Flow** setting
+   - Change the routing flow from the default to your **BYOVA** flow
+   - Save the configuration
+
+3. **Verify Assignment**
+   - Confirm that Entry Point 1 is now using the BYOVA flow
+   - The entry point will now route calls through your virtual agent integration
+
+---
+
+## Step 5: Testing Your Integration
+
+### 5.1 Set Up Agent Desktop
 
 1. **Install Webex Contact Center Desktop**
    - Download from the Administrator Portal
@@ -657,7 +537,7 @@ Please save this Access Key and Secret Access Key very safely.
 3. **Set Agent Status to Available**
    - Ensure the agent is ready to receive calls
 
-### 6.2 Test the Voice AI Integration
+### 5.2 Test the Voice AI Integration
 
 1. **Make a Test Call**
    - Call the entrypoint number from your provisioning email
@@ -672,7 +552,7 @@ Please save this Access Key and Secret Access Key very safely.
    - Request to speak to a human agent
    - Verify the call transfers to your logged-in agent
 
-### 6.3 Monitor the Integration
+### 5.3 Monitor the Integration
 
 1. **Use the Monitoring Interface**
    - Open `http://localhost:8080` in your browser
@@ -801,10 +681,9 @@ The BYOVA Gateway provides a flexible foundation that you can extend and customi
 
 ### Resources
 
-- [Webex Contact Center Developer Documentation](https://developer.webex.com)
 - [AWS Lex Developer Guide](https://docs.aws.amazon.com/lex/)
-- [BYOVA Gateway Repository](https://github.com/your-org/webex-byova-gateway-python)
-- [Webex Contact Center Sandbox](https://developer.webex.com/create/docs/sandbox_cc)
+- [BYOVA Gateway Repository](https://github.com/webex/webex-byova-gateway-python)
+- [Webex Contact Center Sandbox](/create/docs/sandbox_cc)
 
 ### Support
 
