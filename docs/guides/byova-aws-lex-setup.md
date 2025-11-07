@@ -168,6 +168,8 @@ Before configuring BYOVA, we need to set up a Service App for data source integr
    - In Control Hub (admin.webex.com), navigate to **Apps** → **Service Apps**
    - Find your Service App and click **"Authorize"**
    - This generates org-specific access and refresh tokens
+ 
+**NOTE:** Service apps created for "Voice Virtual Agent" will be disabled unless there is an active BYO Virtual Agent Subscription in a production organization. To request access for Voice Virtual Agent apps in Sandboxes, Gold Tenants, and EFT orgs, please reach out to [Developer Support](https://developer.webex.com/explore/support).
 
 2. **Get Service App Token**
    - After admin approval, return to [developer.webex.com](https://developer.webex.com)
