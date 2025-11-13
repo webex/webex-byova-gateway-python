@@ -24,6 +24,39 @@
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
         
+        [data-theme="dark"] body {
+            background-color: #1a1a1a !important;
+            color: #ffffff !important;
+        }
+        
+        [data-theme="dark"] .card {
+            background-color: #2d2d2d !important;
+            border-color: #404040 !important;
+        }
+        
+        [data-theme="dark"] .card-header {
+            background-color: #2d2d2d !important;
+            border-bottom-color: #404040 !important;
+            color: #ffffff !important;
+        }
+        
+        [data-theme="dark"] .card-title,
+        [data-theme="dark"] h5,
+        [data-theme="dark"] h6,
+        [data-theme="dark"] strong {
+            color: #ffffff !important;
+        }
+        
+        [data-theme="dark"] .text-muted,
+        [data-theme="dark"] small {
+            color: #b0b0b0 !important;
+        }
+        
+        [data-theme="dark"] .card-body,
+        [data-theme="dark"] .card-body div {
+            color: #ffffff !important;
+        }
+        
         .navbar-brand {
             font-weight: bold;
             font-size: 1.5rem;
@@ -124,6 +157,9 @@
                 BYOVA Gateway
             </a>
             <div class="navbar-nav ms-auto">
+                <button class="btn btn-outline-light me-3" onclick="toggleTheme()" title="Toggle Dark Mode">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
                 <span class="navbar-text">
                     <span class="status-indicator status-running" id="status-indicator"></span>
                     <span id="status-text">Running</span>
@@ -280,10 +316,31 @@
         
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
+            initializeTheme();
             loadDashboard();
             // Refresh every 5 seconds
             refreshInterval = setInterval(loadDashboard, 5000);
         });
+        
+        function initializeTheme() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            updateThemeIcon(savedTheme);
+        }
+        
+        function toggleTheme() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }
+        
+        function updateThemeIcon(theme) {
+            const icon = document.getElementById('theme-icon');
+            icon.className = theme === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
+        }
         
         function loadDashboard() {
             loadStatus();
