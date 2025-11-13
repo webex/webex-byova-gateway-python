@@ -12,13 +12,16 @@ itsdangerous>=2.2.0
 click>=8.2.1
 blinker>=1.9.0
 
+# Authentication and HTTP
+PyJWT>=2.8.0
+requests>=2.31.0
+
 # Audio processing
 pydub>=0.25.1
 soundfile>=0.13.1
 
 # Logging and configuration
 PyYAML>=6.0.2
-python-dotenv>=1.1.1
 structlog>=25.4.0
 
 # AWS SDK for Lex
@@ -80,4 +83,4 @@ pycparser>=2.22
 propcache>=0.3.2
 
 # Scientific computing (if needed)
-numpy>=2.3.2
+numpy>=2.2.0

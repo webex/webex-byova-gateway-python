@@ -119,10 +119,12 @@ config:
 
 The gateway supports multiple ways to load environment variables:
 
-1. **System Environment**: Variables set in the system environment
-2. **`.env` File**: Local development environment file
-3. **Docker Environment**: Container environment variables
-4. **Kubernetes Secrets**: Kubernetes secret management
+1. **System Environment**: Variables set in the system environment (e.g., via `export` command)
+2. **Docker Environment**: Container environment variables
+3. **Kubernetes Secrets**: Kubernetes secret management
+4. **AWS Secrets Manager**: Production secret management (recommended for production)
+
+**Note**: This gateway **does NOT use `.env` files**. For development, set environment variables directly using `export` commands or add them to your shell profile. For production, use a secret management service.
 
 ## Example Connectors
 
@@ -396,4 +398,4 @@ with open('config/config.yaml', 'r') as f:
 
 ## License
 
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details. 
+This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.
