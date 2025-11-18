@@ -65,8 +65,15 @@ export WEBEX_CLIENT_ID="your-client-id-from-step-1"
 export WEBEX_CLIENT_SECRET="your-client-secret-from-step-1"
 export WEBEX_REDIRECT_URI="http://localhost:8080/oauth"
 
-# Set your organization ID
+# Set your organization ID(s) - this is an allow list of organizations that can access the dashboard.
+#This functionality can be replaced in production with a list of authorized users or similar. This is just a sample.
+# For a single organization:
 export AUTHORIZED_WEBEX_ORG_IDS="your-org-id-from-step-2"
+
+# For multiple organizations (comma-separated, whitespace is automatically trimmed):
+# export AUTHORIZED_WEBEX_ORG_IDS="org-id-1,org-id-2,org-id-3"
+# or with spaces (both formats work):
+# export AUTHORIZED_WEBEX_ORG_IDS="org-id-1, org-id-2, org-id-3"
 ```
 
 ### For Persistent Configuration:
@@ -211,15 +218,63 @@ To disable authentication for local testing:
 
 **Warning**: Never disable authentication in production!
 
-## Adding Additional Authorized Organizations
+## Understanding AUTHORIZED_WEBEX_ORG_IDS
 
-To authorize multiple organizations:
+### What is AUTHORIZED_WEBEX_ORG_IDS?
+
+`AUTHORIZED_WEBEX_ORG_IDS` is an **allow list** (whitelist) of Webex organization IDs that controls access to the monitoring dashboard. Only users belonging to organizations listed in this variable will be granted access after successful Webex OAuth authentication.
+
+**Security Purpose**: This provides organization-level access control, ensuring that only users from approved Webex organizations can view your gateway's monitoring dashboard, even if they have valid Webex credentials.
+
+### Format for Multiple Organizations
+
+To authorize multiple organizations, use a **comma-separated list** of organization IDs:
 
 ```bash
+# Preferred format (comma-separated, no spaces)
 export AUTHORIZED_WEBEX_ORG_IDS="org-id-1,org-id-2,org-id-3"
+
+# Also valid (with spaces - whitespace is automatically trimmed)
+export AUTHORIZED_WEBEX_ORG_IDS="org-id-1, org-id-2, org-id-3"
+
+# Also valid (spaces around commas are handled gracefully)
+export AUTHORIZED_WEBEX_ORG_IDS="org-id-1 , org-id-2 , org-id-3"
 ```
 
-Separate organization IDs with commas (no spaces).
+**Examples with Real Organization IDs:**
+
+```bash
+# Single organization
+export AUTHORIZED_WEBEX_ORG_IDS="Y2lzY29zcGFyazovL3VzL09SR0FOSVpBVElPTi8xMjM0NTY3OA"
+
+# Multiple organizations
+export AUTHORIZED_WEBEX_ORG_IDS="Y2lzY29zcGFyazovL3VzL09SR0FOSVpBVElPTi8xMjM0NTY3OA,Y2lzY29zcGFyazovL3VzL09SR0FOSVpBVElPTi85ODc2NTQzMjE"
+```
+
+### Important Notes
+
+- **Case Sensitive**: Organization IDs are case-sensitive and must match exactly
+- **No Wildcards**: You must list each organization ID explicitly - wildcards are not supported
+- **Comma Delimiter**: Use commas (`,`) to separate multiple IDs - other delimiters (semicolons, pipes, spaces) are not supported
+- **Whitespace Handling**: Leading and trailing whitespace around each ID is automatically removed
+- **Empty Values**: Empty strings between commas are ignored (e.g., `"org1,,org2"` is treated as `"org1,org2"`)
+- **Required Variable**: If authentication is enabled but this variable is empty or not set, all access will be denied
+
+### How It Works
+
+1. User logs in with Webex OAuth
+2. Gateway extracts the user's organization ID from their access token
+3. Gateway checks if the organization ID exists in `AUTHORIZED_WEBEX_ORG_IDS`
+4. Access is granted only if the organization ID is found in the list
+5. If not found, the user sees "Your organization is not authorized to access this application"
+
+### Production Considerations
+
+- **Maintain the List**: Keep this list updated as organizations are added or removed
+- **Secure Storage**: In production, store this in AWS Secrets Manager or similar secure storage
+- **Audit Access**: Log all authorization attempts for security auditing
+- **Principle of Least Privilege**: Only add organization IDs that absolutely need access
+- **Regular Review**: Periodically review and remove organization IDs that no longer need access
 
 ## Next Steps
 
