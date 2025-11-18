@@ -19,7 +19,7 @@ This guide will help you quickly set up and test Webex authentication for the BY
    - **Icon**: Upload an icon or use default
    - **Description**: Development environment for BYOVA Gateway monitoring
    - **Redirect URI**: `http://localhost:8080/oauth`
-   - **Scopes**: Check `openid`, `email`, and `profile`
+   - **Scopes**: Manually type `openid`, `email`, and `profile`
 5. Click **"Add Integration"**
 6. **Save your Client ID and Client Secret** - you'll need these next
 
