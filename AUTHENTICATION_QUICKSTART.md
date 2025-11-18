@@ -14,7 +14,7 @@ This guide will help you quickly set up and test Webex authentication for the BY
 2. Log in with your Webex account
 3. Click **"Create an Integration"** (under "My Apps")
 4. Fill in the form:
-   - **Integration Name**: BYOVA Gateway Monitor (Dev)
+   - **Integration Name**: BYOVA Gateway Monitor Dev
    - **Icon**: Upload an icon or use default
    - **Description**: Development environment for BYOVA Gateway monitoring
    - **Redirect URI**: `http://localhost:8080/oauth`
