@@ -7,6 +7,7 @@ This guide will help you quickly set up and test Webex authentication for the BY
 - Python 3.8+ with virtual environment activated
 - Access to [Webex Developer Portal](https://developer.webex.com/)
 - A Webex account
+- Familiarity with the [OpenID Spec](https://openid.net/specs/openid-connect-core-1_0.html)
 
 ## Step 1: Create a Webex Integration
 
