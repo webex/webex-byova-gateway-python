@@ -11,7 +11,7 @@ Welcome to the documentation for the Webex Contact Center BYOVA (Bring Your Own 
 
 Get up and running in minutes with our comprehensive setup guide:
 
-**[📖 Complete Setup Guide](guides/byova-aws-lex-setup.html)**
+**[📖 Complete Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)**
 
 This guide covers everything you need to know:
 - Setting up a Webex Contact Center sandbox
@@ -36,7 +36,7 @@ A fully functional voice AI system where customers can:
 
 ## 📚 Documentation
 
-- **[Setup Guide](guides/byova-aws-lex-setup.html)** - Complete step-by-step setup
+- **[Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Complete step-by-step setup
 - **[API Reference](api/)** - Detailed API documentation
 - **[GitHub Repository](https://github.com/webex/webex-byova-gateway-python)** - Source code and issues
 
@@ -59,4 +59,4 @@ For questions about BYOVA integration:
 
 ---
 
-**Ready to get started?** [Begin with the Complete Setup Guide](guides/byova-aws-lex-setup.html)
+**Ready to get started?** [Begin with the Complete Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)

@@ -5,7 +5,7 @@ Welcome to the comprehensive documentation for the Webex Contact Center BYOVA (B
 ## 📚 Setup Guides
 
 ### Complete Integration Guide
-- **[BYOVA with AWS Lex Setup Guide](guides/byova-aws-lex-setup.md)** - Step-by-step guide for setting up voice AI with Webex Contact Center and AWS Lex
+- **[BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Step-by-step guide for setting up voice AI with Webex Contact Center and AWS Lex
 
 This comprehensive guide covers:
 - Setting up a Webex Contact Center sandbox

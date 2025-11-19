@@ -14,7 +14,7 @@ navigation:
   - title: Home
     url: /
   - title: Setup Guide
-    url: /guides/byova-aws-lex-setup.html
+    url: https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex
   - title: API Reference
     url: /api/
   - title: GitHub Repository

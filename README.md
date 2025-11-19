@@ -6,7 +6,7 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
 
 ## 📚 Documentation
 
-**Complete Setup Guide**: [BYOVA with AWS Lex Setup Guide](docs/guides/byova-aws-lex-setup.md)
+**Complete Setup Guide**: [BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
 
 This comprehensive guide walks you through:
 - Setting up a Webex Contact Center sandbox
