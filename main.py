@@ -226,6 +226,13 @@ def main():
         add_VoiceVirtualAgentServicer_to_server(
             server, grpc_server
         )
+        
+        # Add health check service
+        from grpc_health.v1 import health_pb2_grpc
+        health_pb2_grpc.add_HealthServicer_to_server(
+            server.health_service, grpc_server
+        )
+        logger.info("Health check service registered")
 
         # Bind server to address
         server_address = f"{host}:{port}"

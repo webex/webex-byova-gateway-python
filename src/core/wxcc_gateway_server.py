@@ -31,6 +31,7 @@ from src.generated.voicevirtualagent_pb2 import (
 from src.generated.voicevirtualagent_pb2_grpc import VoiceVirtualAgentServicer
 
 from .virtual_agent_router import VirtualAgentRouter
+from .health_service import HealthCheckService
 
 
 class ConversationProcessor:
@@ -746,6 +747,9 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
 
         # Connection tracking for monitoring
         self.connection_events = []
+        
+        # Health check service (not used yet)
+        self.health_service = HealthCheckService(self.logger)
 
         self.logger.info("WxCCGatewayServer initialized")
 
@@ -799,6 +803,10 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         self.logger.debug(
             f"Added connection event: {event_type} for conversation {conversation_id}"
         )
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get basic health status."""
+        return self.health_service.get_overall_health()
 
     def get_connection_events(self) -> list:
         """

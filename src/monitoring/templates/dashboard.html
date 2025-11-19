@@ -428,9 +428,15 @@
             const indicator = document.getElementById('status-indicator');
             const statusText = document.getElementById('status-text');
             
-            if (data.status === 'running') {
+            const health = data.health || {};
+            const grpcStatus = health.grpc_status || 'UNKNOWN';
+            
+            if (data.status === 'running' && health.overall_healthy) {
                 indicator.className = 'status-indicator status-running';
-                statusText.textContent = 'Running';
+                statusText.textContent = grpcStatus;
+            } else if (data.status === 'running' && !health.overall_healthy) {
+                indicator.className = 'status-indicator status-warning';
+                statusText.textContent = grpcStatus + ' (Degraded)';
             } else {
                 indicator.className = 'status-indicator status-error';
                 statusText.textContent = 'Error';
@@ -439,6 +445,7 @@
             // Update metrics
             document.getElementById('total-agents').textContent = data.total_agents || 0;
             document.getElementById('active-conversations').textContent = data.total_conversations || 0;
+            
             document.getElementById('uptime').textContent = data.uptime || 'Running';
             
             // Update agents list
