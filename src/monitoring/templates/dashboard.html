@@ -444,8 +444,8 @@
             
             // Update metrics
             document.getElementById('total-agents').textContent = data.total_agents || 0;
-            document.getElementById('active-conversations').textContent = data.total_conversations || 0;
-            
+            document.getElementById('active-conversations').textContent = data.total_sessions || 0;
+            document.getElementById('total-connectors').textContent = data.total_connectors || 0;
             document.getElementById('uptime').textContent = data.uptime || 'Running';
             
             // Update agents list
@@ -460,6 +460,8 @@
                 return;
             }
             
+            const totalConnectors = data.connectors ? data.connectors.length : 0;
+            
             let html = `
                 <div class="mb-3">
                     <strong>Gateway:</strong> ${data.gateway?.name || 'Unknown'}
@@ -473,15 +475,17 @@
                 <div class="mb-3">
                     <strong>Web Port:</strong> ${data.gateway?.web_port || 'Unknown'}
                 </div>
+
             `;
             
             if (data.connectors && data.connectors.length > 0) {
                 html += '<div class="mb-3"><strong>Connectors:</strong></div>';
                 data.connectors.forEach(connector => {
+                    const agentCount = connector.agents?.length || 0;
                     html += `
                         <div class="mb-2">
-                            <span class="badge bg-primary badge-custom">${connector.name}</span>
-                            <small class="text-muted">${connector.agents?.length || 0} agents</small>
+                            <span class="badge bg-success badge-custom">${connector.name}</span>
+                            <small class="text-muted">${agentCount} agents</small>
                         </div>
                     `;
                 });

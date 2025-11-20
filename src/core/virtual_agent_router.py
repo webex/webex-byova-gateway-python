@@ -115,6 +115,13 @@ class VirtualAgentRouter:
                 # Get available agents from this connector
                 available_agents = connector_instance.get_available_agents()
 
+                # Only load connectors that have agents
+                if not available_agents:
+                    self.logger.warning(
+                        f"Connector '{connector_id}' has no agents configured, skipping"
+                    )
+                    continue
+
                 # Map each agent to this connector
                 for agent_id in available_agents:
                     self.agent_to_connector_map[agent_id] = connector_instance

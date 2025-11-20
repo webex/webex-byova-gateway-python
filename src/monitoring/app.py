@@ -323,12 +323,22 @@ def get_status_data() -> Dict[str, Any]:
         except Exception as e:
             health_data = {"overall_healthy": False, "grpc_status": "UNKNOWN", "error": str(e), "services": {}, "serving_services": 0, "total_services": 0}
     
+    # Get connector info for total count
+    total_connectors = 0
+    if router_instance:
+        try:
+            connector_info = router_instance.get_connector_info()
+            total_connectors = connector_info.get("total_connectors", 0)
+        except Exception as e:
+            logger.error(f"Error getting connector count: {e}")
+    
     return {
         "status": "running",
         "available_agents": available_agents,
         "active_sessions": active_sessions,
         "total_agents": len(available_agents),
         "total_sessions": len(active_sessions),
+        "total_connectors": total_connectors,
         "uptime": get_uptime(),
         "last_updated": datetime.now().isoformat(),
         "health": health_data
@@ -357,13 +367,17 @@ def get_configuration_data() -> Dict[str, Any]:
     if router_instance:
         try:
             router_info = router_instance.get_connector_info()
-            config["connectors"] = [
-                {
+            config["connectors"] = []
+            for connector_name in router_info["loaded_connectors"]:
+                # Get agents for this specific connector
+                connector_agents = [
+                    agent_id for agent_id, mapped_connector in router_info["agent_mappings"].items()
+                    if mapped_connector == connector_name
+                ]
+                config["connectors"].append({
                     "name": connector_name,
-                    "agents": list(router_info["agent_mappings"].keys()),
-                }
-                for connector_name in router_info["loaded_connectors"]
-            ]
+                    "agents": connector_agents,
+                })
         except Exception as e:
             logger.error(f"Error getting router info: {e}")
 
