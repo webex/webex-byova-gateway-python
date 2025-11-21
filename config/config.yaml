@@ -70,17 +70,6 @@ authentication:
     timeout_hours: 24  # Session timeout in hours
     secret_key_env: "FLASK_SECRET_KEY"  # Environment variable for session secret
 
-  # Webex OAuth configuration
-  webex_oauth:
-    client_id_env: "WEBEX_CLIENT_ID"
-    client_secret_env: "WEBEX_CLIENT_SECRET"
-    redirect_uri_env: "WEBEX_REDIRECT_URI"
-    scopes: "openid email profile"
-    state: "byova_gateway_auth"
-
-  # Organization validation
-  authorized_orgs_env: "AUTHORIZED_WEBEX_ORG_IDS"  # Comma-separated org IDs
-
 # Logging configuration
 logging:
   gateway:

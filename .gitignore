@@ -221,9 +221,6 @@ logs/
 tmp/
 temp/
 
-# Development and implementation notes
-AUTHENTICATION_IMPLEMENTATION_SUMMARY.md
-
 # Database files
 *.db
 *.sqlite

@@ -25,12 +25,17 @@ This guide will help you quickly set up and test Webex authentication for the BY
 
 ## Step 2: Find Your Organization ID
 
+### Method 1: Accessing From The Developer Portal
+1. Navigate to developer.webex.com
+2. Sign in using Webex Credentials
+3. click on avatar in the top right corner
+4. copy Organization ID to clip board
+
 ### Method 1: Using Access Token Parsing
 
-1. Get your Webex access token from the Developer Portal (click your profile icon)
-2. The access token format is: `{access_token}_{ci_cluster}_{org_id}`
-3. Split the token by underscores and take the third part
-4. Copy the organization ID (the third segment after splitting)
+1. The access token format is: `{access_token}_{ci_cluster}_{org_id}`
+2. Split the token by underscores and take the third part
+3. Copy the organization ID (the third segment after splitting)
 
 Example in a browser console or terminal:
 ```javascript
