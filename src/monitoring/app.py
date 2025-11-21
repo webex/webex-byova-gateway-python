@@ -176,11 +176,10 @@ def exchange_code_for_tokens(code: str) -> Dict[str, Any]:
         Dictionary containing tokens and user information
     """
     try:
-        oauth_config = auth_config.get("webex_oauth", {})
-
-        client_id = os.getenv(oauth_config.get("client_id_env", "WEBEX_CLIENT_ID"))
-        client_secret = os.getenv(oauth_config.get("client_secret_env", "WEBEX_CLIENT_SECRET"))
-        redirect_uri = os.getenv(oauth_config.get("redirect_uri_env", "WEBEX_REDIRECT_URI"))
+        # Read OAuth credentials directly from environment variables
+        client_id = os.getenv("WEBEX_CLIENT_ID")
+        client_secret = os.getenv("WEBEX_CLIENT_SECRET")
+        redirect_uri = os.getenv("WEBEX_REDIRECT_URI")
 
         # Check which credentials are missing
         missing = []
@@ -353,8 +352,8 @@ def login():
 
     # Build OAuth URL
     oauth_config = auth_config.get("webex_oauth", {})
-    client_id = os.getenv(oauth_config.get("client_id_env", "WEBEX_CLIENT_ID"))
-    redirect_uri = os.getenv(oauth_config.get("redirect_uri_env", "WEBEX_REDIRECT_URI"))
+    client_id = os.getenv("WEBEX_CLIENT_ID")
+    redirect_uri = os.getenv("WEBEX_REDIRECT_URI")
     scopes = oauth_config.get("scopes", "openid email profile")
     state = oauth_config.get("state", "byova_gateway_auth")
 

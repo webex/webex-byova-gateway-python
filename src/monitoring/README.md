@@ -134,9 +134,9 @@ authentication:
 export FLASK_SECRET_KEY="$(openssl rand -hex 32)"
 
 # Set Webex OAuth credentials from your Webex Integration
-export WEBEX_CLIENT_ID="your-client-id"
-export WEBEX_CLIENT_SECRET="your-client-secret"
-export WEBEX_REDIRECT_URI="http://localhost:8080/oauth"
+export WEBEX_CLIENT_ID=your-client-id
+export WEBEX_CLIENT_SECRET=your-client-secret
+export WEBEX_REDIRECT_URI=http://localhost:8080/oauth
 
 # Set your organization ID
 export AUTHORIZED_WEBEX_ORG_IDS="your-org-id"

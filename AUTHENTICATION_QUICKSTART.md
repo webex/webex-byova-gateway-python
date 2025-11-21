@@ -19,7 +19,7 @@ This guide will help you quickly set up and test Webex authentication for the BY
    - **Icon**: Upload an icon or use default
    - **Description**: Development environment for BYOVA Gateway monitoring
    - **Redirect URI**: `http://localhost:8080/oauth`
-   - **Scopes**: Manually type `openid`, `email`, and `profile`
+   - **Scopes**: No scopes required for OpenID Connect/Login with Webex integration
 5. Click **"Add Integration"**
 6. **Save your Client ID and Client Secret** - you'll need these next
 
@@ -67,14 +67,14 @@ echo "your_access_token_here" | awk -F'_' '{print $3}'
 export FLASK_SECRET_KEY="$(openssl rand -hex 32)"
 
 # Set Webex OAuth credentials
-export WEBEX_CLIENT_ID="your-client-id-from-step-1"
-export WEBEX_CLIENT_SECRET="your-client-secret-from-step-1"
-export WEBEX_REDIRECT_URI="http://localhost:8080/oauth"
+export WEBEX_CLIENT_ID=your-client-id-from-step-1
+export WEBEX_CLIENT_SECRET=your-client-secret-from-step-1
+export WEBEX_REDIRECT_URI=http://localhost:8080/oauth
 
 # Set your organization ID(s) - this is an allow list of organizations that can access the dashboard.
 #This functionality can be replaced in production with a list of authorized users or similar. This is just a sample.
 # For a single organization:
-export AUTHORIZED_WEBEX_ORG_IDS="your-org-id-from-step-2"
+export AUTHORIZED_WEBEX_ORG_IDS=your-org-id-from-step-2
 
 # For multiple organizations (comma-separated, whitespace is automatically trimmed):
 # export AUTHORIZED_WEBEX_ORG_IDS="org-id-1,org-id-2,org-id-3"
