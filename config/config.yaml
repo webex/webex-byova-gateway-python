@@ -75,9 +75,6 @@ authentication:
     scopes: "openid email profile"
     state: "byova_gateway_auth"
 
-  # Organization validation
-  authorized_orgs_env: "AUTHORIZED_WEBEX_ORG_IDS"  # Comma-separated org IDs
-
 # Logging configuration
 logging:
   gateway:
