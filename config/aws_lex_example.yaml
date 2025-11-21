@@ -1,13 +1,13 @@
 # Example AWS Lex Connector Configuration
 # Copy this file and modify as needed for your environment
 
+# IMPORTANT: AWS credentials are NOT configured here for security reasons.
+# Use environment variables, AWS profiles, or IAM roles instead.
+# See README.md for detailed credential configuration instructions.
+
 aws_lex_connector:
   # Required: AWS region where your Lex bots are located
   region_name: "us-east-1"
-  
-  # Optional: Explicit AWS credentials (if not using default chain)
-  # aws_access_key_id: "YOUR_ACCESS_KEY"
-  # aws_secret_access_key: "YOUR_SECRET_KEY"
   
   # Note: Bot aliases are discovered automatically. The connector will use
   # the most recent alias for each bot. WxCC admins select which bot to
@@ -27,6 +27,7 @@ aws_lex_connector:
   # Note: Audio conversion to WAV format is always enabled (WxCC requirement)
 
 # Example configurations for different environments:
+# Note: AWS credentials should be set via environment variables or AWS profiles, not here.
 
 # Development/Testing
 aws_lex_connector_dev:
@@ -34,7 +35,7 @@ aws_lex_connector_dev:
   initial_trigger_text: "hello"  # Simple greeting for testing
   barge_in_enabled: true  # Enable barge-in for development
 
-# Production
+# Production (use IAM roles when deployed to AWS infrastructure)
 aws_lex_connector_prod:
   region_name: "us-east-1"
   initial_trigger_text: "hello"  # Simple greeting

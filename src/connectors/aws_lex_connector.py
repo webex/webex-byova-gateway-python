@@ -52,14 +52,13 @@ class AWSLexConnector(IVendorConnector):
         Args:
             config: Configuration dictionary containing:
                 - region_name: AWS region (required)
-                - aws_access_key_id: AWS access key (optional, uses default chain)
-                - aws_secret_access_key: AWS secret key (optional, uses default chain)
                 - audio_logging: Audio logging configuration (optional)
 
-        Note: Bot aliases are discovered automatically. The connector will use the
-        most recent alias for each bot. WxCC requires 8kHz, 8-bit u-law, mono audio
-        to avoid 5-second delays. AWS Lex returns 16kHz, 16-bit PCM, which this
-        connector automatically converts using the shared audio utilities.
+        Note: AWS credentials must be provided via environment variables, AWS profiles,
+        or IAM roles - NOT via config files. Bot aliases are discovered automatically.
+        The connector will use the most recent alias for each bot. WxCC requires 8kHz,
+        8-bit u-law, mono audio to avoid 5-second delays. AWS Lex returns 16kHz, 16-bit
+        PCM, which this connector automatically converts using the shared audio utilities.
         """
         # Set up logging first
         self.logger = logging.getLogger(__name__)
@@ -75,7 +74,6 @@ class AWSLexConnector(IVendorConnector):
         self.response_content_type = self.config_manager.get_response_content_type()
         self.barge_in_enabled = self.config_manager.is_barge_in_enabled()
         self.initial_trigger_text = self.config_manager.get_initial_trigger_text()
-        self.aws_credentials = self.config_manager.get_aws_credentials()
 
         # Initialize error handler first (needed for AWS client initialization)
         self.error_handler = AWSLexErrorHandler(self.logger)
@@ -98,20 +96,20 @@ class AWSLexConnector(IVendorConnector):
         self.logger.debug("Audio conversion to WAV format: Always enabled (WxCC requirement)")
 
     def _init_aws_clients(self) -> None:
-        """Initialize AWS Lex clients."""
+        """
+        Initialize AWS Lex clients using the AWS credential chain.
+        
+        Credentials are sourced from (in order):
+        1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+        2. AWS credentials file (~/.aws/credentials)
+        3. IAM roles (for EC2, ECS, Lambda, etc.)
+        4. AWS SSO
+        5. Other AWS credential sources
+        """
         try:
-            if self.aws_credentials["aws_access_key_id"] and self.aws_credentials["aws_secret_access_key"]:
-                # Use explicit credentials
-                session = boto3.Session(
-                    aws_access_key_id=self.aws_credentials["aws_access_key_id"],
-                    aws_secret_access_key=self.aws_credentials["aws_secret_access_key"],
-                    region_name=self.region_name
-                )
-                self.logger.debug("Using explicit AWS credentials")
-            else:
-                # Use default credential chain
-                session = boto3.Session(region_name=self.region_name)
-                self.logger.debug("Using default AWS credential chain")
+            # Always use the default AWS credential chain
+            session = boto3.Session(region_name=self.region_name)
+            self.logger.debug("Using AWS credential chain for authentication")
 
             # Initialize clients
             self.lex_client = session.client('lexv2-models')  # For bot management

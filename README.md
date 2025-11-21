@@ -139,18 +139,15 @@ connectors:
          agents:
             - "Local Playback"
 
-   # Example: AWS Lex Connector for Dev Environment with Explicit Credentials
-   aws_lex_connector_dev:
+   # Example: AWS Lex Connector Configuration
+   aws_lex_connector:
       type: "aws_lex_connector"
       class: "AWSLexConnector"
       module: "connectors.aws_lex_connector"
       config:
-         region_name: "us-east-1"  # Set your AWS region
-         bot_alias_id: "TSTALIASID"  # Set your Lex bot alias
-         aws_access_key_id: "YOUR_DEV_ACCESS_KEY"  # Explicit AWS access key
-         aws_secret_access_key: "YOUR_DEV_SECRET_KEY"  # Explicit AWS secret
+         region_name: "us-east-1"  # Set your AWS region (required)
          initial_trigger_text: "hello"  # Text sent when starting conversation (default: "hello")
-         barge_in_enabled: false
+         barge_in_enabled: false  # Allow users to interrupt bot responses (default: false)
          audio_logging:
             enabled: true
             output_dir: "logs/audio_recordings"
@@ -161,22 +158,33 @@ connectors:
             bit_depth: 8
             channels: 1
             encoding: "ulaw"
-         agents: []
 ```
 
+### AWS Credentials Configuration
 
-**Note:** For security, prefer using environment variables for credentials in production. Explicit credentials in config files are for development/testing only.
+**IMPORTANT:** AWS credentials are NOT configured in config files for security reasons.
 
-### Setting AWS Credentials with Environment Variables
+The connector uses the standard AWS credential chain (in order of precedence):
+1. **Environment variables**: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+2. **AWS credentials file**: `~/.aws/credentials`
+3. **IAM roles**: For EC2, ECS, Lambda, and other AWS services
+4. **AWS SSO**: If configured
+5. **Other AWS credential sources**
 
-For production or secure development, set your AWS credentials as environment variables instead of hardcoding them in your config file:
+**Examples:**
 
-```sh
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
+```bash
+# Using environment variables (recommended for local development)
+export AWS_ACCESS_KEY_ID=your_access_key_id
+export AWS_SECRET_ACCESS_KEY=your_secret_access_key
+export AWS_DEFAULT_REGION=us-east-1
+
+# Or configure AWS CLI (recommended for persistent local setup)
+aws configure
+
+# For production, use IAM roles attached to your EC2/ECS/Lambda resources
+# No credentials needed in config files!
 ```
-
-You can add these lines to your shell profile (e.g., `.bashrc`, `.zshrc`) or set them in your deployment environment. The gateway will automatically use these credentials if they are set.
 
 ### Running the Server
 

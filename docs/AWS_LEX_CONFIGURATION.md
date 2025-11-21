@@ -11,8 +11,13 @@ The AWS Lex connector integrates with AWS Lex v2 bots to provide virtual agent c
 - **`initial_trigger_text`**: Text sent when starting a conversation (default: "hello")
   - For Bedrock agents, use a simple greeting to avoid triggering function calls prematurely
 - **`barge_in_enabled`**: Allow users to interrupt bot responses (default: false)
-- **`aws_access_key_id`**: Explicit AWS access key
-- **`aws_secret_access_key`**: Explicit AWS secret key
+
+### AWS Credentials
+**IMPORTANT**: AWS credentials are NOT configured in config files for security reasons. Use one of these methods instead:
+- **Environment variables**: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+- **AWS credentials file**: `~/.aws/credentials`
+- **IAM roles**: Attach IAM roles to your EC2, ECS, or Lambda resources (recommended for production)
+- **AWS SSO**: If configured
 
 ### Audio Format
 - **WAV conversion is always enabled** - WxCC requires WAV format with proper headers
@@ -108,8 +113,23 @@ For production deployments, use IAM roles instead of access keys:
 
 1. Create an IAM role with the required Lex permissions
 2. Attach the role to your EC2 instance, ECS task, or Lambda function
-3. Remove `aws_access_key_id` and `aws_secret_access_key` from your configuration
-4. The AWS SDK will automatically use the role credentials
+3. The AWS SDK will automatically use the role credentials
+
+### Using Environment Variables (For Development)
+
+For local development, set environment variables:
+
+```bash
+export AWS_ACCESS_KEY_ID=your_access_key_id
+export AWS_SECRET_ACCESS_KEY=your_secret_access_key
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+Or configure AWS CLI:
+
+```bash
+aws configure
+```
 
 ## Why WAV Conversion is Always Enabled
 
