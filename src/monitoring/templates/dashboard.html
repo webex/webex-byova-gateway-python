@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BYOVA Gateway - Dashboard</title>
-    
+
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Font Awesome -->
@@ -18,7 +18,7 @@
             --danger-color: #dc3545;
             --dark-color: #343a40;
         }
-        
+
         body {
             background-color: #f8f9fa;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -61,17 +61,17 @@
             font-weight: bold;
             font-size: 1.5rem;
         }
-        
+
         .status-card {
             border-radius: 15px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             transition: transform 0.2s;
         }
-        
+
         .status-card:hover {
             transform: translateY(-2px);
         }
-        
+
         .status-indicator {
             width: 12px;
             height: 12px;
@@ -79,11 +79,11 @@
             display: inline-block;
             margin-right: 8px;
         }
-        
+
         .status-running { background-color: var(--success-color); }
         .status-error { background-color: var(--danger-color); }
         .status-warning { background-color: var(--warning-color); }
-        
+
         .metric-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -91,23 +91,23 @@
             padding: 1.5rem;
             margin-bottom: 1rem;
         }
-        
+
         .metric-value {
             font-size: 2.5rem;
             font-weight: bold;
             margin-bottom: 0.5rem;
         }
-        
+
         .metric-label {
             font-size: 0.9rem;
             opacity: 0.9;
         }
-        
+
         .table-responsive {
             border-radius: 10px;
             overflow: hidden;
         }
-        
+
         .refresh-btn {
             position: fixed;
             bottom: 20px;
@@ -118,30 +118,30 @@
             height: 60px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         }
-        
+
         .connection-item {
             border-left: 4px solid var(--primary-color);
             padding-left: 1rem;
             margin-bottom: 1rem;
         }
-        
+
         .connection-active {
             border-left-color: var(--success-color);
         }
-        
+
         .connection-history {
             border-left-color: var(--warning-color);
         }
-        
+
         .badge-custom {
             font-size: 0.75rem;
             padding: 0.25rem 0.5rem;
         }
-        
+
         .loading {
             display: none;
         }
-        
+
         .spinner-border-sm {
             width: 1rem;
             height: 1rem;
@@ -156,14 +156,24 @@
                 <i class="fas fa-satellite-dish me-2"></i>
                 BYOVA Gateway
             </a>
-            <div class="navbar-nav ms-auto">
+            <div class="navbar-nav ms-auto d-flex align-items-center">
                 <button class="btn btn-outline-light me-3" onclick="toggleTheme()" title="Theme: Auto" id="theme-btn">
                     <i class="fas fa-circle-half-stroke" id="theme-icon"></i>
                 </button>
-                <span class="navbar-text">
+                <span class="navbar-text me-3">
                     <span class="status-indicator status-running" id="status-indicator"></span>
                     <span id="status-text">Running</span>
                 </span>
+                {% if user %}
+                <span class="navbar-text me-3">
+                    <i class="fas fa-user-circle me-1"></i>
+                    <span title="{{ user.email }}">{{ user.name }}</span>
+                </span>
+                <a href="/logout" class="btn btn-outline-light btn-sm" title="Logout">
+                    <i class="fas fa-sign-out-alt me-1"></i>
+                    Logout
+                </a>
+                {% endif %}
             </div>
         </div>
     </nav>
@@ -308,12 +318,12 @@
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
+
     <!-- Custom JavaScript -->
     <script>
         // Global variables
         let refreshInterval;
-        
+
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
             initializeTheme();
@@ -386,7 +396,7 @@
             loadConfig();
             loadConnections();
         }
-        
+
         function loadStatus() {
             fetch('/api/status')
                 .then(response => response.json())
@@ -398,7 +408,7 @@
                     updateStatusDisplay({status: 'error', message: 'Failed to load status'});
                 });
         }
-        
+
         function loadConfig() {
             fetch('/api/config')
                 .then(response => response.json())
@@ -410,7 +420,7 @@
                     updateConfigDisplay({error: 'Failed to load configuration'});
                 });
         }
-        
+
         function loadConnections() {
             fetch('/api/connections')
                 .then(response => response.json())
@@ -422,12 +432,12 @@
                     updateConnectionsDisplay({error: 'Failed to load connections'});
                 });
         }
-        
+
         function updateStatusDisplay(data) {
             // Update status indicator
             const indicator = document.getElementById('status-indicator');
             const statusText = document.getElementById('status-text');
-            
+
             if (data.status === 'running') {
                 indicator.className = 'status-indicator status-running';
                 statusText.textContent = 'Running';
@@ -435,24 +445,24 @@
                 indicator.className = 'status-indicator status-error';
                 statusText.textContent = 'Error';
             }
-            
+
             // Update metrics
             document.getElementById('total-agents').textContent = data.total_agents || 0;
             document.getElementById('active-conversations').textContent = data.total_conversations || 0;
             document.getElementById('uptime').textContent = data.uptime || 'Running';
-            
+
             // Update agents list
             updateAgentsList(data.available_agents || []);
         }
-        
+
         function updateConfigDisplay(data) {
             const container = document.getElementById('config-content');
-            
+
             if (data.error) {
                 container.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
                 return;
             }
-            
+
             let html = `
                 <div class="mb-3">
                     <strong>Gateway:</strong> ${data.gateway?.name || 'Unknown'}
@@ -467,7 +477,7 @@
                     <strong>Web Port:</strong> ${data.gateway?.web_port || 'Unknown'}
                 </div>
             `;
-            
+
             if (data.connectors && data.connectors.length > 0) {
                 html += '<div class="mb-3"><strong>Connectors:</strong></div>';
                 data.connectors.forEach(connector => {
@@ -479,10 +489,10 @@
                     `;
                 });
             }
-            
+
             container.innerHTML = html;
         }
-        
+
         function updateConnectionsDisplay(data) {
             // Update active connections
             const activeContainer = document.getElementById('active-connections-content');
@@ -512,18 +522,18 @@
             } else {
                 activeContainer.innerHTML = '<p class="text-muted text-center">No active connections</p>';
             }
-            
+
             // Update history with connection events
             const historyContainer = document.getElementById('history-content');
             if (data.connection_events && data.connection_events.length > 0) {
                 let html = '';
                 data.connection_events.slice(-5).forEach(event => {
                     const eventType = event.event_type || 'unknown';
-                    const badgeClass = eventType === 'start' ? 'bg-success' : 
+                    const badgeClass = eventType === 'start' ? 'bg-success' :
                                      eventType === 'end' ? 'bg-danger' : 'bg-info';
                     const eventText = eventType === 'start' ? 'Started' :
                                     eventType === 'end' ? 'Ended' : 'Message';
-                    
+
                     html += `
                         <div class="connection-item connection-history">
                             <div class="d-flex justify-content-between align-items-start">
@@ -545,10 +555,10 @@
                 historyContainer.innerHTML = '<p class="text-muted text-center">No connection events</p>';
             }
         }
-        
+
         function updateAgentsList(agents) {
             const container = document.getElementById('agents-content');
-            
+
             if (agents.length > 0) {
                 let html = '<div class="row">';
                 agents.forEach(agent => {
@@ -570,22 +580,22 @@
                 container.innerHTML = '<p class="text-muted text-center">No agents available</p>';
             }
         }
-        
+
         function refreshData() {
             const btn = document.querySelector('.refresh-btn');
             const icon = btn.querySelector('i');
-            
+
             // Add spinning animation
             icon.classList.add('fa-spin');
-            
+
             loadDashboard();
-            
+
             // Stop spinning after 1 second
             setTimeout(() => {
                 icon.classList.remove('fa-spin');
             }, 1000);
         }
-        
+
         // Cleanup on page unload
         window.addEventListener('beforeunload', function() {
             if (refreshInterval) {
@@ -594,4 +604,4 @@
         });
     </script>
 </body>
-</html> 
+</html>

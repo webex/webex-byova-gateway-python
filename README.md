@@ -17,6 +17,7 @@ This comprehensive guide walks you through:
 ## Table of Contents
 
 - [Install](#install)
+- [Monitoring Dashboard](#monitoring-dashboard)
 - [Usage](#usage)
 - [API](#api)
 - [Maintainers](#maintainers)
@@ -49,7 +50,7 @@ This comprehensive guide walks you through:
    source venv/bin/activate
    # On Windows:
    # venv\Scripts\activate
-   
+
    # Verify activation - you should see (venv) in your prompt
    which python  # Should show path to venv/bin/python
    ```
@@ -64,21 +65,29 @@ This comprehensive guide walks you through:
    # Generate Python gRPC client and server stubs in the generated directory
    python -m grpc_tools.protoc -I./proto --python_out=src/generated --grpc_python_out=src/generated proto/*.proto
    ```
-   
+
    Generated protobuf files are stored in the `src/generated` directory to separate auto-generated code from hand-written code.
-   
+
    **Important**: The generated protobuf files (`*_pb2.py` and `*_pb2_grpc.py`) are **NOT committed to the repository**. They must be generated locally after cloning the repository. The `__init__.py` file in the generated directory is committed to maintain the package structure.
-   
+
    **Note**: The generated files are automatically imported by the gateway. No manual import is required for normal operation.
 
 5. **Prepare Audio Files**
-   
+
    Place your audio files in the `audio/` directory. The default configuration expects:
    - `welcome.wav` - Welcome message
    - `default_response.wav` - Response messages
    - `goodbye.wav` - Goodbye message
    - `transferring.wav` - Transfer message
    - `error.wav` - Error message
+
+## Monitoring Dashboard
+
+The gateway includes a web-based monitoring interface for viewing gateway status, active sessions, and connection history. The dashboard is accessible at `http://localhost:8080` when the gateway is running.
+
+For information about authentication and security for the monitoring dashboard, see:
+- [Monitoring README](src/monitoring/README.md) - Comprehensive monitoring and authentication documentation
+- [Authentication Quick Start](AUTHENTICATION_QUICKSTART.md) - Step-by-step authentication setup guide
 
 ## Quick Start
 
@@ -219,7 +228,7 @@ The [Bring Your Own Data Source (BYODS) framework](https://developer.webex.com/c
      ```bash
      # macOS with Homebrew
      brew install ngrok/ngrok/ngrok
-     
+
      # Or download directly from ngrok.com
      ```
 
@@ -239,7 +248,7 @@ The [Bring Your Own Data Source (BYODS) framework](https://developer.webex.com/c
    ```bash
    # Activate virtual environment
    source venv/bin/activate
-   
+
    # Start the gateway
    python main.py
    ```
@@ -287,7 +296,7 @@ ngrok http --upstream-protocol=http2 50051
 
 # Output example:
 # Forwarding  https://abc123.ngrok.io -> http://localhost:50051
-# 
+#
 # Use this URL in your Webex Contact Center configuration:
 # https://abc123.ngrok.io
 ```
@@ -480,4 +489,4 @@ Check the terminal output for real-time logs when running manually.
 
 ---
 
-**Note**: This Sample Code is not supported by Cisco TAC and is not tested for quality or performance. This is intended for example purposes only and is provided by Cisco "AS IS" with all faults and without warranty or support of any kind. 
+**Note**: This Sample Code is not supported by Cisco TAC and is not tested for quality or performance. This is intended for example purposes only and is provided by Cisco "AS IS" with all faults and without warranty or support of any kind.
