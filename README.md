@@ -332,12 +332,82 @@ curl http://localhost:8080/api/connections
 curl http://localhost:8080/api/test/create-session
 ```
 
+### gRPC Service Testing
+
+Test the gRPC services directly using either grpcurl or the provided Python test script.
+
+#### Using grpcurl
+
+If you have grpcurl installed, you can test the gRPC services directly. Install grpcurl from the [releases page](https://github.com/fullstorydev/grpcurl/releases) for your platform.
+
+**Test gRPC services:**
+```bash
+# Test overall health
+grpcurl -plaintext -import-path proto -proto health.proto localhost:50051 grpc.health.v1.Health/Check
+
+# Test gateway service health
+grpcurl -plaintext -import-path proto -proto health.proto -d '{"service":"byova.gateway"}' localhost:50051 grpc.health.v1.Health/Check
+
+# Test VoiceVirtualAgent service health
+grpcurl -plaintext -import-path proto -proto health.proto -d '{"service":"byova.VoiceVirtualAgentService"}' localhost:50051 grpc.health.v1.Health/Check
+
+# List available virtual agents
+grpcurl -plaintext -import-path proto -proto voicevirtualagent.proto localhost:50051 com.cisco.wcc.ccai.media.v1.VoiceVirtualAgent/ListVirtualAgents
+```
+
+**Expected outputs:**
+```json
+# Health checks return:
+{"status": "SERVING"}
+
+# Virtual agents list returns:
+{
+  "virtualAgents": [
+    {
+      "virtualAgentId": "Local Audio: Local Playback",
+      "virtualAgentName": "Local Playback",
+      "isDefault": true
+    },
+    {
+      "virtualAgentId": "aws_lex_connector: YourBotName",
+      "virtualAgentName": "YourBotName"
+    }
+  ]
+}
+```
+
+#### Using Python Test Script
+
+Alternatively, use the provided Python test script:
+
+```bash
+# Run the health check test script
+python test_health.py
+```
+
+**Expected output:**
+```
+Testing gRPC Health Service:
+----------------------------------------
+Overall: SERVING (1)
+byova.gateway: SERVING (1)
+byova.VoiceVirtualAgentService: SERVING (1)
+```
+
+**Status codes:**
+- `SERVING (1)`: Service is healthy and operational
+- `NOT_SERVING (2)`: Service is unhealthy or unavailable
+- `SERVICE_UNKNOWN (0)`: Service status cannot be determined
+
+**Security Note:** gRPC reflection is disabled by default for security. This is why proto files are required for grpcurl commands.
+
 ## API
 
 ### gRPC Endpoints
 
 - **ListVirtualAgents**: Returns available virtual agents
 - **ProcessCallerInput**: Handles bidirectional streaming for voice interactions
+- **Health/Check**: Standard gRPC health checking service
 
 ### HTTP Endpoints
 
