@@ -27,11 +27,14 @@ def test_audio_dir():
 
 @pytest.fixture(scope="session")
 def mock_aws_credentials():
-    """Provide mock AWS credentials for testing."""
+    """
+    Provide mock AWS config for testing.
+    
+    Note: AWS credentials are not supported in config files.
+    This fixture only provides region and bot alias configuration.
+    """
     return {
         "region_name": "us-east-1",
-        "aws_access_key_id": "test_key_id",
-        "aws_secret_access_key": "test_secret_key",
         "bot_alias_id": "TESTALIAS"
     }
 

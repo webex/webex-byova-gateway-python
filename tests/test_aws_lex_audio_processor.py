@@ -35,8 +35,6 @@ class TestAWSLexAudioProcessorAudioLogging:
         """Configuration with audio logging enabled."""
         return {
             "region_name": "us-east-1",
-            "aws_access_key_id": "test_key",
-            "aws_secret_access_key": "test_secret",
             "bot_alias_id": "TESTALIAS",
             "audio_logging": {
                 "enabled": True,
@@ -56,8 +54,6 @@ class TestAWSLexAudioProcessorAudioLogging:
         """Configuration without audio logging."""
         return {
             "region_name": "us-east-1",
-            "aws_access_key_id": "test_key",
-            "aws_secret_access_key": "test_secret",
             "bot_alias_id": "TESTALIAS"
             # No audio_logging section
         }
@@ -67,8 +63,6 @@ class TestAWSLexAudioProcessorAudioLogging:
         """Configuration with partial audio logging settings."""
         return {
             "region_name": "us-east-1",
-            "aws_access_key_id": "test_key",
-            "aws_secret_access_key": "test_secret",
             "bot_alias_id": "TESTALIAS",
             "audio_logging": {
                 "enabled": True,
@@ -480,8 +474,6 @@ class TestAWSLexAudioProcessorAudioLogging:
         """Test that missing audio logging configuration keys use sensible defaults."""
         minimal_config = {
             "region_name": "us-east-1",
-            "aws_access_key_id": "test_key",
-            "aws_secret_access_key": "test_secret",
             "bot_alias_id": "TESTALIAS",
             "audio_logging": {
                 "enabled": True

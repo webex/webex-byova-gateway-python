@@ -75,9 +75,8 @@ class AWSLexConfig:
             # Process region name
             self._validated_config["region_name"] = self._config["region_name"]
             
-            # Process AWS credentials (optional)
-            self._validated_config["aws_access_key_id"] = self._config.get("aws_access_key_id")
-            self._validated_config["aws_secret_access_key"] = self._config.get("aws_secret_access_key")
+            # AWS credentials are NOT supported via config - use environment variables,
+            # AWS profiles (~/.aws/credentials), or IAM roles instead
             
             # Process locale ID
             self._validated_config["locale_id"] = self._config.get("locale_id", self.DEFAULT_LOCALE_ID)
@@ -147,12 +146,16 @@ class AWSLexConfig:
         """
         Get AWS credentials configuration.
         
+        This method is deprecated and always returns None values.
+        AWS credentials must be provided via environment variables,
+        AWS profiles, or IAM roles - NOT via config files.
+        
         Returns:
-            Dictionary with aws_access_key_id and aws_secret_access_key
+            Dictionary with None values (credentials not supported in config)
         """
         return {
-            "aws_access_key_id": self._validated_config["aws_access_key_id"],
-            "aws_secret_access_key": self._validated_config["aws_secret_access_key"]
+            "aws_access_key_id": None,
+            "aws_secret_access_key": None
         }
 
     def get_locale_id(self) -> str:
@@ -278,13 +281,9 @@ class AWSLexConfig:
             f"barge_in: {'enabled' if self.is_barge_in_enabled() else 'disabled'}",
             f"audio_logging: {'enabled' if self.is_audio_logging_enabled() else 'disabled'}",
             f"max_retries: {self.get_max_retries()}",
-            f"timeout: {self.get_timeout()}s"
+            f"timeout: {self.get_timeout()}s",
+            "credentials: aws_credential_chain"  # Always use AWS credential chain
         ]
-        
-        if self.get_aws_credentials()["aws_access_key_id"]:
-            summary_parts.append("credentials: explicit")
-        else:
-            summary_parts.append("credentials: default_chain")
             
         return ", ".join(summary_parts)
 

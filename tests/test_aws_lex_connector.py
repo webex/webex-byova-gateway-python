@@ -28,8 +28,6 @@ class TestAWSLexConnector:
         """Provide a mock configuration for testing."""
         return {
             "region_name": "us-east-1",
-            "aws_access_key_id": "test_key",
-            "aws_secret_access_key": "test_secret",
             "barge_in_enabled": False
         }
 
@@ -46,8 +44,6 @@ class TestAWSLexConnector:
         """Provide a mock configuration with barge-in enabled."""
         return {
             "region_name": "us-east-1",
-            "aws_access_key_id": "test_key",
-            "aws_secret_access_key": "test_secret",
             "barge_in_enabled": True
         }
 
@@ -107,8 +103,8 @@ class TestAWSLexConnector:
             connector.session_manager.logger = MagicMock()
             return connector
 
-    def test_init_with_explicit_credentials(self, mock_config):
-        """Test connector initialization with explicit AWS credentials."""
+    def test_init_with_aws_credential_chain(self, mock_config):
+        """Test connector initialization using AWS credential chain."""
         with patch('boto3.Session') as mock_session_class:
             mock_session = MagicMock()
             mock_session.client.side_effect = lambda service: {
@@ -121,6 +117,9 @@ class TestAWSLexConnector:
             
             assert connector.config_manager.get_region_name() == "us-east-1"
             assert connector.config_manager.is_barge_in_enabled() is False
+            # Credentials should always be None (not supported in config)
+            assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] is None
+            assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] is None
 
     def test_init_with_barge_in_enabled(self, mock_config_barge_in_enabled):
         """Test connector initialization with barge-in enabled."""
@@ -136,8 +135,9 @@ class TestAWSLexConnector:
             
             assert connector.config_manager.get_region_name() == "us-east-1"
             assert connector.config_manager.is_barge_in_enabled() is True
-            assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] == "test_key"
-            assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] == "test_secret"
+            # Credentials should always be None (not supported in config)
+            assert connector.config_manager.get_aws_credentials()["aws_access_key_id"] is None
+            assert connector.config_manager.get_aws_credentials()["aws_secret_access_key"] is None
             # Bot aliases are discovered dynamically, not from config
             assert connector.session_manager._available_bots is None
             assert connector.session_manager._bot_name_to_id_map == {}
@@ -163,7 +163,7 @@ class TestAWSLexConnector:
 
     def test_init_missing_region_name(self):
         """Test connector initialization fails without region_name."""
-        config = {"aws_access_key_id": "test_key"}
+        config = {}  # Empty config, missing required region_name
         
         with pytest.raises(ValueError, match="Required configuration key 'region_name' is missing"):
             AWSLexConnector(config)
