@@ -1,6 +1,6 @@
 # Security Configuration
 
-This document provides security configurations for the BYOVA Gateway. You can implement what you need for your environment requirements.
+This document provides recommended security configurations for the BYOVA Gateway. The steps below are specific to the AWS Cloud Provider, but represent recommended security implementations for any platform hosting the BYOVA Gateway.
 
 ## Table of Contents
 
