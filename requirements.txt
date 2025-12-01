@@ -14,7 +14,8 @@ click>=8.2.1
 blinker>=1.9.0
 
 # Authentication and HTTP
-PyJWT>=2.8.0
+PyJWT[crypto]>=2.8.0  # JWT with cryptography support for RSA signature verification
+cryptography>=43.0.0  # Cryptographic operations for JWT validation
 requests>=2.31.0
 
 # Audio processing

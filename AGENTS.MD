@@ -337,10 +337,47 @@ When building your own BYOVA integration:
 **Important**: This gateway is not production-ready. For production use:
 
 - **Implement proper security**: Add authentication, authorization, and encryption
+- **Enable JWT validation**: Configure JWT token validation for secure gRPC communication (see below)
 - **Add production monitoring**: Implement comprehensive logging, metrics, and alerting
 - **Handle scaling**: Design for horizontal scaling and load balancing
 - **Add error handling**: Implement robust error handling and recovery mechanisms
 - **Security review**: Conduct thorough security reviews before deployment
+
+#### JWT Authentication for Production
+
+The gateway includes JWT (JSON Web Token) validation for securing gRPC requests from Webex Contact Center. This should be enabled for production deployments.
+
+**Key Features:**
+- Validates JWT signatures using RSA public keys from Webex identity broker
+- Verifies all required claims (issuer, audience, subject, JWT ID, expiration)
+- Validates datasource-specific claims (URL and schema UUID)
+- Caches public keys for 60 minutes to optimize performance
+- Supports optional enforcement for gradual rollout
+
+**Configuration in `config/config.yaml`:**
+
+```yaml
+jwt_validation:
+  enabled: true                    # Enable JWT validation
+  enforce_validation: true         # Reject invalid tokens (set to false for logging only)
+  datasource_url: "https://your-gateway.example.com:443"  # Must match BYODS registration
+  datasource_schema_uuid: "5397013b-7920-4ffc-807c-e8a3e0a18f43"  # BYOVA schema UUID
+  cache_duration_minutes: 60       # Public key cache duration
+```
+
+**Implementation Details:**
+- **Module**: `src/auth/jwt_validator.py` - Core validation logic
+- **Interceptor**: `src/auth/jwt_interceptor.py` - gRPC request interceptor
+- **Integration**: Automatically loaded in `main.py` when enabled
+- **Reference**: Based on [Webex sample Java implementation](https://github.com/CiscoDevNet/webex-contact-center-provider-sample-code/blob/main/media-service-api/dialog-connector-simulator/src/main/java/com/cisco/wccai/grpc/server/interceptors/JWTAuthorizationHandler.java)
+
+**Deployment Recommendations:**
+1. Start with `enforce_validation: false` to monitor validation without blocking requests
+2. Verify logs show successful validation for all requests
+3. Enable `enforce_validation: true` for full security
+4. Monitor for authentication errors and adjust configuration as needed
+
+See [README.md](README.md) for complete JWT authentication documentation and troubleshooting.
 
 ## Working with the Codebase
 
