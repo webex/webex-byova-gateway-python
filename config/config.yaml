@@ -29,16 +29,16 @@ connectors:
     module: "connectors.aws_lex_connector"
     config:
       region_name: "us-east-1"
-      
+
       # Initial trigger text sent when starting a conversation (default: "hello")
       # For Bedrock agents, use a simple greeting rather than a specific request
       # to avoid triggering function calls before the agent is ready
       initial_trigger_text: "hello"
-      
+
       # Barge-in configuration (default: false)
       # When enabled, users can interrupt the bot's response
       barge_in_enabled: false
-      
+
       # Audio logging configuration
       audio_logging:
         enabled: true
@@ -60,6 +60,21 @@ monitoring:
   metrics_enabled: true
   health_check_interval: 30
 
+# Authentication configuration
+authentication:
+  enabled: true
+  environment: "dev"  # Options: "dev" or "production"
+
+  # Session configuration
+  session:
+    timeout_hours: 24  # Session timeout in hours
+    secret_key_env: "FLASK_SECRET_KEY"  # Environment variable for session secret
+
+  # Webex OAuth configuration
+  webex_oauth:
+    scopes: "openid email profile"
+    state: "byova_gateway_auth"
+
 # Logging configuration
 logging:
   gateway:
@@ -68,7 +83,7 @@ logging:
     file: "logs/gateway.log"
     max_size: "10MB"
     backup_count: 5
-  
+
   web:
     level: "WARNING"
     format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -90,4 +105,4 @@ audio:
     - "wav"
     - "mp3"
     - "flac"
-    - "ogg" 
+    - "ogg"

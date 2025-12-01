@@ -21,8 +21,10 @@ sys.path.insert(0, str(Path(__file__).parent / "src" / "core"))
 
 from core.virtual_agent_router import VirtualAgentRouter
 from core.wxcc_gateway_server import WxCCGatewayServer
+from core.health_service import HealthCheckService
 from monitoring.app import run_web_app
 from src.generated.voicevirtualagent_pb2_grpc import add_VoiceVirtualAgentServicer_to_server
+from grpc_health.v1 import health_pb2_grpc
 
 
 def setup_logging(config: dict) -> None:
@@ -206,6 +208,10 @@ def main():
         # Create WxCCGatewayServer
         server = WxCCGatewayServer(router)
         logger.info("WxCCGatewayServer created")
+        
+        # Create health service with router for real health monitoring
+        health_service = HealthCheckService(router)
+        logger.info("HealthCheckService created with real health monitoring")
 
         # Get server configuration
         gateway_config = config.get("gateway", {})
@@ -227,12 +233,9 @@ def main():
             server, grpc_server
         )
         
-        # Add health check service
-        from grpc_health.v1 import health_pb2_grpc
-        health_pb2_grpc.add_HealthServicer_to_server(
-            server.health_service, grpc_server
-        )
-        logger.info("Health check service registered")
+        # Add health service to the server
+        health_pb2_grpc.add_HealthServicer_to_server(health_service, grpc_server)
+        logger.info("Health service registered with gRPC server")
 
         # Bind server to address
         server_address = f"{host}:{port}"

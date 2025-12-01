@@ -1,72 +1,148 @@
 """
-Health Check Service for BYOVA Gateway
+gRPC Health Service implementation with real health monitoring.
 
-Implements gRPC health checking protocol to monitor service health status.
+This module provides a health checking service that monitors the actual
+operational status of the gateway components instead of returning hardcoded values.
 """
 
-import time
+import logging
 import threading
-from typing import Dict, Optional
+from typing import Optional
+
+import grpc
 from grpc_health.v1 import health_pb2, health_pb2_grpc
-from grpc_health.v1.health import HealthServicer
+
+from .virtual_agent_router import VirtualAgentRouter
 
 
-class HealthCheckService(HealthServicer):
+class HealthCheckService(health_pb2_grpc.HealthServicer):
     """
-    Health check service that monitors the status of all gateway services.
+    Health check service that provides real-time health monitoring.
     
-    Implements the standard gRPC health checking protocol.
+    This service monitors the actual operational status of gateway components
+    including connector availability and service health.
     """
-    
-    def __init__(self, logger=None):
-        super().__init__()
-        self.logger = logger
-        self._service_status: Dict[str, health_pb2.HealthCheckResponse.ServingStatus] = {}
-        self._last_check_time = time.time()
-        self._lock = threading.Lock()
+
+    def __init__(self, router: Optional[VirtualAgentRouter] = None):
+        """
+        Initialize the health check service.
         
-        # Initialize default services
+        Args:
+            router: VirtualAgentRouter instance for checking connector health
+        """
+        super().__init__()
+        self.router = router
+        self.logger = logging.getLogger(__name__)
+        self._lock = threading.Lock()
+        self._service_status = {}
+        
+        # Initialize with unknown status - will be updated on first check
         self._initialize_services()
-    
+        
+        self.logger.info("HealthCheckService initialized with real health monitoring")
+
     def _initialize_services(self):
-        """Initialize default service statuses."""
+        """Initialize service statuses with unknown state."""
         with self._lock:
-            # Main gateway service
-            self._service_status[""] = health_pb2.HealthCheckResponse.SERVING
-            self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVING
-    
+            # Initialize with unknown status - will be updated by health checks
+            self._service_status[""] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+            self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+            self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+
+    def _update_service_health(self):
+        """Update service health status based on actual system state."""
+        try:
+            with self._lock:
+                # Check if router has available agents
+                if self.router:
+                    available_agents = self.router.get_all_available_agents()
+                    has_agents = len(available_agents) > 0
+                    
+                    if has_agents:
+                        # Gateway is serving if it has available agents
+                        self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVING
+                        self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.SERVING
+                        self._service_status[""] = health_pb2.HealthCheckResponse.SERVING
+                        self.logger.debug(f"Health check: SERVING - {len(available_agents)} agents available")
+                    else:
+                        # No agents available
+                        self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.NOT_SERVING
+                        self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.NOT_SERVING
+                        self._service_status[""] = health_pb2.HealthCheckResponse.NOT_SERVING
+                        self.logger.warning("Health check: NOT_SERVING - No agents available")
+                else:
+                    # No router available
+                    self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+                    self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+                    self._service_status[""] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+                    self.logger.warning("Health check: SERVICE_UNKNOWN - No router available")
+                    
+        except Exception as e:
+            self.logger.error(f"Error updating service health: {e}")
+            # Set all services to unknown on error
+            with self._lock:
+                self._service_status[""] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+                self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+                self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+
+    def set_service_status(self, service_name: str, status: int):
+        """
+        Set the health status for a specific service.
+        
+        Args:
+            service_name: Name of the service
+            status: Health status (from health_pb2.HealthCheckResponse)
+        """
+        with self._lock:
+            self._service_status[service_name] = status
+            self.logger.debug(f"Set health status for '{service_name}': {status}")
+
     def Check(self, request, context):
         """
-        Perform a health check for the requested service.
+        Check the health of a specific service.
+        
+        Args:
+            request: HealthCheckRequest containing service name
+            context: gRPC context
+            
+        Returns:
+            HealthCheckResponse with current service status
         """
         service_name = request.service
         
-        with self._lock:
-            status = self._service_status.get(
-                service_name, 
-                health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
-            )
-            
-            self._last_check_time = time.time()
+        # Update health status before responding
+        self._update_service_health()
         
-        return health_pb2.HealthCheckResponse(status=status)
-    
-    def get_overall_health(self) -> Dict[str, any]:
-        """
-        Get overall health summary.
-        """
         with self._lock:
-            total_services = len(self._service_status)
-            serving_count = sum(
-                1 for status in self._service_status.values() 
-                if status == health_pb2.HealthCheckResponse.SERVING
-            )
-            
-            overall_healthy = serving_count == total_services
-            
-            return {
-                "overall_healthy": overall_healthy,
-                "total_services": total_services,
-                "serving_services": serving_count,
-                "last_check_time": self._last_check_time
-            }
+            if service_name in self._service_status:
+                status = self._service_status[service_name]
+                self.logger.debug(f"Health check for '{service_name}': {status}")
+                return health_pb2.HealthCheckResponse(status=status)
+            else:
+                self.logger.warning(f"Health check for unknown service '{service_name}': SERVICE_UNKNOWN")
+                return health_pb2.HealthCheckResponse(
+                    status=health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+                )
+
+    def Watch(self, request, context):
+        """
+        Watch for health status changes (streaming).
+        
+        This is a placeholder implementation - streaming health updates
+        are not currently implemented.
+        """
+        # Not implemented - would require streaming health updates
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Health status streaming is not implemented")
+        return
+
+    def get_all_service_statuses(self):
+        """
+        Get all service statuses for monitoring dashboard.
+        
+        Returns:
+            Dictionary of service names to status codes
+        """
+        self._update_service_health()
+        with self._lock:
+            return self._service_status.copy()

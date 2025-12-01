@@ -6,12 +6,16 @@ allowing administrators to check the status of virtual agents and active session
 """
 
 import logging
+import os
 import threading
-import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from functools import wraps
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-from flask import Flask, jsonify, render_template
+import jwt
+import requests
+import yaml
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 if TYPE_CHECKING:
     from core.virtual_agent_router import VirtualAgentRouter
@@ -29,9 +33,228 @@ app = Flask(__name__)
 # Configure logging - web logging is configured in main.py
 logger = logging.getLogger(__name__)
 
+# Load authentication configuration
+def load_auth_config() -> Dict[str, Any]:
+    """
+    Load authentication configuration from config.yaml.
+
+    Returns:
+        Dictionary containing authentication configuration
+    """
+    try:
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "config",
+            "config.yaml"
+        )
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+            return config.get("authentication", {})
+    except Exception as e:
+        logger.error(f"Error loading authentication config: {e}")
+        return {}
+
+# Load auth config
+auth_config = load_auth_config()
+
+# Configure Flask secret key from environment variable
+if auth_config.get("enabled", False):
+    secret_key_env = auth_config.get("session", {}).get("secret_key_env", "FLASK_SECRET_KEY")
+    app.secret_key = os.getenv(secret_key_env, os.urandom(24))
+
+    # Configure session timeout
+    timeout_hours = auth_config.get("session", {}).get("timeout_hours", 24)
+    app.permanent_session_lifetime = timedelta(hours=timeout_hours)
+else:
+    app.secret_key = os.urandom(24)
+
 # In-memory storage for connection history
 connection_history = []
 history_lock = threading.Lock()
+
+
+# Authentication Helper Functions
+def get_authorized_org_ids() -> list:
+    """
+    Get the list of authorized organization IDs from environment variable.
+
+    Returns:
+        List of authorized organization IDs
+    """
+    if not auth_config.get("enabled", False):
+        return []
+
+    orgs_env_var = auth_config.get("authorized_orgs_env", "AUTHORIZED_WEBEX_ORG_IDS")
+    orgs_str = os.getenv(orgs_env_var, "")
+
+    if not orgs_str:
+        logger.warning(f"No authorized org IDs found in environment variable: {orgs_env_var}")
+        return []
+
+    # Split by comma and strip whitespace
+    orgs = [org.strip() for org in orgs_str.split(",") if org.strip()]
+    logger.info(f"Loaded {len(orgs)} authorized organization IDs")
+    return orgs
+
+
+def parse_jwt_token(token: str) -> Dict[str, Any]:
+    """
+    Parse JWT token without signature verification.
+
+    Args:
+        token: JWT token string
+
+    Returns:
+        Dictionary containing token claims
+    """
+    try:
+        return jwt.decode(token, options={"verify_signature": False})
+    except Exception as e:
+        logger.error(f"Error parsing JWT token: {e}")
+        return {}
+
+
+def validate_org_id(org_id: str) -> bool:
+    """
+    Validate if the organization ID is authorized.
+
+    Args:
+        org_id: Organization ID to validate
+
+    Returns:
+        True if authorized, False otherwise
+    """
+    authorized_orgs = get_authorized_org_ids()
+
+    if not authorized_orgs:
+        logger.warning("No authorized organizations configured - denying access")
+        return False
+
+    is_valid = org_id in authorized_orgs
+
+    if is_valid:
+        logger.info(f"Organization ID validated: {org_id}")
+    else:
+        logger.warning(f"Unauthorized organization ID: {org_id}")
+
+    return is_valid
+
+
+def get_webex_user_info(access_token: str) -> Dict[str, Any]:
+    """
+    Get user information from Webex API.
+
+    Args:
+        access_token: Webex access token
+
+    Returns:
+        Dictionary containing user information
+    """
+    try:
+        url = "https://webexapis.com/v1/userinfo"
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}"
+        }
+        response = requests.get(url=url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Error fetching user info from Webex: {e}")
+        return {}
+
+
+def exchange_code_for_tokens(code: str) -> Dict[str, Any]:
+    """
+    Exchange authorization code for access and ID tokens.
+
+    Args:
+        code: Authorization code from OAuth callback
+
+    Returns:
+        Dictionary containing tokens and user information
+    """
+    try:
+        # Read OAuth credentials directly from environment variables
+        client_id = os.getenv("WEBEX_CLIENT_ID")
+        client_secret = os.getenv("WEBEX_CLIENT_SECRET")
+        redirect_uri = os.getenv("WEBEX_REDIRECT_URI")
+
+        # Check which credentials are missing
+        missing = []
+        if not client_id:
+            missing.append("client_id")
+        if not client_secret:
+            missing.append("client_secret")
+        if not redirect_uri:
+            missing.append("redirect_uri")
+
+        if missing:
+            logger.error(f"Missing Webex OAuth configuration: {', '.join(missing)}")
+            return {}
+
+        logger.info(f"Token exchange: client_id={'set' if client_id else 'MISSING'}, "
+                   f"client_secret={'set' if client_secret else 'MISSING'}, "
+                   f"redirect_uri={redirect_uri}")
+
+        url = "https://webexapis.com/v1/access_token"
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/x-www-form-urlencoded"
+        }
+        payload = (
+            f"grant_type=authorization_code&client_id={client_id}&"
+            f"client_secret={client_secret}&code={code}&redirect_uri={redirect_uri}"
+        )
+
+        response = requests.post(url=url, data=payload, headers=headers, timeout=10)
+
+        if response.status_code != 200:
+            logger.error(f"Token exchange failed with status {response.status_code}: {response.text}")
+
+        response.raise_for_status()
+        return response.json()
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error during token exchange: {e}")
+        if hasattr(e.response, 'text'):
+            logger.error(f"Response body: {e.response.text}")
+        return {}
+    except Exception as e:
+        logger.error(f"Error exchanging code for tokens: {e}")
+        return {}
+
+
+def require_auth(f):
+    """
+    Decorator to require authentication for routes.
+    Redirects to login page if not authenticated.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Skip authentication if disabled
+        if not auth_config.get("enabled", False):
+            return f(*args, **kwargs)
+
+        # Check if user is authenticated
+        if "authenticated" not in session or not session.get("authenticated"):
+            logger.info("Unauthenticated access attempt, redirecting to login")
+            return redirect(url_for("login"))
+
+        # Check if session has expired
+        if "auth_time" in session:
+            auth_time = datetime.fromisoformat(session["auth_time"])
+            timeout_hours = auth_config.get("session", {}).get("timeout_hours", 24)
+
+            if datetime.now() - auth_time > timedelta(hours=timeout_hours):
+                logger.info("Session expired, redirecting to login")
+                session.clear()
+                return redirect(url_for("login"))
+
+        return f(*args, **kwargs)
+
+    return decorated_function
 
 
 def set_router(router: "VirtualAgentRouter") -> None:
@@ -74,9 +297,11 @@ def add_connection_history(connection_data: Dict[str, Any]) -> None:
 
 
 @app.route("/")
+@require_auth
 def index():
     """
     Main dashboard page with graphical interface.
+    Requires authentication via Webex OAuth.
 
     Returns:
         Rendered HTML template with gateway status and monitoring interface
@@ -91,15 +316,187 @@ def index():
         # Get connection data
         connection_data = get_connection_data()
 
+        # Get user info from session
+        user_info = {
+            "name": session.get("user_name", "User"),
+            "email": session.get("user_email", ""),
+            "org_id": session.get("org_id", "")
+        }
+
         return render_template(
             "dashboard.html",
             status=status_data,
             config=config_data,
             connections=connection_data,
+            user=user_info,
         )
     except Exception as e:
         logger.error(f"Error rendering dashboard: {e}")
         return render_template("error.html", error=str(e))
+
+
+@app.route("/login")
+def login():
+    """
+    Login page with Webex OAuth.
+
+    Returns:
+        Rendered HTML template with login interface
+    """
+    # If already authenticated, redirect to dashboard
+    if session.get("authenticated"):
+        return redirect(url_for("index"))
+
+    # Check if there's an error message in the query params
+    error_message = request.args.get("error", None)
+
+    # Build OAuth URL
+    oauth_config = auth_config.get("webex_oauth", {})
+    client_id = os.getenv("WEBEX_CLIENT_ID")
+    redirect_uri = os.getenv("WEBEX_REDIRECT_URI")
+    scopes = oauth_config.get("scopes", "openid email profile")
+    state = oauth_config.get("state", "byova_gateway_auth")
+
+    # Log configuration for debugging (sanitized)
+    logger.info(f"OAuth configuration: client_id={'set' if client_id else 'MISSING'}, "
+                f"redirect_uri={redirect_uri}, scopes={scopes}")
+
+    if not client_id:
+        logger.error("WEBEX_CLIENT_ID environment variable is not set!")
+        return render_template("login.html", oauth_url="#",
+                             error="Configuration error: Client ID not configured")
+
+    if not redirect_uri:
+        logger.error("WEBEX_REDIRECT_URI environment variable is not set!")
+        return render_template("login.html", oauth_url="#",
+                             error="Configuration error: Redirect URI not configured")
+
+    oauth_url = (
+        f"https://webexapis.com/v1/authorize?"
+        f"response_type=code&"
+        f"client_id={client_id}&"
+        f"redirect_uri={redirect_uri}&"
+        f"scope={scopes.replace(' ', '%20')}&"
+        f"state={state}"
+    )
+
+    return render_template("login.html", oauth_url=oauth_url, error=error_message)
+
+
+@app.route("/oauth")
+def oauth_callback():
+    """
+    OAuth callback handler.
+    Validates state, exchanges code for tokens, validates org ID, and creates session.
+
+    Returns:
+        Redirect to dashboard on success, login page on failure
+    """
+    try:
+        # Verify state parameter
+        oauth_config = auth_config.get("webex_oauth", {})
+        expected_state = oauth_config.get("state", "byova_gateway_auth")
+        state = request.args.get("state")
+
+        if state != expected_state:
+            logger.warning(f"Invalid state parameter: {state}")
+            return redirect(url_for("login", error="Invalid state parameter"))
+
+        # Get authorization code
+        code = request.args.get("code")
+
+        if not code:
+            logger.error("No authorization code received")
+            return redirect(url_for("login", error="No authorization code received"))
+
+        # Exchange code for tokens
+        logger.info("Exchanging authorization code for tokens")
+        tokens = exchange_code_for_tokens(code)
+
+        if not tokens or "id_token" not in tokens:
+            logger.error("Failed to exchange code for tokens")
+            return redirect(url_for("login", error="Failed to authenticate with Webex"))
+
+        # Parse JWT to get claims
+        id_token = tokens.get("id_token")
+        access_token = tokens.get("access_token")
+        claims = parse_jwt_token(id_token)
+
+        # Extract org ID from access token
+        # Webex access tokens are formatted as: {access_token}_{ci_cluster}_{org_id}
+        try:
+            token_parts = access_token.split("_")
+            if len(token_parts) >= 3:
+                org_id = token_parts[2]
+                logger.info(f"Extracted organization ID from access token: {org_id}")
+            else:
+                logger.error(f"Access token format unexpected: {len(token_parts)} parts")
+                return redirect(url_for("login", error="Invalid access token format"))
+        except Exception as e:
+            logger.error(f"Error extracting org ID from access token: {e}")
+            return redirect(url_for("login", error="Failed to extract organization ID"))
+
+        if not org_id:
+            logger.error("No organization ID found in access token")
+            return redirect(url_for("login", error="No organization ID found"))
+
+        # Validate org ID
+        if not validate_org_id(org_id):
+            logger.warning(f"Unauthorized organization attempted access: {org_id}")
+            return redirect(
+                url_for("login", error="Your organization is not authorized to access this dashboard")
+            )
+
+        # Get user info from Webex
+        user_info = get_webex_user_info(access_token)
+
+        # Create session
+        session.permanent = True
+        session["authenticated"] = True
+        session["auth_time"] = datetime.now().isoformat()
+        session["access_token"] = access_token
+        session["id_token"] = id_token
+        session["org_id"] = org_id
+        session["user_name"] = user_info.get("name", claims.get("name", "User"))
+        session["user_email"] = user_info.get("email", claims.get("email", ""))
+
+        logger.info(f"User authenticated successfully: {session['user_email']} (Org: {org_id})")
+
+        return redirect(url_for("index"))
+
+    except Exception as e:
+        logger.error(f"Error in OAuth callback: {e}")
+        return redirect(url_for("login", error="Authentication failed"))
+
+
+@app.route("/logout")
+def logout():
+    """
+    Logout route that clears the session.
+
+    Returns:
+        Redirect to login page
+    """
+    user_email = session.get("user_email", "Unknown")
+    session.clear()
+    logger.info(f"User logged out: {user_email}")
+    return redirect(url_for("login"))
+
+
+@app.route("/auth/status")
+def auth_status():
+    """
+    Authentication status endpoint for AJAX calls.
+
+    Returns:
+        JSON response with authentication status
+    """
+    return jsonify({
+        "authenticated": session.get("authenticated", False),
+        "user_name": session.get("user_name", None),
+        "user_email": session.get("user_email", None),
+        "org_id": session.get("org_id", None),
+    })
 
 
 @app.route("/status")
