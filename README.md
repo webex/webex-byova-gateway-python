@@ -20,6 +20,7 @@ This comprehensive guide walks you through:
 - [Monitoring Dashboard](#monitoring-dashboard)
 - [Usage](#usage)
 - [API](#api)
+- [Security Configuration](docs/Security-Configuration.md)
 - [Maintainers](#maintainers)
 - [Contributing](#contributing)
 - [License](#license)
