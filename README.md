@@ -308,19 +308,33 @@ JWT validation is configured in the `jwt_validation` section of `config/config.y
 
 #### How to Obtain Your Datasource URL
 
-The `datasource_url` must match the URL you register with Webex Contact Center when creating your datasource via the [BYoDS (Bring Your Own Data Source)](https://developer.webex.com/webex-contact-center/docs/api/v1/data-sources) API.
+The `datasource_url` must **EXACTLY match** (character-for-character) the URL you provide when registering your datasource via the [BYoDS (Bring Your Own Data Source)](https://developer.webex.com/webex-contact-center/docs/api/v1/data-sources) API.
 
-1. **For local development with ngrok**:
-   ```
-   datasource_url: "https://abc123def456.ngrok-free.app:443"
-   ```
+**Critical**: The JWT token from Webex Contact Center contains a `com.cisco.datasource.url` claim that must match this value exactly. Use the **exact same format** that you used in the BYoDS API registration.
 
-2. **For production deployment**:
-   ```
-   datasource_url: "https://byova-gateway.yourcompany.com:443"
-   ```
+**Examples** (use whatever format YOU registered):
 
-**Important**: The URL must exactly match what you registered with Webex Contact Center, including the protocol (`https://`) and port (`:443` for HTTPS).
+```yaml
+# If you registered with explicit :443 port
+datasource_url: "https://your-gateway.example.com:443"
+
+# If you registered without port (common for standard HTTPS)
+datasource_url: "https://your-gateway.example.com"
+
+# Ngrok URLs (check your BYoDS registration for exact format)
+datasource_url: "https://abc123def456.ngrok-free.app"
+```
+
+**How to verify**:
+1. Check your BYoDS datasource registration (via API or Control Hub)
+2. Copy the EXACT URL you registered (character-for-character)
+3. Paste it into `jwt_validation.datasource_url` in your config
+
+**Common mistakes**:
+- ❌ Registered: `https://example.com` → Config: `https://example.com:443` (MISMATCH!)
+- ❌ Registered: `https://example.com:443` → Config: `https://example.com` (MISMATCH!)
+- ✅ Registered: `https://example.com` → Config: `https://example.com` (MATCH!)
+- ✅ Registered: `https://example.com:443` → Config: `https://example.com:443` (MATCH!)
 
 #### Understanding the Datasource Schema UUID
 
@@ -385,9 +399,13 @@ jwt_validation:
 - Check that public keys can be fetched from Webex identity broker
 - Verify your network allows outbound HTTPS connections to Webex endpoints
 
-**Error: "Datasource URL mismatch"**
-- Ensure `datasource_url` in config exactly matches the URL registered with Webex Contact Center
-- Include the protocol (`https://`) and port (`:443`)
+**Error: "Datasource URL mismatch"** or "Datasource claims validation failed"
+- Your `datasource_url` in config must EXACTLY match (character-for-character) the URL you registered via BYoDS API
+- The JWT token contains a `com.cisco.datasource.url` claim that must match your config value exactly
+- Check if you registered with or without the port (`:443`) and match it exactly
+- Common issue: Config has `:443` but BYoDS registration doesn't (or vice versa)
+- **To debug**: Set log level to DEBUG and check the log message showing expected vs actual URL
+- **Solution**: Copy the exact URL from your BYoDS datasource registration and update your config
 
 **Error: "JWT token is expired"**
 - This indicates Webex Contact Center sent an expired token
