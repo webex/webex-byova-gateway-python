@@ -13,6 +13,13 @@ This document provides recommended security configurations for the BYOVA Gateway
    - [Security Groups](#web-monitor-security-groups)
    - [Verification](#web-monitor-verification)
 
+2. [gRPC TLS Termination Setup](#grpc-tls-termination-setup)
+   - [Prerequisites](#grpc-prerequisites)
+   - [Create gRPC Target Group](#grpc-target-group)
+   - [Add gRPC Listener](#grpc-listener)
+   - [Configure Security Groups](#grpc-security-groups)
+   - [Verification](#grpc-verification)
+
 ---
 
 # HTTPS Configuration for Web Monitor
@@ -246,4 +253,87 @@ curl -I http://your-domain.com
 # Test HTTPS endpoints
 curl -k https://your-domain.com/api/status
 curl -k https://your-domain.com/health
+```
+
+---
+
+# gRPC TLS Termination Setup
+
+This section configures TLS termination for the gRPC service (port 50051) using the existing ALB infrastructure.
+
+## gRPC Prerequisites
+
+- Existing ALB with SSL certificate configured (from Web Monitor setup above)
+- gRPC service running on port 50051
+- Target group for gRPC backend services
+
+## gRPC Target Group
+
+```bash
+# Create target group for gRPC service
+aws elbv2 create-target-group \
+  --name byova-grpc-tg \
+  --protocol HTTP \
+  --port 50051 \
+  --vpc-id vpc-xxxxxxxxx \
+  --health-check-path /grpc.health.v1.Health/Check \
+  --health-check-protocol HTTP \
+  --health-check-port 50051 \
+  --target-type ip \
+  --protocol-version GRPC
+```
+
+## gRPC Listener
+
+**Note**: Webex Contact Center sends all gRPC traffic on port 443 by default. Use path-based routing to separate gRPC from web traffic.
+
+```bash
+# Add path-based routing rule for VoiceVirtualAgent service
+aws elbv2 create-rule \
+  --listener-arn arn:aws:elasticloadbalancing:region:account:listener/app/byova-gateway-alb/xxxxx/xxxxx \
+  --priority 100 \
+  --conditions Field=path-pattern,Values='/com.cisco.wcc.ccai.media.v1.VoiceVirtualAgent/*' \
+  --actions Type=forward,TargetGroupArn=arn:aws:elasticloadbalancing:region:account:targetgroup/byova-grpc-tg/xxxxx
+
+# Optional: Add path-based routing rule for gRPC health check service (for external testing)
+aws elbv2 create-rule \
+  --listener-arn arn:aws:elasticloadbalancing:region:account:listener/app/byova-gateway-alb/xxxxx/xxxxx \
+  --priority 99 \
+  --conditions Field=path-pattern,Values='/grpc.health.v1.Health/*' \
+  --actions Type=forward,TargetGroupArn=arn:aws:elasticloadbalancing:region:account:targetgroup/byova-grpc-tg/xxxxx
+```
+
+## gRPC Security Groups
+
+```bash
+# Allow ALB to reach gRPC backend on port 50051
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-xxxxxxxxx \
+  --protocol tcp \
+  --port 50051 \
+  --cidr 0.0.0.0/0 \
+  --description "gRPC Backend Access"
+```
+
+## Register gRPC Targets
+
+```bash
+# Register ECS service or EC2 instances with gRPC target group
+aws elbv2 register-targets \
+  --target-group-arn arn:aws:elasticloadbalancing:region:account:targetgroup/byova-grpc-tg/xxxxx \
+  --targets Id=10.0.1.100,Port=50051
+```
+
+## gRPC Verification
+
+```bash
+# Test gRPC TLS connection using grpcurl (port 443 with path-based routing)
+grpcurl -import-path proto -proto voicevirtualagent.proto \
+  your-domain.com:443 \
+  com.cisco.wcc.ccai.media.v1.VoiceVirtualAgent/ListVirtualAgents
+
+# Test gRPC health check (requires optional health check routing rule above)
+grpcurl -import-path proto -proto health.proto \
+  your-domain.com:443 \
+  grpc.health.v1.Health/Check
 ```
