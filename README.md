@@ -56,10 +56,12 @@ This comprehensive guide walks you through:
    which python  # Should show path to venv/bin/python
    ```
 
-3. **Install Dependencies**
+3. **Install Dependencies** (Required)
    ```bash
    pip install -r requirements.txt
    ```
+   
+   **Important**: All dependencies including JWT authentication libraries are required. The gateway will not start if dependencies are missing.
 
 4. **Generate gRPC Stubs**
    ```bash
@@ -119,60 +121,144 @@ The gateway will start with the local audio connector by default, which uses the
 
 ### Configuration
 
-The gateway is configured via `config/config.yaml`. Key configuration options:
+The gateway is configured via `config/config.yaml`. Key configuration sections:
 
 ```yaml
 # Gateway settings
 gateway:
-   host: "0.0.0.0"
-   port: 50051
+  host: "0.0.0.0"
+  port: 50051
+
+# Connectors configuration
+connectors:
+  # Local Audio Connector - plays audio files from the audio/ directory
+  local_audio_connector:
+    type: "local_audio_connector"
+    class: "LocalAudioConnector"
+    module: "connectors.local_audio_connector"
+    config:
+      audio_files:
+        welcome: "welcome.wav"
+        transfer: "transferring.wav"
+        goodbye: "goodbye.wav"
+        error: "error.wav"
+        default: "default_response.wav"
+      agents:
+        - "Local Playback"
+
+  # AWS Lex Connector - integrates with Amazon Lex bots
+  aws_lex_connector:
+    type: "aws_lex_connector"
+    class: "AWSLexConnector"
+    module: "connectors.aws_lex_connector"
+    config:
+      region_name: "us-east-1"
+      # bot_alias_id: "YOUR_BOT_ALIAS_ID"  # Required for specific bot
+      # aws_access_key_id: "YOUR_ACCESS_KEY"  # Optional, uses env vars if not set
+      # aws_secret_access_key: "YOUR_SECRET_KEY"  # Optional, uses env vars if not set
+      initial_trigger_text: "hello"
+      barge_in_enabled: false
+      audio_logging:
+        enabled: true
+        output_dir: "logs/audio_recordings"
+        filename_format: "{conversation_id}_{timestamp}_{source}.wav"
+        log_all_audio: true
+        max_file_size: 10485760
+        sample_rate: 8000
+        bit_depth: 8
+        channels: 1
+        encoding: "ulaw"
+      agents: []
 
 # Monitoring interface
 monitoring:
-   enabled: true
-   host: "0.0.0.0"
-   port: 8080
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  metrics_enabled: true
+  health_check_interval: 30
 
-# Connectors
-connectors:
-   local_audio_connector:
-      type: "local_audio_connector"
-      class: "LocalAudioConnector"
-      module: "connectors.local_audio_connector"
-      config:
-         audio_files:
-            welcome: "welcome.wav"
-            transfer: "transferring.wav"
-            goodbye: "goodbye.wav"
-            error: "error.wav"
-            default: "default_response.wav"
-         agents:
-            - "Local Playback"
+# Web dashboard authentication
+authentication:
+  enabled: true
+  environment: "dev"  # Options: "dev" or "production"
+  session:
+    timeout_hours: 24
+    secret_key_env: "FLASK_SECRET_KEY"
+  webex_oauth:
+    scopes: "openid email profile"
+    state: "byova_gateway_auth"
 
-   # Example: AWS Lex Connector Configuration
-   aws_lex_connector:
-      type: "aws_lex_connector"
-      class: "AWSLexConnector"
-      module: "connectors.aws_lex_connector"
-      config:
-         region_name: "us-east-1"  # Set your AWS region (required)
-         initial_trigger_text: "hello"  # Text sent when starting conversation (default: "hello")
-         barge_in_enabled: false  # Allow users to interrupt bot responses (default: false)
-         audio_logging:
-            enabled: true
-            output_dir: "logs/audio_recordings"
-            filename_format: "{conversation_id}_{timestamp}_{source}.wav"
-            log_all_audio: true
-            max_file_size: 10485760
-            sample_rate: 8000
-            bit_depth: 8
-            channels: 1
-            encoding: "ulaw"
+# JWT validation for gRPC requests (REQUIRED when enabled)
+jwt_validation:
+  # Enable/disable JWT validation (default: true for security)
+  enabled: true
+  
+  # Enforce validation - if false, invalid tokens are logged but allowed
+  enforce_validation: true
+  
+  # REQUIRED: Datasource URL - must match URL registered with Webex Contact Center
+  # Example: "https://your-gateway-domain.com:443"
+  datasource_url: ""  # Must be configured if enabled=true
+  
+  # Datasource schema UUID (default is standard BYOVA schema)
+  # This is the schema ID from https://github.com/webex/dataSourceSchemas
+  # Path: Services/VoiceVirtualAgent/5397013b-7920-4ffc-807c-e8a3e0a18f43/schema.json
+  # This value should not change unless there is a major modification to the BYOVA schema
+  datasource_schema_uuid: "5397013b-7920-4ffc-807c-e8a3e0a18f43"
+  
+  # Public key cache duration in minutes
+  cache_duration_minutes: 60
+
+# Logging configuration
+logging:
+  gateway:
+    level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/gateway.log"
+    max_size: "10MB"
+    backup_count: 5
+  web:
+    level: "WARNING"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/web.log"
+    max_size: "5MB"
+    backup_count: 3
+
+# Session management
+sessions:
+  timeout: 600  # Session timeout in seconds
+  max_sessions: 1000
+  cleanup_interval: 60
+  enable_auto_cleanup: true
+  max_session_duration: 3600
+
+# Audio processing
+audio:
+  supported_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "ogg"
 ```
 
-### AWS Credentials Configuration
+#### Important Configuration Notes
 
-**IMPORTANT:** AWS credentials are NOT configured in config files for security reasons.
+**JWT Validation** (Required):
+- JWT validation is **enabled by default** for security
+- You **must** configure `datasource_url` before starting the gateway
+- The `datasource_url` must exactly match the URL you register with Webex Contact Center via the BYoDS API
+- If JWT validation is enabled without `datasource_url`, the gateway will **fail to start**
+- For development without JWT validation, explicitly set `jwt_validation.enabled: false`
+
+**Connector Configuration**:
+- Multiple connectors can be configured simultaneously
+- Each connector must have a unique identifier (e.g., `local_audio_connector`, `aws_lex_connector`)
+- Connectors are loaded dynamically based on the `module` and `class` specified
+
+**AWS Credentials**:
+- Prefer environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) over hardcoded credentials
+- Explicit credentials in config files should only be used for development/testing
 
 The connector uses the standard AWS credential chain (in order of precedence):
 1. **Environment variables**: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
@@ -195,6 +281,150 @@ aws configure
 # For production, use IAM roles attached to your EC2/ECS/Lambda resources
 # No credentials needed in config files!
 ```
+
+You can add these lines to your shell profile (e.g., `.bashrc`, `.zshrc`) or set them in your deployment environment. The gateway will automatically use these credentials if they are set.
+
+### JWT Authentication for gRPC Requests
+
+The gateway supports JWT (JSON Web Token) validation for all gRPC requests to ensure secure communication with Webex Contact Center. This feature validates tokens from Webex identity broker endpoints and verifies all required claims.
+
+#### Overview
+
+JWT authentication provides:
+- **Signature Verification**: Validates tokens using RSA public keys from Webex JWKS endpoints
+- **Claims Validation**: Verifies issuer, audience, subject, JWT ID, and expiration
+- **Datasource Validation**: Ensures tokens are issued for the correct datasource URL and schema
+- **Caching**: Public keys are cached for 60 minutes to reduce endpoint load
+- **Optional Enforcement**: Can be configured to log violations without rejecting requests
+
+#### Configuration
+
+JWT validation is configured in the `jwt_validation` section of `config/config.yaml`. See the [Configuration](#configuration) section above for the complete configuration structure.
+
+**Key Points**:
+- JWT validation is **enabled by default** (`enabled: true`)
+- You **must** configure `datasource_url` or the gateway will fail to start
+- Set `enabled: false` to disable JWT validation for development/testing
+
+#### How to Obtain Your Datasource URL
+
+The `datasource_url` must **EXACTLY match** (character-for-character) the URL you provide when registering your datasource via the [BYoDS (Bring Your Own Data Source)](https://developer.webex.com/webex-contact-center/docs/api/v1/data-sources) API.
+
+**Critical**: The JWT token from Webex Contact Center contains a `com.cisco.datasource.url` claim that must match this value exactly. Use the **exact same format** that you used in the BYoDS API registration.
+
+**Examples** (use whatever format YOU registered):
+
+```yaml
+# If you registered with explicit :443 port
+datasource_url: "https://your-gateway.example.com:443"
+
+# If you registered without port (common for standard HTTPS)
+datasource_url: "https://your-gateway.example.com"
+
+# Ngrok URLs (check your BYoDS registration for exact format)
+datasource_url: "https://abc123def456.ngrok-free.app"
+```
+
+**How to verify**:
+1. Check your BYoDS datasource registration (via API or Control Hub)
+2. Copy the EXACT URL you registered (character-for-character)
+3. Paste it into `jwt_validation.datasource_url` in your config
+
+**Common mistakes**:
+- ❌ Registered: `https://example.com` → Config: `https://example.com:443` (MISMATCH!)
+- ❌ Registered: `https://example.com:443` → Config: `https://example.com` (MISMATCH!)
+- ✅ Registered: `https://example.com` → Config: `https://example.com` (MATCH!)
+- ✅ Registered: `https://example.com:443` → Config: `https://example.com:443` (MATCH!)
+
+#### Understanding the Datasource Schema UUID
+
+The `datasource_schema_uuid` identifies the specific schema definition used for communication between Webex Contact Center and your gateway. This UUID comes from the [Webex dataSourceSchemas repository](https://github.com/webex/dataSourceSchemas).
+
+**For BYOVA (Voice Virtual Agent)**:
+- **Schema UUID**: `5397013b-7920-4ffc-807c-e8a3e0a18f43`
+- **Schema Location**: `Services/VoiceVirtualAgent/5397013b-7920-4ffc-807c-e8a3e0a18f43/schema.json`
+- **Proto Definitions**: Defined in the same directory structure
+- **Stability**: This UUID should **not change** unless there is a major modification to the BYOVA schema definition by Webex
+
+**What is it?**
+The schema UUID defines the structure of request and response payloads, protocol (gRPC), and supported app types. It ensures that both Webex Contact Center and your gateway are using the same communication protocol and message formats.
+
+**Do I need to change it?**
+In most cases, **no**. The default value is the standard BYOVA schema UUID and will work for all standard BYOVA implementations. You would only change this if:
+- Webex releases a new major version of the BYOVA schema
+- You're using a different Webex Contact Center service schema (not BYOVA)
+
+**Reference**: [Webex dataSourceSchemas Documentation](https://github.com/webex/dataSourceSchemas)
+
+#### Supported Webex Regions
+
+The gateway validates tokens from these Webex identity broker issuers:
+- `https://idbrokerbts.webex.com/idb` (BTS US)
+- `https://idbrokerbts-eu.webex.com/idb` (BTS EU)
+- `https://idbroker.webex.com/idb` (Production US)
+- `https://idbroker-eu.webex.com/idb` (Production EU)
+- `https://idbroker-b-us.webex.com/idb` (B-US)
+- `https://idbroker-ca.webex.com/idb` (Canada)
+
+#### Token Format
+
+Tokens are expected in the gRPC metadata `authorization` header:
+```
+authorization: Bearer <JWT_TOKEN>
+```
+
+#### Deployment Recommendations
+
+**Development**:
+```yaml
+jwt_validation:
+  enabled: false  # Or enabled: true with enforce_validation: false for testing
+```
+
+**Production**:
+```yaml
+jwt_validation:
+  enabled: true
+  enforce_validation: true
+  datasource_url: "https://your-production-url.com:443"
+```
+
+#### Troubleshooting
+
+**Error: "Missing JWT token in authorization metadata"**
+- Ensure Webex Contact Center is configured to send JWT tokens with gRPC requests
+- Verify your datasource is properly registered with Webex Contact Center
+
+**Error: "JWT token signature not valid"**
+- Check that public keys can be fetched from Webex identity broker
+- Verify your network allows outbound HTTPS connections to Webex endpoints
+
+**Error: "Invalid issuer"**
+- The JWT token's issuer claim must be from a valid Webex identity broker
+- **Security**: Issuer is validated BEFORE fetching keys to prevent SSRF attacks
+- Supported issuers: 
+  - `https://idbrokerbts.webex.com/idb` (BTS US)
+  - `https://idbrokerbts-eu.webex.com/idb` (BTS EU)
+  - `https://idbroker.webex.com/idb` (Production US)
+  - `https://idbroker-eu.webex.com/idb` (Production EU)
+  - `https://idbroker-b-us.webex.com/idb` (B-US)
+  - `https://idbroker-ca.webex.com/idb` (Canada)
+- Verify your datasource is properly configured in Webex Contact Center
+- If you see this error with a malformed issuer URL, it may indicate a security attack attempt
+
+**Error: "Datasource URL mismatch"** or "Datasource claims validation failed"
+- Your `datasource_url` in config must EXACTLY match (character-for-character) the URL you registered via BYoDS API
+- The JWT token contains a `com.cisco.datasource.url` claim that must match your config value exactly
+- Check if you registered with or without the port (`:443`) and match it exactly
+- Common issue: Config has `:443` but BYoDS registration doesn't (or vice versa)
+- **To debug**: Set log level to DEBUG and check the log message showing expected vs actual URL
+- **Solution**: Copy the exact URL from your BYoDS datasource registration and update your config
+
+**Error: "JWT token is expired"**
+- This indicates Webex Contact Center sent an expired token
+- Check system clock synchronization between your gateway and Webex services
+
+For gradual rollout, start with `enforce_validation: false` to log validation results without rejecting requests, then enable enforcement after verification.
 
 ### Running the Server
 

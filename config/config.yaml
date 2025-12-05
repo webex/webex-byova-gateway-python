@@ -75,6 +75,30 @@ authentication:
     scopes: "openid email profile"
     state: "byova_gateway_auth"
 
+# JWT validation configuration for gRPC requests
+jwt_validation:
+  # Enable/disable JWT validation (default: true for production security)
+  enabled: true
+  
+  # Enforce validation - if false, invalid tokens are logged but allowed (default: true)
+  enforce_validation: true
+  
+  # Datasource URL - must match the URL configured in your Webex Contact Center datasource
+  # This should be the publicly accessible URL of your gateway (including port if non-standard)
+  # Example: "https://your-gateway-domain.com:443"
+  datasource_url: "https://b9eb5df4443d.ngrok-free.app"
+  
+  # Datasource schema UUID - typically this is the BYOVA schema UUID
+  # This is the schema ID from https://github.com/webex/dataSourceSchemas
+  # Path: Services/VoiceVirtualAgent/5397013b-7920-4ffc-807c-e8a3e0a18f43/schema.json
+  # Default value is the standard BYOVA schema UUID and should not change unless
+  # there is a major modification to the BYOVA schema definition
+  datasource_schema_uuid: "5397013b-7920-4ffc-807c-e8a3e0a18f43"
+  
+  # Cache duration for public keys in minutes (default: 60)
+  # Public keys are fetched from Webex identity broker and cached to improve performance
+  cache_duration_minutes: 60
+
 # Logging configuration
 logging:
   gateway:

@@ -11,6 +11,7 @@ import sys
 import threading
 from concurrent import futures
 from pathlib import Path
+from typing import Optional
 
 import grpc
 import yaml
@@ -19,12 +20,19 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent / "src" / "core"))
 
+from grpc_health.v1 import health_pb2_grpc
+
+from auth.jwt_interceptor import JWTAuthInterceptor
+
+# Import JWT authentication components (required)
+from auth.jwt_validator import JWTValidator
+from core.health_service import HealthCheckService
 from core.virtual_agent_router import VirtualAgentRouter
 from core.wxcc_gateway_server import WxCCGatewayServer
-from core.health_service import HealthCheckService
 from monitoring.app import run_web_app
-from src.generated.voicevirtualagent_pb2_grpc import add_VoiceVirtualAgentServicer_to_server
-from grpc_health.v1 import health_pb2_grpc
+from src.generated.voicevirtualagent_pb2_grpc import (
+    add_VoiceVirtualAgentServicer_to_server,
+)
 
 
 def setup_logging(config: dict) -> None:
@@ -155,21 +163,106 @@ def create_router_config(config: dict) -> dict:
     """
     # The connectors config is already in the correct dictionary format
     connectors_config = config.get("connectors", {})
-    
+
     # Ensure each connector has the required fields
     for connector_id, connector_config in connectors_config.items():
         if not isinstance(connector_config, dict):
-            raise ValueError(f"Connector {connector_id} configuration must be a dictionary")
-        
+            raise ValueError(
+                f"Connector {connector_id} configuration must be a dictionary"
+            )
+
         # Ensure required fields exist
         if "class" not in connector_config:
             raise ValueError(f"Connector {connector_id} missing required 'class' field")
         if "module" not in connector_config:
-            raise ValueError(f"Connector {connector_id} missing required 'module' field")
+            raise ValueError(
+                f"Connector {connector_id} missing required 'module' field"
+            )
         if "config" not in connector_config:
             connectors_config[connector_id]["config"] = {}
 
     return {"connectors": connectors_config}
+
+
+def create_jwt_interceptor(
+    config: dict, logger: logging.Logger
+) -> Optional[JWTAuthInterceptor]:
+    """
+    Create JWT authentication interceptor if configured.
+
+    Args:
+        config: Configuration dictionary containing JWT settings
+        logger: Logger instance
+
+    Returns:
+        JWTAuthInterceptor instance or None if not configured
+
+    Raises:
+        ValueError: If JWT validation is enabled but datasource_url is not configured
+    """
+    jwt_config = config.get("jwt_validation", {})
+
+    if not jwt_config.get("enabled", False):
+        logger.info("JWT validation is disabled in configuration")
+        return None
+
+    # Validate required configuration
+    datasource_url = jwt_config.get("datasource_url", "")
+    if not datasource_url:
+        error_msg = (
+            "JWT validation is enabled but datasource_url is not configured. "
+            "Please set jwt_validation.datasource_url in config.yaml or disable JWT validation."
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    # Get configuration values
+    datasource_schema_uuid = jwt_config.get(
+        "datasource_schema_uuid", "5397013b-7920-4ffc-807c-e8a3e0a18f43"
+    )
+    cache_duration_minutes = jwt_config.get("cache_duration_minutes", 60)
+    enforce_validation = jwt_config.get("enforce_validation", True)
+
+    try:
+        # Create JWT validator
+        validator = JWTValidator(
+            datasource_url=datasource_url,
+            datasource_schema_uuid=datasource_schema_uuid,
+            cache_duration_minutes=cache_duration_minutes,
+        )
+
+        # Create interceptor
+        interceptor = JWTAuthInterceptor(
+            jwt_validator=validator,
+            enabled=True,
+            enforce=enforce_validation,
+        )
+
+        logger.info("JWT authentication interceptor created successfully")
+        logger.info(f"Datasource URL: {datasource_url}")
+        logger.info(
+            f"Enforcement: {'ENABLED' if enforce_validation else 'DISABLED (logging only)'}"
+        )
+
+        return interceptor
+
+    except Exception as e:
+        logger.error(f"Failed to create JWT interceptor: {e}")
+
+        # If JWT validation is enabled, this is a fatal error
+        jwt_config = config.get("jwt_validation", {})
+        if jwt_config.get("enabled", True):
+            error_msg = (
+                "Failed to create JWT interceptor but JWT validation is enabled. "
+                "This is a fatal configuration error. Please check your configuration and dependencies."
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+        else:
+            logger.warning(
+                "JWT validation is disabled, continuing without JWT interceptor"
+            )
+            return None
 
 
 def main():
@@ -208,7 +301,7 @@ def main():
         # Create WxCCGatewayServer
         server = WxCCGatewayServer(router)
         logger.info("WxCCGatewayServer created")
-        
+
         # Create health service with router for real health monitoring
         health_service = HealthCheckService(router)
         logger.info("HealthCheckService created with real health monitoring")
@@ -218,21 +311,38 @@ def main():
         host = gateway_config.get("host", "0.0.0.0")
         port = gateway_config.get("port", 50051)
 
-        # Create gRPC server
-        grpc_server = grpc.server(
-            futures.ThreadPoolExecutor(max_workers=10),
-            options=[
-                ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50MB
-                ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
-                ("grpc.max_concurrent_streams", 100),
-            ],
-        )
+        # Create JWT interceptor if configured
+        jwt_interceptor = create_jwt_interceptor(config, logger)
+        interceptors = []
+        if jwt_interceptor:
+            interceptors.append(jwt_interceptor)
+
+        # Create gRPC server with interceptors
+        if interceptors:
+            grpc_server = grpc.server(
+                futures.ThreadPoolExecutor(max_workers=10),
+                interceptors=interceptors,
+                options=[
+                    ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50MB
+                    ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
+                    ("grpc.max_concurrent_streams", 100),
+                ],
+            )
+            logger.info(f"gRPC server created with {len(interceptors)} interceptor(s)")
+        else:
+            grpc_server = grpc.server(
+                futures.ThreadPoolExecutor(max_workers=10),
+                options=[
+                    ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50MB
+                    ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
+                    ("grpc.max_concurrent_streams", 100),
+                ],
+            )
+            logger.info("gRPC server created without interceptors")
 
         # Add servicer to the server
-        add_VoiceVirtualAgentServicer_to_server(
-            server, grpc_server
-        )
-        
+        add_VoiceVirtualAgentServicer_to_server(server, grpc_server)
+
         # Add health service to the server
         health_pb2_grpc.add_HealthServicer_to_server(health_service, grpc_server)
         logger.info("Health service registered with gRPC server")
@@ -297,6 +407,20 @@ def main():
             print(f"   • Health: http://{monitoring_host}:{monitoring_port}/health")
         else:
             print("   • Disabled")
+
+        print()
+        print("🔐 JWT Authentication:")
+        jwt_config = config.get("jwt_validation", {})
+        if jwt_config.get("enabled", False) and jwt_interceptor:
+            print("   • Status: ENABLED")
+            print(
+                f"   • Enforcement: {'ENABLED' if jwt_config.get('enforce_validation', True) else 'DISABLED (logging only)'}"
+            )
+            print(
+                f"   • Datasource URL: {jwt_config.get('datasource_url', 'Not configured')}"
+            )
+        else:
+            print("   • Status: DISABLED")
 
         print()
         print("✅ Gateway is running! Press Ctrl+C to stop.")
