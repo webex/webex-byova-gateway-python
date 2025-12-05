@@ -438,10 +438,14 @@
             const indicator = document.getElementById('status-indicator');
             const statusText = document.getElementById('status-text');
 
-            if (data.status === 'running') {
+            // Extract health data
+            const grpcStatus = data.health?.grpc_status || 'UNKNOWN';
+            const isHealthy = data.health?.overall_healthy !== false;
+
+            if (data.status === 'running' && isHealthy) {
                 indicator.className = 'status-indicator status-running';
                 statusText.textContent = grpcStatus;
-            } else if (data.status === 'running' && !health.overall_healthy) {
+            } else if (data.status === 'running' && !isHealthy) {
                 indicator.className = 'status-indicator status-warning';
                 statusText.textContent = grpcStatus + ' (Degraded)';
             } else {
