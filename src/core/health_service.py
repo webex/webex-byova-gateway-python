@@ -14,6 +14,13 @@ from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 from .virtual_agent_router import VirtualAgentRouter
 
+# Global router reference to avoid variable conflicts
+_global_router = None
+
+def set_global_router(router):
+    global _global_router
+    _global_router = router
+
 
 class HealthCheckService(health_pb2_grpc.HealthServicer):
     """
@@ -31,7 +38,7 @@ class HealthCheckService(health_pb2_grpc.HealthServicer):
             router: VirtualAgentRouter instance for checking connector health
         """
         super().__init__()
-        self.router = router
+        set_global_router(router)
         self.logger = logging.getLogger(__name__)
         self._lock = threading.Lock()
         self._service_status = {}
@@ -53,9 +60,9 @@ class HealthCheckService(health_pb2_grpc.HealthServicer):
         """Update service health status based on actual system state."""
         try:
             with self._lock:
-                # Check if router has available agents
-                if self.router:
-                    available_agents = self.router.get_all_available_agents()
+                # Use global router to avoid variable conflicts
+                if _global_router:
+                    available_agents = _global_router.get_all_available_agents()
                     has_agents = len(available_agents) > 0
                     
                     if has_agents:
@@ -63,23 +70,18 @@ class HealthCheckService(health_pb2_grpc.HealthServicer):
                         self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVING
                         self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.SERVING
                         self._service_status[""] = health_pb2.HealthCheckResponse.SERVING
-                        self.logger.debug(f"Health check: SERVING - {len(available_agents)} agents available")
                     else:
                         # No agents available
                         self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.NOT_SERVING
                         self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.NOT_SERVING
                         self._service_status[""] = health_pb2.HealthCheckResponse.NOT_SERVING
-                        self.logger.warning("Health check: NOT_SERVING - No agents available")
                 else:
                     # No router available
                     self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
                     self._service_status["byova.VoiceVirtualAgentService"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
                     self._service_status[""] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
-                    self.logger.warning("Health check: SERVICE_UNKNOWN - No router available")
-                    
         except Exception as e:
             self.logger.error(f"Error updating service health: {e}")
-            # Set all services to unknown on error
             with self._lock:
                 self._service_status[""] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
                 self._service_status["byova.gateway"] = health_pb2.HealthCheckResponse.SERVICE_UNKNOWN
