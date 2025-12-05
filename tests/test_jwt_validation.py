@@ -175,22 +175,35 @@ class TestJWTValidator:
             validator.validate_token(token)
 
     def test_invalid_issuer_rejection(self, validator, rsa_keys, valid_claims):
-        """Test rejection of token with invalid issuer."""
+        """Test rejection of token with invalid issuer (SSRF prevention)."""
         invalid_claims = valid_claims.copy()
-        invalid_claims["iss"] = "https://invalid-issuer.com"
+        invalid_claims["iss"] = "https://evil-attacker.com/malicious"
 
         token = self.create_test_token(invalid_claims, rsa_keys["private_key"])
 
-        mock_jwks_response = {"keys": [rsa_keys["public_key"]]}
+        # Mock jwt.decode for the unverified decode call
+        with patch("jwt.decode", return_value=invalid_claims):
+            # The validator should reject BEFORE attempting to fetch keys
+            with pytest.raises(
+                AccessTokenException, match="Invalid issuer.*Must be one of the allowed"
+            ):
+                validator.validate_token(token)
 
-        with patch.object(
-            validator, "_fetch_public_keys", return_value=mock_jwks_response
-        ):
+    def test_invalid_issuer_prevents_ssrf(self, validator, rsa_keys, valid_claims):
+        """Test that invalid issuer is rejected BEFORE fetching keys (SSRF prevention)."""
+        invalid_claims = valid_claims.copy()
+        invalid_claims["iss"] = "https://attacker-controlled-server.com/idb"
+
+        token = self.create_test_token(invalid_claims, rsa_keys["private_key"])
+
+        # Mock _fetch_public_keys to verify it is NEVER called with invalid issuer
+        with patch.object(validator, "_fetch_public_keys") as mock_fetch:
             with patch("jwt.decode", return_value=invalid_claims):
-                with pytest.raises(
-                    AccessTokenException, match="Claims validation failed"
-                ):
+                with pytest.raises(AccessTokenException, match="Invalid issuer"):
                     validator.validate_token(token)
+
+                # Verify that _fetch_public_keys was NEVER called (SSRF prevented)
+                mock_fetch.assert_not_called()
 
     def test_missing_required_claims_rejection(self, validator, rsa_keys, valid_claims):
         """Test rejection of token missing required claims."""

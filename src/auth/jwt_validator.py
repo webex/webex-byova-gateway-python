@@ -48,9 +48,6 @@ class JWTValidator:
         "https://idbroker-ca.webex.com/idb",  # Canada
     ]
 
-    # Default identity broker URL
-    DEFAULT_IDENTITY_BROKER_URL = "https://idbrokerbts.webex.com"
-
     # Datasource claim keys
     DATASOURCE_URL_KEY = "com.cisco.datasource.url"
     DATASOURCE_SCHEMA_KEY = "com.cisco.datasource.schema.uuid"
@@ -116,11 +113,20 @@ class JWTValidator:
             if not issuer:
                 raise AccessTokenException("Token missing 'iss' claim")
 
+            # SECURITY: Validate issuer BEFORE fetching keys to prevent SSRF attacks
+            if issuer not in self.VALID_ISSUERS:
+                self.logger.error(
+                    f"Invalid issuer: {issuer}. Must be one of: {self.VALID_ISSUERS}"
+                )
+                raise AccessTokenException(
+                    f"Invalid issuer: {issuer}. Must be one of the allowed Webex identity brokers."
+                )
+
             # Debug logging
             self.logger.info(f"Validating token from issuer: {issuer}")
             self.logger.debug(f"Token claims (unverified): {unverified_token.keys()}")
 
-            # Fetch public keys for this issuer
+            # Fetch public keys for this issuer (issuer is now validated)
             public_keys = self._fetch_public_keys(issuer)
             num_keys = len(public_keys.get("keys", []))
             self.logger.info(f"Fetched {num_keys} public key(s) from JWKS endpoint")
@@ -238,12 +244,8 @@ class JWTValidator:
 
             # Fetch fresh keys
             try:
-                # Construct JWKS URL
-                if issuer:
-                    jwks_url = f"{issuer}/oauth2/v2/keys/verificationjwk"
-                else:
-                    jwks_url = f"{self.DEFAULT_IDENTITY_BROKER_URL}/idb/oauth2/v2/keys/verificationjwk"
-
+                # Construct JWKS URL - issuer is guaranteed to be valid at this point
+                jwks_url = f"{issuer}/oauth2/v2/keys/verificationjwk"
                 self.logger.debug(f"Fetching public keys from: {jwks_url}")
 
                 response = requests.get(jwks_url, timeout=10)

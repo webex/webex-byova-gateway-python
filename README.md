@@ -399,6 +399,19 @@ jwt_validation:
 - Check that public keys can be fetched from Webex identity broker
 - Verify your network allows outbound HTTPS connections to Webex endpoints
 
+**Error: "Invalid issuer"**
+- The JWT token's issuer claim must be from a valid Webex identity broker
+- **Security**: Issuer is validated BEFORE fetching keys to prevent SSRF attacks
+- Supported issuers: 
+  - `https://idbrokerbts.webex.com/idb` (BTS US)
+  - `https://idbrokerbts-eu.webex.com/idb` (BTS EU)
+  - `https://idbroker.webex.com/idb` (Production US)
+  - `https://idbroker-eu.webex.com/idb` (Production EU)
+  - `https://idbroker-b-us.webex.com/idb` (B-US)
+  - `https://idbroker-ca.webex.com/idb` (Canada)
+- Verify your datasource is properly configured in Webex Contact Center
+- If you see this error with a malformed issuer URL, it may indicate a security attack attempt
+
 **Error: "Datasource URL mismatch"** or "Datasource claims validation failed"
 - Your `datasource_url` in config must EXACTLY match (character-for-character) the URL you registered via BYoDS API
 - The JWT token contains a `com.cisco.datasource.url` claim that must match your config value exactly

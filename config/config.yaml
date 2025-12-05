@@ -86,7 +86,7 @@ jwt_validation:
   # Datasource URL - must match the URL configured in your Webex Contact Center datasource
   # This should be the publicly accessible URL of your gateway (including port if non-standard)
   # Example: "https://your-gateway-domain.com:443"
-  datasource_url: ""
+  datasource_url: "https://b9eb5df4443d.ngrok-free.app"
   
   # Datasource schema UUID - typically this is the BYOVA schema UUID
   # This is the schema ID from https://github.com/webex/dataSourceSchemas
