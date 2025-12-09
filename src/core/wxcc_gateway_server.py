@@ -108,7 +108,9 @@ class ConversationProcessor:
                 "input_type": "conversation_start",
             }
 
-            self.logger.debug(f"Starting conversation with message_data: {message_data}")
+            self.logger.debug(
+                f"Starting conversation with message_data: {message_data}"
+            )
 
             # Route to connector
             connector_response = self.router.route_request(
@@ -181,23 +183,33 @@ class ConversationProcessor:
             )
 
             # Handle the new yield pattern from connectors
-            if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+            if hasattr(connector_response, "__iter__") and not isinstance(
+                connector_response, (dict, str, bytes)
+            ):
                 # It's a generator/iterator, yield each response
                 for response in connector_response:
                     if response is not None:  # Skip None responses
-                        grpc_response = self._convert_connector_response_to_grpc(response)
+                        grpc_response = self._convert_connector_response_to_grpc(
+                            response
+                        )
                         if grpc_response is not None:
                             yield grpc_response
                     else:
-                        self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
+                        self.logger.debug(
+                            f"Skipping None response for conversation {self.conversation_id}"
+                        )
             else:
                 # It's a single response (backward compatibility)
                 if connector_response is not None:  # Skip None responses
-                    grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                    grpc_response = self._convert_connector_response_to_grpc(
+                        connector_response
+                    )
                     if grpc_response is not None:
                         yield grpc_response
                 else:
-                    self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
+                    self.logger.debug(
+                        f"Skipping None response for conversation {self.conversation_id}"
+                    )
 
         except Exception as e:
             self.logger.error(
@@ -227,7 +239,9 @@ class ConversationProcessor:
             )
 
             # Handle the new yield pattern from connectors
-            if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+            if hasattr(connector_response, "__iter__") and not isinstance(
+                connector_response, (dict, str, bytes)
+            ):
                 # It's a generator/iterator, yield each response
                 for response in connector_response:
                     if response is not None:  # Skip None responses
@@ -237,17 +251,22 @@ class ConversationProcessor:
                         if grpc_response is not None:
                             yield grpc_response
                     else:
-                        self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
+                        self.logger.debug(
+                            f"Skipping None response for conversation {self.conversation_id}"
+                        )
             else:
                 # It's a single response (backward compatibility)
                 if connector_response is not None:  # Skip None responses
                     grpc_response = self._convert_connector_response_to_grpc(
-                        connector_response, response_type=VoiceVAResponse.ResponseType.FINAL
+                        connector_response,
+                        response_type=VoiceVAResponse.ResponseType.FINAL,
                     )
                     if grpc_response is not None:
                         yield grpc_response
                 else:
-                    self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
+                    self.logger.debug(
+                        f"Skipping None response for conversation {self.conversation_id}"
+                    )
 
         except Exception as e:
             self.logger.error(
@@ -270,10 +289,7 @@ class ConversationProcessor:
             )
 
             # Handle SESSION_START event explicitly
-            if (
-                event_input.event_type
-                == EventInput.EventType.SESSION_START
-            ):
+            if event_input.event_type == EventInput.EventType.SESSION_START:
                 if not self.session_started:
                     self.logger.debug(
                         f"Processing SESSION_START event for conversation {self.conversation_id}"
@@ -287,16 +303,13 @@ class ConversationProcessor:
                 return
 
             # Handle SESSION_END event explicitly
-            if (
-                event_input.event_type
-                == EventInput.EventType.SESSION_END
-            ):
+            if event_input.event_type == EventInput.EventType.SESSION_END:
                 self.logger.info(
                     f"Processing SESSION_END event for conversation {self.conversation_id}"
                 )
                 # Mark conversation for cleanup
                 self.can_be_deleted = True
-                
+
                 # End conversation with connector
                 try:
                     message_data = {
@@ -304,7 +317,7 @@ class ConversationProcessor:
                         "virtual_agent_id": self.virtual_agent_id,
                         "input_type": "conversation_end",
                     }
-                    
+
                     # Route to connector to end conversation
                     connector_response = self.router.route_request(
                         self.virtual_agent_id,
@@ -312,37 +325,45 @@ class ConversationProcessor:
                         self.conversation_id,
                         message_data,
                     )
-                    
+
                     # If connector returns a response, convert and yield it
                     if connector_response:
-                        if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+                        if hasattr(connector_response, "__iter__") and not isinstance(
+                            connector_response, (dict, str, bytes)
+                        ):
                             # It's a generator/iterator, yield each response
                             for response in connector_response:
-                                grpc_response = self._convert_connector_response_to_grpc(response)
+                                grpc_response = (
+                                    self._convert_connector_response_to_grpc(response)
+                                )
                                 if grpc_response is not None:
                                     yield grpc_response
                         else:
                             # It's a single response (backward compatibility)
-                            grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                            grpc_response = self._convert_connector_response_to_grpc(
+                                connector_response
+                            )
                             if grpc_response is not None:
                                 yield grpc_response
-                    
+
                 except Exception as e:
                     self.logger.warning(
                         f"Error ending conversation with connector for {self.conversation_id}: {e}"
                     )
-                
+
                 # Create a final response indicating session end
                 va_response = VoiceVAResponse()
                 va_response.response_type = VoiceVAResponse.ResponseType.FINAL
-                
+
                 # Add SESSION_END output event
                 output_event = OutputEvent()
                 output_event.event_type = OutputEvent.EventType.SESSION_END
                 output_event.name = "session_ended_by_client"
                 va_response.output_events.append(output_event)
-                
-                self.logger.info(f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (client-initiated)")
+
+                self.logger.info(
+                    f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (client-initiated)"
+                )
                 yield va_response
                 return
 
@@ -368,23 +389,33 @@ class ConversationProcessor:
             )
 
             # Handle the new yield pattern from connectors
-            if hasattr(connector_response, '__iter__') and not isinstance(connector_response, (dict, str, bytes)):
+            if hasattr(connector_response, "__iter__") and not isinstance(
+                connector_response, (dict, str, bytes)
+            ):
                 # It's a generator/iterator, yield each response
                 for response in connector_response:
                     if response is not None:  # Skip None responses
-                        grpc_response = self._convert_connector_response_to_grpc(response)
+                        grpc_response = self._convert_connector_response_to_grpc(
+                            response
+                        )
                         if grpc_response is not None:
                             yield grpc_response
                     else:
-                        self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
+                        self.logger.debug(
+                            f"Skipping None response for conversation {self.conversation_id}"
+                        )
             else:
                 # It's a single response (backward compatibility)
                 if connector_response is not None:  # Skip None responses
-                    grpc_response = self._convert_connector_response_to_grpc(connector_response)
+                    grpc_response = self._convert_connector_response_to_grpc(
+                        connector_response
+                    )
                     if grpc_response is not None:
                         yield grpc_response
                 else:
-                    self.logger.debug(f"Skipping None response for conversation {self.conversation_id}")
+                    self.logger.debug(
+                        f"Skipping None response for conversation {self.conversation_id}"
+                    )
 
         except Exception as e:
             self.logger.error(
@@ -402,9 +433,11 @@ class ConversationProcessor:
         try:
             # Handle None input
             if connector_response is None:
-                self.logger.debug(f"Received None response for conversation {self.conversation_id}")
+                self.logger.debug(
+                    f"Received None response for conversation {self.conversation_id}"
+                )
                 return None
-            
+
             self.logger.debug(
                 f"Converting connector response to gRPC format for {self.conversation_id}"
             )
@@ -418,19 +451,21 @@ class ConversationProcessor:
                 or connector_response.get("message_type") == "silence"
             ):
                 self.logger.debug("Handling silence/empty response")
-                
+
                 # Check if this is a START_OF_INPUT event
                 has_start_event = False
                 if connector_response is not None:
                     has_start_event = any(
-                        event.get("event_type") == "START_OF_INPUT" 
+                        event.get("event_type") == "START_OF_INPUT"
                         for event in connector_response.get("output_events", [])
                     )
-                
+
                 # Always set input_handling_config as it's mandatory in the protobuf
                 # For START_OF_INPUT events, we'll set minimal config to satisfy the requirement
                 if has_start_event:
-                    self.logger.debug("Detected START_OF_INPUT event, setting minimal input_handling_config")
+                    self.logger.debug(
+                        "Detected START_OF_INPUT event, setting minimal input_handling_config"
+                    )
                     # Set minimal input_handling_config for START_OF_INPUT events
                     va_response.input_handling_config.CopyFrom(
                         InputHandlingConfig(
@@ -439,14 +474,16 @@ class ConversationProcessor:
                                 inter_digit_timeout_msec=300,
                                 termchar=DTMFDigits.DTMF_DIGIT_POUND,
                             ),
-                            speech_timers=InputSpeechTimers(
-                                complete_timeout_msec=5000
-                            ),
+                            speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
                         )
                     )
                 else:
                     # For regular silence responses, use specified response type or default to FINAL
-                    final_response_type = response_type if response_type is not None else VoiceVAResponse.ResponseType.FINAL
+                    final_response_type = (
+                        response_type
+                        if response_type is not None
+                        else VoiceVAResponse.ResponseType.FINAL
+                    )
                     va_response.response_type = final_response_type
                     va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
                     va_response.input_handling_config.CopyFrom(
@@ -456,48 +493,65 @@ class ConversationProcessor:
                                 inter_digit_timeout_msec=300,
                                 termchar=DTMFDigits.DTMF_DIGIT_POUND,
                             ),
-                            speech_timers=InputSpeechTimers(
-                                complete_timeout_msec=5000
-                            ),
+                            speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
                         )
                     )
-                
+
                 # Handle output events for silence responses before returning
                 if connector_response and "output_events" in connector_response:
                     for event in connector_response["output_events"]:
                         event_type = event.get("event_type")
-                        if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT"]:
+                        if event_type in [
+                            "START_OF_INPUT",
+                            "END_OF_INPUT",
+                            "NO_MATCH",
+                            "NO_INPUT",
+                            "CUSTOM_EVENT",
+                        ]:
                             output_event = OutputEvent()
-                            
+
                             # Convert event_type string to protobuf enum
                             if event_type == "END_OF_INPUT":
-                                output_event.event_type = OutputEvent.EventType.END_OF_INPUT
+                                output_event.event_type = (
+                                    OutputEvent.EventType.END_OF_INPUT
+                                )
                             elif event_type == "START_OF_INPUT":
-                                output_event.event_type = OutputEvent.EventType.START_OF_INPUT
+                                output_event.event_type = (
+                                    OutputEvent.EventType.START_OF_INPUT
+                                )
                             elif event_type == "NO_MATCH":
                                 output_event.event_type = OutputEvent.EventType.NO_MATCH
                             elif event_type == "NO_INPUT":
                                 output_event.event_type = OutputEvent.EventType.NO_INPUT
                             elif event_type == "CUSTOM_EVENT":
-                                output_event.event_type = OutputEvent.EventType.CUSTOM_EVENT
-                            
+                                output_event.event_type = (
+                                    OutputEvent.EventType.CUSTOM_EVENT
+                                )
+
                             # Set event name
                             output_event.name = event.get("name", "")
-                            
+
                             # Convert metadata dict to google.protobuf.Struct if present
                             if event.get("metadata"):
                                 try:
                                     from google.protobuf import struct_pb2
+
                                     metadata_struct = struct_pb2.Struct()
                                     metadata_struct.update(event["metadata"])
                                     output_event.metadata.CopyFrom(metadata_struct)
                                 except Exception as e:
-                                    self.logger.warning(f"Failed to convert metadata for event {event_type}: {e}")
-                            
+                                    self.logger.warning(
+                                        f"Failed to convert metadata for event {event_type}: {e}"
+                                    )
+
                             va_response.output_events.append(output_event)
-                            self.logger.info(f"Sent {event_type} event to WxCC for conversation {self.conversation_id}")
-                            self.logger.debug(f"Added {event_type} event to silence response")
-                
+                            self.logger.info(
+                                f"Sent {event_type} event to WxCC for conversation {self.conversation_id}"
+                            )
+                            self.logger.debug(
+                                f"Added {event_type} event to silence response"
+                            )
+
                 return va_response
 
             # Create prompts
@@ -532,54 +586,68 @@ class ConversationProcessor:
                     self.logger.debug("Creating text-only prompt")
                     prompt = Prompt()
                     prompt.text = connector_response["text"]
-                    prompt.is_barge_in_enabled = connector_response.get("barge_in_enabled", False)
+                    prompt.is_barge_in_enabled = connector_response.get(
+                        "barge_in_enabled", False
+                    )
                     va_response.prompts.append(prompt)
                 else:
-                    self.logger.warning("No audio content or text found in connector response")
+                    self.logger.warning(
+                        "No audio content or text found in connector response"
+                    )
 
             # Create output events
             message_type = connector_response.get("message_type", "")
 
             if message_type == "goodbye":
                 output_event = OutputEvent()
-                output_event.event_type = (
-                    OutputEvent.EventType.SESSION_END
-                )
+                output_event.event_type = OutputEvent.EventType.SESSION_END
                 output_event.name = "session_ended"
                 va_response.output_events.append(output_event)
-                self.logger.info(f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (goodbye message)")
+                self.logger.info(
+                    f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (goodbye message)"
+                )
                 self.can_be_deleted = True
             elif message_type == "transfer":
                 output_event = OutputEvent()
-                output_event.event_type = (
-                    OutputEvent.EventType.TRANSFER_TO_AGENT
-                )
+                output_event.event_type = OutputEvent.EventType.TRANSFER_TO_AGENT
                 output_event.name = "transfer_requested"
                 va_response.output_events.append(output_event)
-                self.logger.info(f"Sent TRANSFER_TO_AGENT event to WxCC for conversation {self.conversation_id}")
+                self.logger.info(
+                    f"Sent TRANSFER_TO_AGENT event to WxCC for conversation {self.conversation_id}"
+                )
                 self.can_be_deleted = True
             elif message_type == "session_end":
                 output_event = OutputEvent()
-                output_event.event_type = (
-                    OutputEvent.EventType.SESSION_END
-                )
+                output_event.event_type = OutputEvent.EventType.SESSION_END
                 output_event.name = "session_ended"
                 va_response.output_events.append(output_event)
-                self.logger.info(f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (session_end message)")
+                self.logger.info(
+                    f"Sent SESSION_END event to WxCC for conversation {self.conversation_id} (session_end message)"
+                )
                 self.can_be_deleted = True
 
             # Handle generic output events from connector responses
             if "output_events" in connector_response:
                 for event in connector_response["output_events"]:
                     event_type = event.get("event_type")
-                    if event_type in ["START_OF_INPUT", "END_OF_INPUT", "NO_MATCH", "NO_INPUT", "CUSTOM_EVENT", "SESSION_END", "TRANSFER_TO_AGENT"]:
+                    if event_type in [
+                        "START_OF_INPUT",
+                        "END_OF_INPUT",
+                        "NO_MATCH",
+                        "NO_INPUT",
+                        "CUSTOM_EVENT",
+                        "SESSION_END",
+                        "TRANSFER_TO_AGENT",
+                    ]:
                         output_event = OutputEvent()
-                        
+
                         # Convert event_type string to protobuf enum
                         if event_type == "END_OF_INPUT":
                             output_event.event_type = OutputEvent.EventType.END_OF_INPUT
                         elif event_type == "START_OF_INPUT":
-                            output_event.event_type = OutputEvent.EventType.START_OF_INPUT
+                            output_event.event_type = (
+                                OutputEvent.EventType.START_OF_INPUT
+                            )
                         elif event_type == "NO_MATCH":
                             output_event.event_type = OutputEvent.EventType.NO_MATCH
                         elif event_type == "NO_INPUT":
@@ -589,23 +657,30 @@ class ConversationProcessor:
                         elif event_type == "SESSION_END":
                             output_event.event_type = OutputEvent.EventType.SESSION_END
                         elif event_type == "TRANSFER_TO_AGENT":
-                            output_event.event_type = OutputEvent.EventType.TRANSFER_TO_AGENT
-                        
+                            output_event.event_type = (
+                                OutputEvent.EventType.TRANSFER_TO_AGENT
+                            )
+
                         # Set event name
                         output_event.name = event.get("name", "")
-                        
+
                         # Convert metadata dict to google.protobuf.Struct if present
                         if event.get("metadata"):
                             try:
                                 from google.protobuf import struct_pb2
+
                                 metadata_struct = struct_pb2.Struct()
                                 metadata_struct.update(event["metadata"])
                                 output_event.metadata.CopyFrom(metadata_struct)
                             except Exception as e:
-                                self.logger.warning(f"Failed to convert metadata for event {event_type}: {e}")
-                        
+                                self.logger.warning(
+                                    f"Failed to convert metadata for event {event_type}: {e}"
+                                )
+
                         va_response.output_events.append(output_event)
-                        self.logger.info(f"Sent {event_type} event to WxCC for conversation {self.conversation_id}")
+                        self.logger.info(
+                            f"Sent {event_type} event to WxCC for conversation {self.conversation_id}"
+                        )
                         self.logger.debug(f"Added {event_type} event to gRPC response")
 
             # Set response type
@@ -621,7 +696,9 @@ class ConversationProcessor:
                 elif response_type_str == "chunk":
                     va_response.response_type = VoiceVAResponse.ResponseType.CHUNK
                 else:
-                    self.logger.warning(f"Unknown response_type '{response_type_str}', defaulting to FINAL")
+                    self.logger.warning(
+                        f"Unknown response_type '{response_type_str}', defaulting to FINAL"
+                    )
                     va_response.response_type = VoiceVAResponse.ResponseType.FINAL
             else:
                 va_response.response_type = VoiceVAResponse.ResponseType.FINAL
@@ -637,9 +714,7 @@ class ConversationProcessor:
                         inter_digit_timeout_msec=300,
                         termchar=DTMFDigits.DTMF_DIGIT_POUND,
                     ),
-                    speech_timers=InputSpeechTimers(
-                        complete_timeout_msec=5000
-                    ),
+                    speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
                 )
             )
 
@@ -670,7 +745,9 @@ class ConversationProcessor:
         output_event.event_type = OutputEvent.EventType.CUSTOM_EVENT
         output_event.name = "error_occurred"
         va_response.output_events.append(output_event)
-        self.logger.info(f"Sent CUSTOM_EVENT (error_occurred) to WxCC for conversation {self.conversation_id}")
+        self.logger.info(
+            f"Sent CUSTOM_EVENT (error_occurred) to WxCC for conversation {self.conversation_id}"
+        )
 
         # Set response type
         va_response.response_type = VoiceVAResponse.ResponseType.FINAL
@@ -686,9 +763,7 @@ class ConversationProcessor:
                     inter_digit_timeout_msec=300,
                     termchar=DTMFDigits.DTMF_DIGIT_POUND,
                 ),
-                speech_timers=InputSpeechTimers(
-                    complete_timeout_msec=5000
-                ),
+                speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
             )
         )
 
@@ -747,9 +822,9 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
 
         # Connection tracking for monitoring
         self.connection_events = []
-        
-        # Health check service (not used yet)
-        self.health_service = HealthCheckService(self.logger)
+
+        # Health check service with router for real health monitoring
+        self.health_service = HealthCheckService(self.router)
 
         self.logger.info("WxCCGatewayServer initialized")
 
@@ -803,7 +878,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         self.logger.debug(
             f"Added connection event: {event_type} for conversation {conversation_id}"
         )
-    
+
     def get_health_status(self) -> Dict[str, Any]:
         """Get basic health status."""
         return self.health_service.get_overall_health()
