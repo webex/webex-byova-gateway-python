@@ -690,32 +690,31 @@ def get_status_data() -> Dict[str, Any]:
     health_data = {"overall_healthy": True, "grpc_status": "SERVING"}
     if gateway_server_instance and hasattr(gateway_server_instance, "health_service"):
         try:
-            # Get health from the gRPC health service
-            health_summary = gateway_server_instance.health_service.get_overall_health()
-            
-            # Get individual service statuses
+            # Get individual service statuses using the correct method
             from grpc_health.v1 import health_pb2
+            service_statuses = gateway_server_instance.health_service.get_all_service_statuses()
+
+            # Convert status codes to names for display
             services = {}
-            
-            # Check overall health (empty service name)
-            overall_response = gateway_server_instance.health_service.Check(
-                health_pb2.HealthCheckRequest(service=""), None
-            )
-            services[""] = health_pb2.HealthCheckResponse.ServingStatus.Name(overall_response.status)
-            
-            # Check gateway service
-            gateway_response = gateway_server_instance.health_service.Check(
-                health_pb2.HealthCheckRequest(service="byova.gateway"), None
-            )
-            services["byova.gateway"] = health_pb2.HealthCheckResponse.ServingStatus.Name(gateway_response.status)
-            
+            serving_count = 0
+            total_count = len(service_statuses)
+
+            for service_name, status_code in service_statuses.items():
+                status_name = health_pb2.HealthCheckResponse.ServingStatus.Name(status_code)
+                services[service_name] = status_name
+                if status_code == health_pb2.HealthCheckResponse.SERVING:
+                    serving_count += 1
+
+            # Determine overall health
+            overall_healthy = serving_count > 0 and serving_count == total_count
+            grpc_status = "SERVING" if overall_healthy else ("NOT_SERVING" if serving_count == 0 else "DEGRADED")
+
             health_data = {
-                "overall_healthy": health_summary.get("overall_healthy", True),
-                "grpc_status": "SERVING" if health_summary.get("overall_healthy", True) else "NOT_SERVING",
+                "overall_healthy": overall_healthy,
+                "grpc_status": grpc_status,
                 "services": services,
-                "serving_services": health_summary.get("serving_services", 0),
-                "total_services": health_summary.get("total_services", 0),
-                "last_check_time": health_summary.get("last_check_time", time.time())
+                "serving_services": serving_count,
+                "total_services": total_count
             }
         except Exception as e:
             health_data = {"overall_healthy": False, "grpc_status": "UNKNOWN", "error": str(e), "services": {}, "serving_services": 0, "total_services": 0}
