@@ -9,7 +9,7 @@ import pytest
 import tempfile
 import os
 import time
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 
 from src.utils.audio_buffer import AudioBuffer
 
@@ -113,28 +113,29 @@ class TestAudioBuffer:
         assert result["silence_detected"] is False
         assert len(basic_buffer.audio_buffer) == 0
 
-    def test_add_audio_data_basic(self, basic_buffer):
+    @patch.object(AudioBuffer, '_load_vad_model', return_value=None)
+    def test_add_audio_data_basic(self, mock_load, basic_buffer):
         """Test adding basic audio data."""
-        # Create audio data that will be detected as non-silent
+        # Create audio data that will be detected as non-silent by the heuristic
         # Use bytes that are significantly different from 127 and have good variation
-        # Create a pattern that simulates speech with good alternation
         test_audio = bytes([0, 50, 100, 150, 200, 250, 1, 99, 25, 75, 125, 175, 225, 255, 10, 90] * 10)  # 160 bytes with good variation
         result = basic_buffer.add_audio_data(test_audio, "ulaw")
-        
+
         assert result["buffering_continues"] is True
         assert result["silence_detected"] is False
         assert len(basic_buffer.audio_buffer) > 0
 
-    def test_buffer_size_limit(self, basic_buffer):
+    @patch.object(AudioBuffer, '_load_vad_model', return_value=None)
+    def test_buffer_size_limit(self, mock_load, basic_buffer):
         """Test that buffer respects size limits."""
         # Set a small buffer size for testing
         basic_buffer.max_buffer_size = 100
-        
+
         # Add data that exceeds the limit
-        # Use bytes that will be detected as non-silent
+        # Use bytes that will be detected as non-silent by heuristic
         large_audio = bytes([0, 50, 100, 200, 255] * 30)  # 150 bytes of non-silent audio
         result = basic_buffer.add_audio_data(large_audio, "ulaw")
-        
+
         assert result["buffering_continues"] is True
         assert result["silence_detected"] is False
         assert len(basic_buffer.audio_buffer) <= 100
@@ -290,30 +291,122 @@ class TestAudioBuffer:
         result = basic_buffer.detect_silence(b"")
         assert result is True
 
-    def test_detect_silence_ulaw_silence(self, basic_buffer):
-        """Test silence detection with u-law silence data."""
+    @patch.object(AudioBuffer, '_load_vad_model', return_value=None)
+    def test_detect_silence_ulaw_silence(self, mock_load, basic_buffer):
+        """Test heuristic silence detection with u-law silence data."""
         # Create u-law data that represents silence (mostly 0xFF and values close to 127)
         silence_data = bytes([0xFF, 127, 0xFF, 126, 0xFF, 128, 0xFF, 127])
         result = basic_buffer.detect_silence(silence_data)
-        
+
         assert result is True
 
-    def test_detect_silence_ulaw_speech(self, basic_buffer):
-        """Test silence detection with u-law speech data."""
+    @patch.object(AudioBuffer, '_load_vad_model', return_value=None)
+    def test_detect_silence_ulaw_speech(self, mock_load, basic_buffer):
+        """Test heuristic silence detection with u-law speech data."""
         # Create u-law data that represents speech (values far from 127 and 0xFF)
         # Use more varied data to avoid pattern detection
         speech_data = bytes([0, 50, 100, 150, 200, 250, 1, 99, 25, 75, 125, 175, 225, 255, 10, 90] * 10)
         result = basic_buffer.detect_silence(speech_data)
-        
+
         assert result is False
 
-    def test_detect_silence_pcm_not_implemented(self, basic_buffer):
-        """Test silence detection with PCM data (not implemented yet)."""
+    @patch.object(AudioBuffer, '_load_vad_model', return_value=None)
+    def test_detect_silence_pcm_heuristic_fallback(self, mock_load, basic_buffer):
+        """Test that PCM data returns False from heuristic fallback (Silero unavailable)."""
         basic_buffer.encoding = "pcm"
         test_audio = b"test pcm data"
         result = basic_buffer.detect_silence(test_audio)
-        
-        assert result is False  # Default fallback for PCM
+
+        assert result is False  # Heuristic has no PCM implementation; defaults to False
+
+    def test_detect_silence_uses_silero_when_available(self, basic_buffer):
+        """Test that Silero VAD is invoked when the model loads successfully."""
+        mock_model = MagicMock()
+        with patch.object(basic_buffer, '_load_vad_model', return_value=mock_model):
+            with patch.object(basic_buffer, '_detect_silence_with_silero', return_value=True) as mock_silero:
+                audio_data = bytes([0xFF] * 160)
+                result = basic_buffer.detect_silence(audio_data)
+
+        mock_silero.assert_called_once_with(audio_data, mock_model)
+        assert result is True
+
+    def test_detect_silence_with_silero_speech(self, basic_buffer):
+        """Test _detect_silence_with_silero returns False when speech timestamps present."""
+        mock_model = MagicMock()
+        speech_timestamps = [{"start": 0, "end": 100}]
+        with patch("silero_vad.get_speech_timestamps", return_value=speech_timestamps):
+            with patch.object(basic_buffer, '_audio_to_silero_tensor') as mock_tensor:
+                import torch
+                mock_tensor.return_value = (torch.zeros(512), 16000)
+                result = basic_buffer._detect_silence_with_silero(bytes(160), mock_model)
+
+        assert result is False
+
+    def test_detect_silence_with_silero_silence(self, basic_buffer):
+        """Test _detect_silence_with_silero returns True when no speech timestamps."""
+        mock_model = MagicMock()
+        with patch("silero_vad.get_speech_timestamps", return_value=[]):
+            with patch.object(basic_buffer, '_audio_to_silero_tensor') as mock_tensor:
+                import torch
+                mock_tensor.return_value = (torch.zeros(512), 16000)
+                result = basic_buffer._detect_silence_with_silero(bytes(160), mock_model)
+
+        assert result is True
+
+    def test_detect_silence_silero_fallback_on_error(self, basic_buffer):
+        """Test that heuristic is used when Silero inference raises an exception."""
+        mock_model = MagicMock()
+        with patch("silero_vad.get_speech_timestamps", side_effect=RuntimeError("inference error")):
+            with patch.object(basic_buffer, '_audio_to_silero_tensor') as mock_tensor:
+                import torch
+                mock_tensor.return_value = (torch.zeros(512), 16000)
+                with patch.object(basic_buffer, '_detect_silence_heuristic', return_value=True) as mock_heuristic:
+                    audio_data = bytes(160)
+                    result = basic_buffer._detect_silence_with_silero(audio_data, mock_model)
+
+        mock_heuristic.assert_called_once_with(audio_data)
+        assert result is True
+
+    def test_audio_to_silero_tensor_ulaw(self, basic_buffer):
+        """Test _audio_to_silero_tensor converts u-law audio to a float32 tensor."""
+        pytest.importorskip("torch")
+        audio_data = bytes([0xFF] * 256)  # 256 bytes of u-law silence
+        result = basic_buffer._audio_to_silero_tensor(audio_data)
+
+        assert result is not None
+        tensor, sample_rate = result
+        assert sample_rate == 16000
+        assert len(tensor) >= 512  # padded to minimum
+
+    def test_audio_to_silero_tensor_pcm_16bit(self, basic_buffer):
+        """Test _audio_to_silero_tensor converts 16-bit PCM audio to a float32 tensor."""
+        pytest.importorskip("torch")
+        basic_buffer.encoding = "pcm"
+        basic_buffer.bit_depth = 16
+        # 256 samples of zero PCM (512 bytes)
+        import struct
+        audio_data = struct.pack("<256h", *([0] * 256))
+        result = basic_buffer._audio_to_silero_tensor(audio_data)
+
+        assert result is not None
+        tensor, sample_rate = result
+        assert sample_rate == 16000
+
+    def test_load_vad_model_import_error(self, basic_buffer):
+        """Test that _load_vad_model returns None when silero_vad is not installed."""
+        with patch.dict("sys.modules", {"silero_vad": None}):
+            with patch("builtins.__import__", side_effect=ImportError("No module named 'silero_vad'")):
+                result = basic_buffer._load_vad_model()
+        # Either None (ImportError caught) or the cached model
+        # Since we patched import, it should be None
+        assert result is None
+
+    def test_load_vad_model_caches_result(self, basic_buffer):
+        """Test that _load_vad_model caches the model after first load."""
+        mock_model = MagicMock()
+        basic_buffer._vad_model = mock_model
+        result = basic_buffer._load_vad_model()
+        assert result is mock_model
 
     def test_check_silence_timeout_not_buffering(self, basic_buffer):
         """Test silence timeout check when not buffering."""
@@ -354,21 +447,22 @@ class TestAudioBuffer:
         assert result["silence_detected"] is False
         assert result["buffering_continues"] is True
 
-    def test_add_audio_data_with_silence_detection(self, basic_buffer):
+    @patch.object(AudioBuffer, '_load_vad_model', return_value=None)
+    def test_add_audio_data_with_silence_detection(self, mock_load, basic_buffer):
         """Test that adding audio data can detect silence when threshold is reached."""
         basic_buffer.start_buffering()
-        
+
         # Add some speech data first (enough to meet frame size requirement)
         speech_data = bytes([0, 50, 100, 150, 200, 250, 1, 99, 25, 75, 125, 175, 225, 255, 10, 90] * 10)  # 160 bytes
         basic_buffer.add_audio_data(speech_data, "ulaw")
-        
+
         # Now add silence data that should trigger silence detection
         silence_data = bytes([0xFF, 127, 0xFF, 126, 0xFF, 128, 0xFF, 127] * 20)  # 160 bytes
-        
+
         # Set last_audio_time to a value that will exceed silence_duration when time.time() is called
         basic_buffer.last_audio_time = 0.0  # Set to 0, so any positive time will exceed 2.0s threshold
-        
+
         result = basic_buffer.add_audio_data(silence_data, "ulaw")
-        
+
         # Should detect silence
         assert result["silence_detected"] is True

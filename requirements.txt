@@ -86,3 +86,7 @@ propcache>=0.3.2
 
 # Scientific computing (if needed)
 numpy>=2.2.0
+
+# Voice Activity Detection
+silero-vad>=5.1
+torch>=2.0.0

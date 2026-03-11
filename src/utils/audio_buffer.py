@@ -6,8 +6,9 @@ that can be used independently of audio recording.
 """
 
 import logging
+import struct
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 
 class AudioBuffer:
@@ -61,9 +62,12 @@ class AudioBuffer:
         self.channels = channels
         self.encoding = encoding
 
-        # Pattern detection thresholds
+        # Pattern detection thresholds (used by heuristic fallback)
         self.min_alternating_percentage = 5.0  # Minimum alternation percentage for speech
         self.min_unique_values = 10  # Minimum unique values for speech
+
+        # Silero VAD model (loaded lazily on first use)
+        self._vad_model = None
 
         # Internal state
         self.audio_buffer = bytearray()
@@ -364,39 +368,197 @@ class AudioBuffer:
             # Return original data if conversion fails
             return audio_data
 
+    def _load_vad_model(self):
+        """
+        Load the Silero VAD model lazily on first use.
+
+        Returns:
+            Loaded Silero VAD model, or None if the package is unavailable.
+        """
+        if self._vad_model is not None:
+            return self._vad_model
+        try:
+            from silero_vad import load_silero_vad
+            self._vad_model = load_silero_vad()
+            self.logger.info("Silero VAD model loaded successfully")
+            return self._vad_model
+        except ImportError:
+            self.logger.warning(
+                "silero-vad package not installed. "
+                "Install with: pip install silero-vad. "
+                "Falling back to heuristic voice activity detection."
+            )
+            return None
+        except Exception as e:
+            self.logger.error(
+                f"Failed to load Silero VAD model: {e}. "
+                "Falling back to heuristic voice activity detection."
+            )
+            return None
+
+    def _audio_to_silero_tensor(self, audio_data: bytes) -> Optional[Tuple]:
+        """
+        Convert audio bytes to the format required by Silero VAD:
+        16kHz mono float32 tensor normalized to [-1.0, 1.0].
+
+        Args:
+            audio_data: Raw audio bytes in the buffer's configured encoding.
+
+        Returns:
+            Tuple of (torch.FloatTensor, sample_rate) or None on failure.
+        """
+        try:
+            import torch
+        except ImportError:
+            return None
+
+        # Step 1: Decode to 16-bit signed PCM at the source sample rate
+        if self.encoding == "ulaw":
+            pcm_samples = []
+            for byte in audio_data:
+                # Decode u-law to 16-bit linear PCM
+                ulaw = ~byte & 0xFF
+                sign = (ulaw >> 7) & 0x01
+                exp = (ulaw >> 4) & 0x07
+                mant = ulaw & 0x0F
+                if exp == 0:
+                    linear = mant << 1
+                else:
+                    linear = (mant << (exp + 3)) | (1 << (exp + 2))
+                if sign:
+                    linear = -linear
+                linear -= 0x84  # remove bias
+                pcm_samples.append(max(-32768, min(32767, linear)))
+        elif self.encoding == "pcm":
+            bytes_per_sample = self.bit_depth // 8
+            n = len(audio_data) // bytes_per_sample
+            if self.bit_depth == 16:
+                pcm_samples = list(struct.unpack(f"<{n}h", audio_data[:n * 2]))
+            elif self.bit_depth == 8:
+                pcm_samples = [(b - 128) * 256 for b in audio_data[:n]]
+            else:
+                self.logger.warning(
+                    f"Unsupported bit depth {self.bit_depth} for Silero VAD conversion"
+                )
+                return None
+        else:
+            self.logger.warning(
+                f"Unsupported encoding {self.encoding} for Silero VAD conversion"
+            )
+            return None
+
+        if not pcm_samples:
+            return None
+
+        # Step 2: Upsample from 8kHz to 16kHz via linear interpolation
+        if self.sample_rate == 8000:
+            upsampled = []
+            for i in range(len(pcm_samples)):
+                upsampled.append(pcm_samples[i])
+                next_val = pcm_samples[i + 1] if i < len(pcm_samples) - 1 else pcm_samples[i]
+                upsampled.append((pcm_samples[i] + next_val) // 2)
+            pcm_samples = upsampled
+            target_rate = 16000
+        else:
+            target_rate = self.sample_rate
+
+        # Step 3: Pad to minimum Silero VAD chunk size (512 samples at 16kHz)
+        min_samples = 512
+        if len(pcm_samples) < min_samples:
+            pcm_samples = pcm_samples + [0] * (min_samples - len(pcm_samples))
+
+        # Step 4: Normalize to [-1.0, 1.0] and return as float tensor
+        audio_float = [s / 32768.0 for s in pcm_samples]
+        return torch.FloatTensor(audio_float), target_rate
+
     def detect_silence(self, audio_data: bytes) -> bool:
         """
-        Enhanced silence detection with pattern analysis to prevent false positives.
+        Detect silence using Silero VAD with fallback to heuristic detection.
+
+        Uses the Silero VAD neural network model for accurate voice activity
+        detection when available, otherwise falls back to a heuristic based on
+        amplitude and pattern analysis.
 
         Args:
             audio_data: Audio data bytes to analyze
 
         Returns:
-            True if the audio is below the silence threshold or shows background noise patterns
+            True if the audio is silence, False if speech is detected.
         """
-        if not audio_data or len(audio_data) == 0:
+        if not audio_data:
             self.logger.debug("Empty audio data passed to silence detection")
             return True
 
-        # For u-law encoding, we can directly check byte values
+        model = self._load_vad_model()
+        if model is not None:
+            return self._detect_silence_with_silero(audio_data, model)
+        return self._detect_silence_heuristic(audio_data)
+
+    def _detect_silence_with_silero(self, audio_data: bytes, model) -> bool:
+        """
+        Use Silero VAD to detect silence.
+
+        Args:
+            audio_data: Audio data bytes to analyze.
+            model: Loaded Silero VAD model.
+
+        Returns:
+            True if silence, False if speech is detected.
+        """
+        try:
+            from silero_vad import get_speech_timestamps
+
+            result = self._audio_to_silero_tensor(audio_data)
+            if result is None:
+                self.logger.warning(
+                    "Failed to convert audio to Silero tensor, falling back to heuristic"
+                )
+                return self._detect_silence_heuristic(audio_data)
+
+            tensor, sample_rate = result
+            speech_timestamps = get_speech_timestamps(tensor, model, sampling_rate=sample_rate)
+            is_silence = len(speech_timestamps) == 0
+
+            self.logger.debug(
+                f"Silero VAD: {'silence' if is_silence else 'speech'} detected "
+                f"({len(speech_timestamps)} speech segment(s) in {len(audio_data)} bytes)"
+            )
+            return is_silence
+
+        except Exception as e:
+            self.logger.error(f"Silero VAD inference error: {e}, falling back to heuristic")
+            return self._detect_silence_heuristic(audio_data)
+
+    def _detect_silence_heuristic(self, audio_data: bytes) -> bool:
+        """
+        Heuristic silence detection (fallback when Silero VAD is unavailable).
+
+        Uses pattern and amplitude analysis on raw bytes to estimate voice activity.
+
+        Args:
+            audio_data: Audio data bytes to analyze.
+
+        Returns:
+            True if the audio appears to be silence, False otherwise.
+        """
         if self.encoding == "ulaw":
             bytes_list = list(audio_data)
-            
+
             # Check for constant patterns (very low alternation) - indicates background noise
             sample_size = min(1000, len(bytes_list))
             sample = bytes_list[:sample_size]
-            alternating_count = sum(1 for i in range(1, len(sample)) 
-                                  if sample[i] != sample[i-1])
+            alternating_count = sum(
+                1 for i in range(1, len(sample)) if sample[i] != sample[i - 1]
+            )
             alternating_percentage = (alternating_count / (len(sample) - 1)) * 100
-            
-            # If too constant, it's likely background noise, not speech
+
             if alternating_percentage < self.min_alternating_percentage:
                 self.logger.debug(
                     f"Constant pattern detected ({alternating_percentage:.1f}% alternation) - "
                     f"treating as silence (background noise, threshold: {self.min_alternating_percentage}%)"
                 )
                 return True
-            
+
             # Check for very low variation (constant tones)
             unique_values = len(set(bytes_list))
             if unique_values < self.min_unique_values:
@@ -405,43 +567,28 @@ class AudioBuffer:
                     f"treating as silence (constant tone, threshold: {self.min_unique_values})"
                 )
                 return True
-            
-            # Use the configured silence threshold to determine sensitivity
-            # The threshold represents the percentage of non-silent samples allowed
-            # Higher threshold = more sensitive (more likely to detect silence)
+
             threshold_percentage = min(100, max(1, 100 - (self.silence_threshold / 100)))
-            
-            # Enhanced silence detection: consider both true silence (0xFF) and quiet background noise
-            # In u-law, 127 represents very quiet background noise (room tone, breathing, etc.)
-            # Values closer to 127 are quieter, values closer to 0 or 255 are louder
-            
-            # Count bytes that represent significant audio (not silence or quiet background)
-            # We'll consider values in the "quiet" range (around 127) as effective silence
-            quiet_threshold = self.quiet_threshold  # Use the quiet_threshold from __init__
+            quiet_threshold = self.quiet_threshold
             significant_audio_count = sum(
-                1 for byte in bytes_list 
+                1 for byte in bytes_list
                 if abs(byte - 127) > quiet_threshold and byte != 0xFF
             )
-            
-            # Calculate percentage of significant audio samples
+
             if len(bytes_list) > 0:
                 significant_audio_percentage = (significant_audio_count / len(bytes_list)) * 100
                 self.logger.debug(
                     f"Detected {significant_audio_percentage:.2f}% significant audio samples "
                     f"(threshold: {threshold_percentage:.1f}%, configured: {self.silence_threshold})"
                 )
-
-                # If less than threshold percentage of samples are significant audio, consider it silence
                 is_silence = significant_audio_percentage < threshold_percentage
                 if is_silence:
                     self.logger.debug("Audio segment detected as silence (including quiet background)")
                 else:
                     self.logger.debug("Audio segment contains significant speech/audio")
-
                 return is_silence
 
-        # For PCM data, analyze amplitude
-        # TODO: Implement proper PCM silence detection if needed
+        # For PCM and other encodings, cannot determine without Silero VAD
         return False
 
 
