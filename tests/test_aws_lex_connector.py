@@ -18,10 +18,17 @@ import logging
 from typing import Dict, Any
 
 from src.connectors.aws_lex_connector import AWSLexConnector
+from src.utils.audio_buffer import AudioBuffer
 
 
 class TestAWSLexConnector:
     """Test suite for AWSLexConnector."""
+
+    @pytest.fixture(autouse=True)
+    def disable_silero_vad(self):
+        """Keep connector tests focused on Lex behavior, not VAD inference."""
+        with patch.object(AudioBuffer, "_load_vad_model", return_value=None):
+            yield
 
     @pytest.fixture
     def mock_config(self):
