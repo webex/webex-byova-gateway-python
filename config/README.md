@@ -16,6 +16,12 @@ The main configuration file that defines all gateway settings:
 - **Audio Processing**: Supported formats, limits, and processing options
 - **Security**: Authentication, encryption, and access control settings
 
+### Connector Examples
+
+- `aws_lex_example.yaml` - AWS Lex connector examples
+- `gecx_example.yaml` - Google CX Agent Studio connector settings and authentication options
+- `config.cloudrun.yaml` - Container configuration for running the GECX connector on Cloud Run
+
 ## Configuration Structure
 
 ### Gateway Settings
@@ -153,6 +159,39 @@ connectors:
         speed: 1.0
         format: "wav"
 ```
+
+### GECX / CX Agent Studio Connector
+
+**Purpose**: Stream WxCC caller audio to Google CX Agent Studio through the CES
+`BidiRunSession` API. The current connector buffers each agent turn into a
+WxCC-compatible WAV `FINAL` response.
+
+```yaml
+connectors:
+  gecx_connector:
+    type: "gecx_connector"
+    class: "GECXConnector"
+    module: "connectors.gecx_connector"
+    config:
+      project_id: "YOUR_PROJECT_ID"
+      location: "us"
+      application_id: "YOUR_APPLICATION_ID"
+      # deployment_id: "YOUR_DEPLOYMENT_ID"
+      language_code: "en-US"
+      input_sample_rate_hertz: 8000
+      input_audio_encoding: "MULAW"
+      output_sample_rate_hertz: 8000
+      output_audio_encoding: "MULAW"
+      force_input_format: "wxcc"
+      # Omit auth settings to use Application Default Credentials.
+      # service_account_key: "/path/to/service-account.json"
+      agents:
+        - "My GECX Agent"
+```
+
+See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
+[GECX setup guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and
+Webex Contact Center configuration.
 
 ### Vendor X Connector (Example)
 

@@ -477,4 +477,4 @@ python main.py 2>&1 | grep "monitoring"
 
 ## License
 
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.
+This code is licensed under the [Cisco Sample Code License v1.1](../../LICENSE). See the main project README for details.

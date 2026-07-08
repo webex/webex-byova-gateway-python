@@ -1,16 +1,19 @@
 # Webex Contact Center BYOVA Gateway Documentation
 
-Welcome to the comprehensive documentation for the Webex Contact Center BYOVA (Bring Your Own Virtual Agent) Gateway. This gateway enables seamless integration between Webex Contact Center and various virtual agent providers, including AWS Lex.
+Welcome to the comprehensive documentation for the Webex Contact Center BYOVA (Bring Your Own Virtual Agent) Gateway. This gateway connects Webex Contact Center to local audio, AWS Lex, and Google CX Agent Studio virtual agents.
 
 ## 📚 Setup Guides
 
-### Complete Integration Guide
-- **[BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Step-by-step guide for setting up voice AI with Webex Contact Center and AWS Lex
+### Integration Guides
 
-This comprehensive guide covers:
+- **[BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Step-by-step guide for setting up voice AI with Webex Contact Center and AWS Lex
+- **[BYOVA with Google CX Agent Studio](guides/byova-gecx-setup.md)** - Configure the GECX connector, CES `BidiRunSession`, authentication, deployment, and human transfer
+
+These guides cover:
 - Setting up a Webex Contact Center sandbox
 - Configuring BYOVA and BYODS (Bring Your Own Data Source)
 - Creating and configuring AWS Lex bots
+- Connecting a Gemini Enterprise for Customer Experience agent through CX Agent Studio
 - Deploying and configuring the BYOVA Gateway
 - Testing your voice AI integration end-to-end
 
@@ -49,6 +52,7 @@ The BYOVA Gateway follows a modular architecture:
 - **Connectors**: Support for various virtual agent platforms
   - Local Audio Connector (for testing)
   - AWS Lex Connector (for production)
+  - GECX Connector (Google CX Agent Studio through CES `BidiRunSession`)
 - **Web Monitoring Interface**: Real-time dashboard for monitoring and debugging
 
 ## 🔧 Configuration
@@ -86,6 +90,13 @@ The gateway is configured via `config/config.yaml`. Key configuration areas:
 - **Features**: Real-time voice AI, intent recognition, slot filling
 - **Configuration**: AWS credentials, bot settings, audio processing
 
+### GECX Connector
+
+- **Purpose**: Integration with Google CX Agent Studio and Gemini Enterprise for Customer Experience
+- **Features**: Streaming caller audio over CES `BidiRunSession`, WAV `FINAL` responses, barge-in signals, and human-transfer metadata
+- **Configuration**: GCP application identifiers, 8 kHz mu-law audio, and Google credentials or ADC
+- **Setup**: See the [GECX setup guide](guides/byova-gecx-setup.md)
+
 ## 🛠️ Development
 
 ### Adding New Connectors
@@ -97,6 +108,7 @@ The gateway is configured via `config/config.yaml`. Key configuration areas:
 
 ### Testing
 - Use the local audio connector for initial testing
+- Run `pytest tests/test_gecx_connector.py` for the GECX connector suite
 - Monitor real-time data via the web interface
 - Check logs for conversation flow and error conditions
 
@@ -105,12 +117,12 @@ The gateway is configured via `config/config.yaml`. Key configuration areas:
 For questions about BYOVA integration:
 - Check the troubleshooting section in the setup guide
 - Review the gateway logs and monitoring interface
-- Consult the AWS Lex and Webex Contact Center documentation
+- Consult the AWS Lex, CX Agent Studio, and Webex Contact Center documentation
 - Reach out to the developer community for assistance
 
 ## 📄 License
 
-[Cisco Sample Code License v1.1](LICENSE) © 2018 Cisco and/or its affiliates
+[Cisco Sample Code License v1.1](../LICENSE) © 2018 Cisco and/or its affiliates
 
 ---
 

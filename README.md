@@ -6,12 +6,15 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
 
 ## 📚 Documentation
 
-**Complete Setup Guide**: [BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
+Setup guides:
 
-This comprehensive guide walks you through:
+- [BYOVA with AWS Lex](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
+- [BYOVA with Google CX Agent Studio (GECX)](docs/guides/byova-gecx-setup.md)
+
+These guides walk you through:
 - Setting up a Webex Contact Center sandbox
 - Configuring BYOVA and BYODS
-- Creating AWS Lex bots
+- Connecting AWS Lex or a Gemini Enterprise for Customer Experience agent
 - Deploying and testing the gateway
 
 ## Table of Contents
@@ -169,6 +172,23 @@ connectors:
         channels: 1
         encoding: "ulaw"
       agents: []
+
+  # Google CX Agent Studio Connector - streams caller audio through CES
+  # gecx_connector:
+  #   type: "gecx_connector"
+  #   class: "GECXConnector"
+  #   module: "connectors.gecx_connector"
+  #   config:
+  #     project_id: "YOUR_PROJECT_ID"
+  #     location: "us"
+  #     application_id: "YOUR_APPLICATION_ID"
+  #     input_sample_rate_hertz: 8000
+  #     input_audio_encoding: "MULAW"
+  #     output_sample_rate_hertz: 8000
+  #     output_audio_encoding: "MULAW"
+  #     force_input_format: "wxcc"
+  #     agents:
+  #       - "My GECX Agent"
 
 # Monitoring interface
 monitoring:
