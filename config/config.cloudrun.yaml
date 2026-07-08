@@ -1,0 +1,71 @@
+# Cloud Run deployment configuration for the BYOVA Gateway.
+#
+# This config is selected at runtime via the GATEWAY_CONFIG env var. It connects
+# to Google CX Agent Studio (CES) via the gecx_connector.
+#
+# Authentication: no key file is set, so the connector uses Application Default
+# Credentials -- on Cloud Run that is the service's runtime service account,
+# which must have permission to run CES sessions (ces.sessions.bidiRunSession).
+#
+# Notes for Cloud Run:
+# - The listen port is taken from the $PORT env var (injected by Cloud Run),
+#   so the gateway.port below is only a local fallback.
+# - Monitoring is disabled because Cloud Run exposes a single port, which is
+#   used for the WxCC gRPC endpoint.
+
+gateway:
+  host: "0.0.0.0"
+  port: 50051
+
+connectors:
+  gecx_connector:
+    type: "gecx_connector"
+    class: "GECXConnector"
+    module: "connectors.gecx_connector"
+    config:
+      project_id: "YOUR_PROJECT_ID"
+      location: "us"
+      application_id: "YOUR_APPLICATION_ID"
+      # Optional: uncomment to pin to a published deployment. The regional CES
+      # endpoint (ces.us.rep.googleapis.com) is auto-derived from location.
+      # deployment_id: "YOUR_DEPLOYMENT_ID"
+      language_code: "en-US"
+      input_sample_rate_hertz: 8000
+      input_audio_encoding: "MULAW"
+      output_sample_rate_hertz: 8000
+      output_audio_encoding: "MULAW"
+      initial_message: "Hello"
+      enable_partial_responses: true
+      force_input_format: "wxcc"
+      agents:
+        - "My GECX Agent"
+
+# Single port on Cloud Run is reserved for the gRPC endpoint.
+monitoring:
+  enabled: false
+
+logging:
+  gateway:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    # Empty file => stdout only (Cloud Run captures stdout in Cloud Logging).
+    file: ""
+
+  web:
+    level: "WARNING"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: ""
+
+sessions:
+  timeout: 600
+  max_sessions: 1000
+  cleanup_interval: 60
+  enable_auto_cleanup: true
+  max_session_duration: 3600
+
+audio:
+  supported_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "ogg"

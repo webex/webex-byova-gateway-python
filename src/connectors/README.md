@@ -150,6 +150,47 @@ The connector supports multiple ways to provide AWS credentials:
 - Full conversation handling not yet implemented
 - Audio processing integration pending
 
+### GECX / CX Agent Studio Connector (`gecx_connector.py`)
+
+**Purpose**: Integration with CX Agent Studio (Gemini Enterprise for Customer
+Experience) through the CES `BidiRunSession` API.
+
+**Features**:
+- Streams WxCC caller audio to Google as it arrives
+- Maps CES recognition, text, audio, interruption, and end-session messages
+- Buffers each CES output turn into a WxCC-compatible 8 kHz mu-law WAV response
+- Maps CES escalation metadata to WxCC human-transfer events
+- Supports service-account credentials, ADC, OAuth, and short-lived access tokens
+
+**Prerequisites**:
+1. CX Agent Studio application with API access
+2. GCP identity with `roles/ces.client`
+3. Python package `google-cloud-ces`
+
+**Configuration**:
+```yaml
+gecx_connector:
+  type: "gecx_connector"
+  class: "GECXConnector"
+  module: "connectors.gecx_connector"
+  config:
+    project_id: "YOUR_PROJECT_ID"
+    location: "us"
+    application_id: "YOUR_APPLICATION_ID"
+    # deployment_id: "YOUR_DEPLOYMENT_ID"
+    input_sample_rate_hertz: 8000
+    input_audio_encoding: "MULAW"
+    output_sample_rate_hertz: 8000
+    output_audio_encoding: "MULAW"
+    force_input_format: "wxcc"
+    # service_account_key: "/path/to/ces-key.json"
+    agents:
+      - "My GECX Agent"
+```
+
+See the [GECX setup guide](../../docs/guides/byova-gecx-setup.md) and
+[`config/gecx_example.yaml`](../../config/gecx_example.yaml).
+
 ## Adding New Connectors
 
 ### 1. Create Connector Class
