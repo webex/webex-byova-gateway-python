@@ -90,7 +90,10 @@ class TestConversationProcessor:
                 "conversation_id": "test_conv_123",
                 "virtual_agent_id": "test_agent_456",
                 "input_type": "audio",
-                "audio_data": b"test_audio_bytes"
+                "audio_data": b"test_audio_bytes",
+                "encoding": 2,
+                "sample_rate_hertz": 8000,
+                "language_code": "en-US",
             }
         )
 
@@ -551,6 +554,9 @@ class TestConversationProcessor:
         call_args = mock_router.route_request.call_args
         message_data = call_args[0][3]  # Fourth argument is message_data
         assert message_data["audio_data"] == b"test_audio_bytes"
+        assert message_data["encoding"] == 2
+        assert message_data["sample_rate_hertz"] == 8000
+        assert message_data["language_code"] == "en-US"
 
     def test_backward_compatibility_single_responses(self, processor, mock_router, mock_audio_input):
         """Test that single responses still work for backward compatibility."""

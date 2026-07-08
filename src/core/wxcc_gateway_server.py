@@ -172,6 +172,9 @@ class ConversationProcessor:
                 "virtual_agent_id": self.virtual_agent_id,
                 "input_type": "audio",
                 "audio_data": audio_input.caller_audio,
+                "encoding": audio_input.encoding,
+                "sample_rate_hertz": audio_input.sample_rate_hertz,
+                "language_code": audio_input.language_code,
             }
 
             # Route to connector

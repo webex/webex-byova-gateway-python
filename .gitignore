@@ -105,6 +105,13 @@ celerybeat.pid
 # Environments
 # Note: This project does not use .env files, but keeping standard Python .gitignore entries
 .env
+*.pickle
+*_token.json
+*-key.json
+*_credentials.json
+client_secret*.json
+service-account*.json
+gcp-credentials.json
 .venv
 env/
 venv/

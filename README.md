@@ -662,6 +662,7 @@ byova.VoiceVirtualAgentService: SERVING (1)
 - **Virtual Agent Router**: Dynamically routes requests to different connector implementations
 - **Local Audio Connector**: Simulates virtual agents using local audio files
 - **AWS Lex Connector**: Integration with Amazon Lex v2 for production virtual agents
+- **GECX Connector**: Streaming integration with Google CX Agent Studio through CES BidiRunSession
 - **Web Monitoring Interface**: Real-time dashboard for monitoring connections and status
 - **Session Management**: Tracks active sessions and connection events
 - **Extensible Architecture**: Easy to add new connector implementations
@@ -673,6 +674,8 @@ This gateway supports multiple virtual agent connectors. Each connector has its 
 - **[Connectors Overview](src/connectors/README.md)**: Complete guide to all available connectors and how to create new ones
 - **[Local Audio Connector](src/connectors/README.md#local-audio-connector-local_audio_connectorpy)**: Testing and development with local audio files
 - **[AWS Lex Connector](src/connectors/README.md#aws-lex-connector-aws_lex_connectorpy)**: Production integration with Amazon Lex v2
+- **[GECX / CX Agent Studio Connector](src/connectors/README.md#gecx--cx-agent-studio-connector-gecx_connectorpy)**: Google CES BidiRunSession integration
+- **[GECX Setup Guide](docs/guides/byova-gecx-setup.md)**: Configuration, authentication, deployment, and transfer handling
 - **[Audio Files Guide](audio/README.md)**: Audio file formats, organization, and configuration
 
 ## Project Structure
@@ -682,13 +685,15 @@ webex-byova-gateway-python/
 ├── audio/                    # Audio files for local connector
 ├── config/
 │   ├── config.yaml          # Main configuration file
-│   └── aws_lex_example.yaml # AWS Lex configuration example
+│   ├── aws_lex_example.yaml # AWS Lex configuration example
+│   └── gecx_example.yaml    # GECX configuration example
 ├── proto/                    # Protocol Buffer definitions
 ├── src/
 │   ├── connectors/           # Virtual agent connector implementations
 │   │   ├── i_vendor_connector.py
 │   │   ├── local_audio_connector.py
 │   │   ├── aws_lex_connector.py
+│   │   ├── gecx_connector.py
 │   │   └── README.md
 │   ├── core/                # Core gateway components
 │   │   ├── virtual_agent_router.py

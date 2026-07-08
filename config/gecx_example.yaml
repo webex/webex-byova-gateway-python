@@ -1,0 +1,75 @@
+# GECX (CX Agent Studio / CES) connector example
+# Copy relevant sections into config/config.yaml
+
+gecx_connector:
+  type: "gecx_connector"
+  class: "GECXConnector"
+  module: "connectors.gecx_connector"
+  config:
+    # Required: project, location, and the CES application (app) id.
+    # These come straight from the CX Agent Studio app URL:
+    #   https://ces.cloud.google.com/projects/PROJECT/locations/LOCATION/apps/APP_ID
+    project_id: "YOUR_PROJECT_ID"
+    location: "us"
+    application_id: "YOUR_APPLICATION_ID"
+
+    # deployment is OPTIONAL. If omitted, the session runs against the app's
+    # ROOT (draft) agent -- i.e. no published deployment is required. Provide a
+    # deployment only if you want to pin to a specific published version:
+    # deployment_id: "YOUR_DEPLOYMENT_ID"
+    # deployment: "projects/PROJECT/locations/us/apps/APP_ID/deployments/DEPLOYMENT_ID"
+
+    # entry_agent (optional): run against a specific sub-agent instead of root:
+    # entry_agent: "projects/PROJECT/locations/us/apps/APP_ID/agents/AGENT_ID"
+
+    # api_endpoint (optional): defaults to the regional CES runtime endpoint
+    # ces.<location>.rep.googleapis.com (e.g. ces.us.rep.googleapis.com), which
+    # is what serves the BidiRunSession streaming RPC. Only override if needed.
+    # api_endpoint: "ces.us.rep.googleapis.com"
+
+    language_code: "en-US"
+
+    # WxCC telephony is typically 8 kHz MULAW in both directions
+    input_sample_rate_hertz: 8000
+    input_audio_encoding: "MULAW"
+    output_sample_rate_hertz: 8000
+    output_audio_encoding: "MULAW"
+
+    initial_message: "Hello"
+    enable_partial_responses: true
+    force_input_format: "wxcc"
+
+    # --- Escalation / human handoff -------------------------------------
+    # CES signals escalation as an EndSession carrying a metadata Struct. The
+    # connector logs that metadata ("EndSession metadata: {...}") so you can see
+    # exactly what your agent emits. If any of these metadata keys is truthy, the
+    # call is transferred to a human (WxCC TRANSFER_TO_AGENT). Defaults below --
+    # override to match what your CX Agent Studio agent actually sends.
+    # transfer_metadata_keys:
+    #   - "transfer"
+    #   - "transfer_to_agent"
+    #   - "transfer_to_human"
+    #   - "escalate"
+    #   - "escalation"
+    #   - "escalated"
+    #   - "session_escalated"
+    #   - "handoff"
+    #   - "human_handoff"
+    #   - "live_agent_handoff"
+    # A transfer is also triggered if a reason/type-style metadata value contains
+    # one of these substrings:
+    # transfer_reason_keywords: ["transfer", "escalat", "human", "live agent", "live_agent", "handoff"]
+    # transfer_reason_metadata_keys: ["reason", "end_reason", "type", "status", "intent", "action"]
+
+    # Authentication (choose one). If NONE are set, Application Default
+    # Credentials are used -- recommended on Google Cloud (Cloud Run/GKE/GCE),
+    # where the runtime service account needs role roles/ces.client
+    # (permission ces.sessions.bidiRunSession).
+    # service_account_key: "/path/to/ces-service-account.json"
+    # access_token: "ya29...."  # short-lived, not recommended for production
+    # oauth_client_id: "..."
+    # oauth_client_secret: "..."
+    # oauth_token_file: "gecx_oauth_token.pickle"
+
+    agents:
+      - "My GECX Agent"
