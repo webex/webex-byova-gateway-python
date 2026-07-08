@@ -22,6 +22,10 @@ The router is responsible for:
 - **Agent Management**: Manages agent selection and availability
 - **Session Coordination**: Coordinates sessions across different connectors
 
+The current connector set includes local audio, AWS Lex, and Google CX Agent
+Studio (`GECXConnector`). The router discovers each implementation from
+`config/config.yaml`; no provider-specific import is required in the core.
+
 **Key Methods**:
 ```python
 class VirtualAgentRouter:
@@ -193,4 +197,4 @@ logging:
 
 ## License
 
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.
+This code is licensed under the [Cisco Sample Code License v1.1](../../LICENSE). See the main project README for details.
