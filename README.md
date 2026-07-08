@@ -16,6 +16,8 @@ continue with [Production Readiness](docs/PRODUCTION_READINESS.md).
 
 If you want to validate the Webex-facing path before choosing a voice-agent provider, use
 the [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md) guide.
+For Google CX Agent Studio, use the
+[GECX Setup Guide](docs/guides/byova-gecx-setup.md).
 
 ## What the Gateway Does
 
@@ -28,7 +30,7 @@ The sample includes:
 - A BYOVA gRPC server with `ListVirtualAgents` and `ProcessCallerInput`
 - JWT validation for the WxCC data plane
 - A configuration-driven connector router
-- Local audio and AWS Lex connectors
+- Local audio, AWS Lex, and Google CX Agent Studio connectors
 - gRPC and HTTP health checks
 - A development monitoring dashboard
 - Unit tests and local gRPC smoke-test utilities
@@ -41,8 +43,9 @@ The sample includes:
 > authorization, data-source registration, gateway configuration, and the Contact Center
 > call flow. If you have not selected a provider, use the
 > [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md) guide for a
-> vendor-neutral end-to-end validation. The abbreviated steps below only install and run
-> the gateway code.
+> vendor-neutral end-to-end validation. For Google CX Agent Studio, use the
+> [GECX Setup Guide](docs/guides/byova-gecx-setup.md). The abbreviated steps below only
+> install and run the gateway code.
 
 ### Webex Prerequisites for End-to-End Testing
 
