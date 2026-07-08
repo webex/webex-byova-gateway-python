@@ -31,7 +31,7 @@ A fully functional voice AI system where customers can:
 - **gRPC Integration**: Seamless communication with Webex Contact Center
 - **Modular Architecture**: Easy to extend with new virtual agent providers
 - **Real-time Monitoring**: Web dashboard for debugging and monitoring
-- **Multiple Connectors**: Support for local audio testing and AWS Lex integration
+- **Multiple Connectors**: Local audio, AWS Lex, and GECX/CX Agent Studio support
 - **Comprehensive Logging**: Detailed logs for troubleshooting and analysis
 
 ## 📚 Documentation
@@ -42,6 +42,7 @@ A fully functional voice AI system where customers can:
 - **[JWT Authentication](JWT_AUTHENTICATION.md)** - Configure Webex runtime token validation
 - **[Testing](TESTING.md)** - Run automated, HTTP, gRPC, and end-to-end tests
 - **[Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Complete step-by-step setup
+- **[GECX Setup Guide](guides/byova-gecx-setup.md)** - Google CX Agent Studio integration walkthrough
 - **[Productization and Production Readiness Guide](PRODUCTION_READINESS.md)** - Requirements for operating a derivative of this sample at high call volume
 - **[Protocol Definitions](https://github.com/webex/webex-byova-gateway-python/tree/main/proto)** - BYOVA and health protocol source files
 - **[GitHub Repository](https://github.com/webex/webex-byova-gateway-python)** - Source code and issues

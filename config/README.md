@@ -63,7 +63,10 @@ Available connector documentation:
 - [Connector interface and development](../src/connectors/README.md)
 - [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
 - [AWS Lex configuration](../docs/AWS_LEX_CONFIGURATION.md)
+- [Google CX Agent Studio configuration](../docs/guides/byova-gecx-setup.md)
 - `config/aws_lex_example.yaml`
+- `config/gecx_example.yaml`
+- `config/config.cloudrun.yaml`
 
 ### Local Audio Connector
 
@@ -89,6 +92,37 @@ connectors:
 Use `agent_id`, not an `agents` list, to change the advertised local agent name. See
 [Local Audio Connector Configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md) for the local
 and end-to-end sandbox test paths.
+
+### GECX / CX Agent Studio Connector
+
+The GECX connector streams WxCC caller audio to Google CX Agent Studio through the CES
+`BidiRunSession` API and returns each completed agent turn as a WxCC-compatible response.
+
+```yaml
+connectors:
+  gecx_connector:
+    type: "gecx_connector"
+    class: "GECXConnector"
+    module: "connectors.gecx_connector"
+    config:
+      project_id: "YOUR_PROJECT_ID"
+      location: "us"
+      application_id: "YOUR_APPLICATION_ID"
+      language_code: "en-US"
+      input_sample_rate_hertz: 8000
+      input_audio_encoding: "MULAW"
+      output_sample_rate_hertz: 8000
+      output_audio_encoding: "MULAW"
+      force_input_format: "wxcc"
+      # Omit auth settings to use Application Default Credentials.
+      # service_account_key: "/path/to/service-account.json"
+      agents:
+        - "My GECX Agent"
+```
+
+See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
+[GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and
+Webex Contact Center configuration.
 
 ### AWS Credentials
 
@@ -222,6 +256,7 @@ Common checks:
 
 - [Local development](../docs/LOCAL_DEVELOPMENT.md)
 - [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
+- [GECX setup](../docs/guides/byova-gecx-setup.md)
 - [JWT authentication](../docs/JWT_AUTHENTICATION.md)
 - [Testing](../docs/TESTING.md)
 - [Return to the project README](../README.md)
