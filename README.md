@@ -140,6 +140,7 @@ endpoint testing, logs, and troubleshooting.
 | Configure the monitoring dashboard | [Monitoring Interface](src/monitoring/README.md) |
 | Add or configure connectors | [Connector Guide](src/connectors/README.md) |
 | Configure AWS Lex | [AWS Lex Configuration](docs/AWS_LEX_CONFIGURATION.md) |
+| Configure Google CX Agent Studio | [GECX Setup Guide](docs/guides/byova-gecx-setup.md) |
 | Configure TLS and network security | [Security Configuration](docs/Security-Configuration.md) |
 | Prepare a derivative for production | [Production Readiness](docs/PRODUCTION_READINESS.md) |
 
@@ -171,6 +172,9 @@ production without the controls described in the production guide.
 - **Local Audio**: Uses the included WAV files for local development and vendor-neutral
   end-to-end validation. See [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md).
 - **AWS Lex**: Connects to Amazon Lex V2 through the standard AWS SDK credential chain.
+- **Google CX Agent Studio**: Streams caller audio to Gemini Enterprise for Customer
+  Experience through CES `BidiRunSession`. See the
+  [GECX Setup Guide](docs/guides/byova-gecx-setup.md).
 
 Connectors implement `IVendorConnector` and are loaded from `config/config.yaml`. See the
 [Connector Guide](src/connectors/README.md) for the interface contract and extension pattern.

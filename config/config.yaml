@@ -62,6 +62,30 @@ connectors:
         encoding: "ulaw"
       agents: []
 
+  # Google CX Agent Studio (GECX / CES BidiRunSession)
+  # gecx_connector:
+  #   type: "gecx_connector"
+  #   class: "GECXConnector"
+  #   module: "connectors.gecx_connector"
+  #   config:
+  #     project_id: "YOUR_PROJECT_ID"
+  #     location: "us"
+  #     application_id: "YOUR_APPLICATION_ID"
+  #     # deployment_id is optional; omit it to use the app's root/draft agent.
+  #     # deployment_id: "YOUR_DEPLOYMENT_ID"
+  #     language_code: "en-US"
+  #     input_sample_rate_hertz: 8000
+  #     input_audio_encoding: "MULAW"
+  #     output_sample_rate_hertz: 8000
+  #     output_audio_encoding: "MULAW"
+  #     initial_message: "Hello"
+  #     enable_partial_responses: true
+  #     force_input_format: "wxcc"
+  #     # Omit auth settings to use Application Default Credentials.
+  #     # service_account_key: "/path/to/service-account.json"
+  #     agents:
+  #       - "My GECX Agent"
+
 # Monitoring interface
 monitoring:
   enabled: true
