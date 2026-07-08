@@ -1,0 +1,45 @@
+# Virtual environments (huge; rebuilt in-image via requirements.txt)
+venv/
+.venv/
+env/
+ENV/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local logs and temp
+logs/
+*.log
+tmp/
+temp/
+
+# Secrets and credentials - NEVER ship these in the image
+*.pickle
+*_token.pickle
+*-key.json
+*_credentials.json
+client_secret*.json
+service-account*.json
+gcp-credentials.json
+*.pem
+*.key
+*.p12
+.env
+*.env
+
+# VCS / IDE / docs (not needed at runtime)
+.git/
+.github/
+.vscode/
+.idea/
+docs/
+
+# Tests
+tests/

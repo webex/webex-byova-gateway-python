@@ -7,6 +7,7 @@ creates the gRPC server, and starts listening for requests.
 """
 
 import logging
+import os
 import sys
 import threading
 from concurrent import futures
@@ -282,8 +283,8 @@ def main():
     grpc_server = None
     data_source_lifecycle = None
     try:
-        # Load configuration
-        config_path = "config/config.yaml"
+        # Select an environment-specific configuration when requested.
+        config_path = os.environ.get("GATEWAY_CONFIG", "config/config.yaml")
         config = load_config(config_path)
 
         # Set up logging
@@ -313,7 +314,7 @@ def main():
         # Get server configuration
         gateway_config = config.get("gateway", {})
         host = gateway_config.get("host", "0.0.0.0")
-        port = gateway_config.get("port", 50051)
+        port = int(os.environ.get("PORT", gateway_config.get("port", 50051)))
 
         # Create JWT interceptor if configured
         jwt_interceptor = create_jwt_interceptor(config, logger)
