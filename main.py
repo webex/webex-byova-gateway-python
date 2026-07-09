@@ -385,7 +385,7 @@ def main():
         print(f"🌐 Access URL: grpc://{host}:{port}")
         print(f"📁 Configuration: {config_path}")
         print(f"📝 Log Level: {gateway_config.get('level', 'INFO')}")
-        print(f"🔧 Gateway Version: {gateway_config.get('version', '1.0.0')}")
+        print(f"🔧 Gateway Version: {gateway_config.get('version', '1.1.0')}")
         print()
 
         # Print connector information
