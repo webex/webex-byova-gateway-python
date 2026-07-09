@@ -751,7 +751,7 @@ def get_configuration_data() -> Dict[str, Any]:
     config = {
         "gateway": {
             "name": "BYOVA Gateway",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "host": "0.0.0.0",
             "grpc_port": 50051,
             "web_port": 8080,
