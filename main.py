@@ -299,7 +299,8 @@ def main():
         logger.info("Connectors loaded successfully")
 
         # Create WxCCGatewayServer
-        server = WxCCGatewayServer(router)
+        vad_config = config.get("voice_activity_detection", {})
+        server = WxCCGatewayServer(router, vad_config)
         logger.info("WxCCGatewayServer created")
 
         # Create health service with router for real health monitoring

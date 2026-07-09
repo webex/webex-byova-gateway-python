@@ -404,8 +404,8 @@ class AWSLexSessionManager:
         This method should be called after successfully sending a final response to WxCC
         to prepare the conversation for handling the next round of audio input.
         
-        This method removes START_OF_INPUT tracking and DTMF mode tracking so that each audio segment
-        can follow the same independent flow: speech detection -> START_OF_INPUT -> silence detection -> END_OF_INPUT.
+        This method removes START_OF_INPUT tracking and DTMF mode tracking so the
+        gateway VAD can signal the next independent speech segment.
         
         Args:
             conversation_id: Conversation identifier to reset

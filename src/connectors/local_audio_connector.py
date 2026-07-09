@@ -35,8 +35,6 @@ class LocalAudioConnector(IVendorConnector):
                    - 'record_caller_audio': Whether to record caller audio (optional, defaults to False)
                    - 'audio_recording': Dictionary with audio recording configuration:
                      - 'output_dir': Directory to save recorded audio (optional, defaults to "logs")
-                     - 'silence_threshold': Amplitude threshold for silence detection (optional)
-                     - 'silence_duration': Amount of silence in seconds before stopping recording (optional)
         """
         self.agent_id = config.get("agent_id", "Local Playback")
         self.audio_base_path = Path(config.get("audio_base_path", "audio"))
@@ -257,11 +255,6 @@ class LocalAudioConnector(IVendorConnector):
                     barge_in_enabled=False
                 )
 
-        # Check for silence timeout when DTMF inputs are received
-        self.check_silence_timeout(
-            conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
-        )
-
         # Return None for unrecognized DTMF inputs (no response needed)
         self.logger.debug(f"Unrecognized DTMF input for conversation {conversation_id}: {dtmf_events} - returning None")
         return None
@@ -283,11 +276,6 @@ class LocalAudioConnector(IVendorConnector):
             self._process_audio_for_recording(
                 message_data["audio_data"], conversation_id
             )
-
-        # Check for silence timeout even when audio data is received
-        self.check_silence_timeout(
-            conversation_id, self.record_caller_audio, self.audio_recorders, self.logger
-        )
 
         # For local audio connector, we typically don't need to respond to audio input
         # unless it's for recording purposes. Return None to reduce unnecessary responses.
@@ -439,18 +427,9 @@ class LocalAudioConnector(IVendorConnector):
         try:
             # Get audio recording configuration
             output_dir = self.audio_recording_config.get("output_dir", "logs")
-            silence_threshold = self.audio_recording_config.get(
-                "silence_threshold", 3000
-            )
-            silence_duration = self.audio_recording_config.get("silence_duration", 2.0)
-            quiet_threshold = self.audio_recording_config.get("quiet_threshold", 20)
-
-            # Create audio buffer for silence detection and audio data management
+            # Create a byte buffer; the gateway VAD owns endpointing.
             audio_buffer = AudioBuffer(
                 conversation_id=conversation_id,
-                silence_threshold=silence_threshold,
-                silence_duration=silence_duration,
-                quiet_threshold=quiet_threshold,
                 sample_rate=8000,  # WxCC compatible sample rate
                 bit_depth=8,       # WxCC compatible bit depth
                 channels=1,        # WxCC compatible channels
@@ -472,8 +451,7 @@ class LocalAudioConnector(IVendorConnector):
 
             self.logger.info(
                 f"Initialized audio recorder for conversation {conversation_id} "
-                f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, "
-                f"quiet threshold: {quiet_threshold}, output: {output_dir})"
+                f"(output: {output_dir})"
             )
         except Exception as e:
             self.logger.error(f"Failed to initialize audio recorder: {e}")
@@ -507,20 +485,12 @@ class LocalAudioConnector(IVendorConnector):
                 self.logger.error(f"Failed to extract audio data for conversation {conversation_id}")
                 return
 
-            # Try to detect the actual audio format based on the data characteristics
-            detected_encoding = self.audio_converter.detect_audio_encoding(audio_bytes)
-            self.logger.debug(f"Detected audio encoding: {detected_encoding}")
-
-            # Process audio format if needed
-            processed_audio, final_encoding = self.process_audio_format(audio_bytes, detected_encoding, conversation_id)
-
             # Start recording if not already started
             audio_recorder = self.audio_recorders[conversation_id]
             if not audio_recorder.is_recording():
                 audio_recorder.start_recording()
 
-            # Add audio data to the recorder (which will use the audio buffer)
-            audio_recorder.add_audio_data(processed_audio, final_encoding)
+            audio_recorder.add_audio_data(audio_bytes, "ulaw")
         except Exception as e:
             self.logger.error(
                 f"Error recording audio for conversation {conversation_id}: {e}"
