@@ -11,6 +11,8 @@ from typing import Iterator, Dict, Any
 
 from src.core.wxcc_gateway_server import ConversationProcessor
 from src.core.virtual_agent_router import VirtualAgentRouter
+from src.generated.voicevirtualagent_pb2 import VoiceInput
+from src.utils.silero_speech_boundary import SpeechBoundarySignal
 
 
 class TestConversationProcessor:
@@ -91,9 +93,11 @@ class TestConversationProcessor:
                 "virtual_agent_id": "test_agent_456",
                 "input_type": "audio",
                 "audio_data": b"test_audio_bytes",
-                "encoding": 2,
-                "sample_rate_hertz": 8000,
-                "language_code": "en-US",
+                "audio_metadata": {
+                    "encoding": 2,
+                    "sample_rate_hertz": 8000,
+                    "language_code": "en-US",
+                },
             }
         )
 
@@ -101,6 +105,86 @@ class TestConversationProcessor:
         assert len(responses) == 1
         assert responses[0].prompts[0].text == "Hello, how can I help you?"
         assert responses[0].prompts[0].audio_content == b"audio_response_bytes"
+
+    def test_process_audio_input_uses_configured_rate_when_wxcc_omits_it(self, mock_router):
+        processor = ConversationProcessor(
+            conversation_id="test_conv_123",
+            virtual_agent_id="test_agent_456",
+            router=mock_router,
+            vad_config={"fallback_sample_rate_hertz": 16000},
+        )
+        processor.speech_boundary_observer = MagicMock()
+        processor.speech_boundary_observer.observe.return_value = []
+        mock_router.route_request.return_value = None
+
+        audio_input = MagicMock(
+            caller_audio=b"\x00\x80\xff\x7f",
+            encoding=VoiceInput.VoiceEncoding.LINEAR16_FORMAT,
+            sample_rate_hertz=0,
+            language_code="en-US",
+        )
+
+        assert list(processor._process_audio_input(audio_input)) == []
+        frame = processor.speech_boundary_observer.observe.call_args.args[0]
+        assert frame.sample_rate_hertz == 16000
+
+    def test_gateway_emits_speech_started_event(self, processor, mock_router, mock_audio_input):
+        processor.speech_boundary_observer = MagicMock()
+        processor.speech_boundary_observer.observe.return_value = [
+            SpeechBoundarySignal("speech_started", "test_conv_123", 8000)
+        ]
+        mock_router.route_request.return_value = None
+        mock_router.should_observe_speech_boundaries.return_value = True
+
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        assert len(responses) == 1
+        assert responses[0].output_events[0].event_type == 4
+        assert responses[0].output_events[0].name == ""
+
+    def test_gateway_flushes_lex_once_after_speech_ended(
+        self, processor, mock_router, mock_audio_input
+    ):
+        processor.speech_boundary_observer = MagicMock()
+        processor.speech_boundary_observer.observe.return_value = [
+            SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)
+        ]
+        lex_response = {
+            "message_type": "response",
+            "text": "Lex reply",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+        }
+        mock_router.route_request.side_effect = [None, iter([lex_response])]
+        mock_router.should_observe_speech_boundaries.return_value = True
+
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        assert len(responses) == 2
+        assert responses[0].output_events[0].event_type == 5
+        assert responses[1].prompts[0].text == "Lex reply"
+        assert mock_router.route_request.call_count == 2
+        assert mock_router.route_request.call_args_list[1].args[1] == (
+            "handle_speech_boundary"
+        )
+        assert mock_router.route_request.call_args_list[1].args[3] == {
+            "conversation_id": "test_conv_123",
+            "virtual_agent_id": "test_agent_456",
+            "input_type": "speech_boundary",
+            "speech_boundary": {"kind": "speech_ended"},
+        }
+
+    def test_gateway_skips_vad_during_connector_dtmf_mode(
+        self, processor, mock_router, mock_audio_input
+    ):
+        processor.speech_boundary_observer = MagicMock()
+        mock_router.route_request.return_value = None
+        mock_router.should_observe_speech_boundaries.return_value = False
+
+        assert list(processor._process_audio_input(mock_audio_input)) == []
+
+        mock_router.route_request.assert_called_once()
+        processor.speech_boundary_observer.observe.assert_not_called()
 
     def test_process_audio_input_with_session_end_event(self, processor, mock_router, mock_audio_input):
         """Test processing audio input with SESSION_END event from connector."""
@@ -554,9 +638,11 @@ class TestConversationProcessor:
         call_args = mock_router.route_request.call_args
         message_data = call_args[0][3]  # Fourth argument is message_data
         assert message_data["audio_data"] == b"test_audio_bytes"
-        assert message_data["encoding"] == 2
-        assert message_data["sample_rate_hertz"] == 8000
-        assert message_data["language_code"] == "en-US"
+        assert message_data["audio_metadata"] == {
+            "encoding": 2,
+            "sample_rate_hertz": 8000,
+            "language_code": "en-US",
+        }
 
     def test_backward_compatibility_single_responses(self, processor, mock_router, mock_audio_input):
         """Test that single responses still work for backward compatibility."""

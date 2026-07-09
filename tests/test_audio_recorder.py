@@ -145,33 +145,28 @@ class TestAudioRecorder:
         
         assert result is True
 
-    def test_add_audio_data_delegates_to_buffer(self, basic_recorder, mock_audio_buffer):
-        """Test that add_audio_data delegates to AudioBuffer."""
+    def test_add_audio_data_appends_to_buffer(self, basic_recorder, mock_audio_buffer):
+        """Test that add_audio_data stores raw bytes without endpointing."""
         test_audio = b"test audio data"
-        mock_audio_buffer.add_audio_data.return_value = True
         
         result = basic_recorder.add_audio_data(test_audio, "ulaw")
         
         assert result is True
-        mock_audio_buffer.add_audio_data.assert_called_once_with(test_audio, "ulaw")
+        mock_audio_buffer.append.assert_called_once_with(test_audio)
 
-    def test_add_audio_data_silence_detected_finalizes_recording(self, basic_recorder, mock_audio_buffer):
-        """Test that silence detection finalizes recording."""
+    def test_add_audio_data_does_not_finalize_from_buffer_state(self, basic_recorder, mock_audio_buffer):
+        """Speech boundaries are owned by the gateway observer."""
         test_audio = b"test audio data"
-        mock_audio_buffer.add_audio_data.return_value = False  # Silence detected
         basic_recorder.recording = True
         
         result = basic_recorder.add_audio_data(test_audio, "ulaw")
         
-        assert result is False
-        assert not basic_recorder.recording
+        assert result is True
+        assert basic_recorder.recording
 
     def test_add_audio_data_writes_to_wav_file_when_recording(self, basic_recorder, mock_audio_buffer):
         """Test that audio data is written to WAV file when recording."""
         test_audio = b"test audio data"
-        mock_audio_buffer.add_audio_data.return_value = True
-        mock_audio_buffer.get_buffer_size.return_value = 100
-        mock_audio_buffer.get_buffered_audio.return_value = test_audio
         basic_recorder.recording = True
         
         # Mock the WAV file writing
@@ -183,25 +178,6 @@ class TestAudioRecorder:
             
             assert result is True
             mock_write.assert_called_once_with(test_audio)
-
-    def test_check_silence_timeout_delegates_to_buffer(self, basic_recorder, mock_audio_buffer):
-        """Test that check_silence_timeout delegates to AudioBuffer."""
-        mock_audio_buffer.check_silence_timeout.return_value = True
-        
-        result = basic_recorder.check_silence_timeout()
-        
-        assert result is True
-        mock_audio_buffer.check_silence_timeout.assert_called_once()
-
-    def test_check_silence_timeout_silence_detected_finalizes_recording(self, basic_recorder, mock_audio_buffer):
-        """Test that silence timeout detection finalizes recording."""
-        mock_audio_buffer.check_silence_timeout.return_value = False  # Silence detected
-        basic_recorder.recording = True
-        
-        result = basic_recorder.check_silence_timeout()
-        
-        assert result is False
-        assert not basic_recorder.recording
 
     def test_finalize_recording_not_recording(self, basic_recorder):
         """Test finalizing recording when not recording."""

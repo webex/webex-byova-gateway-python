@@ -87,6 +87,7 @@ gecx_connector:
     initial_message: "Hello"
     enable_partial_responses: true
     force_input_format: "wxcc"
+    turn_response_timeout_seconds: 30
     # Omit auth entirely to use Application Default Credentials (recommended on
     # Google Cloud; the runtime service account needs roles/ces.client).
     # service_account_key: "C:/path/to/ces-service-account.json"
@@ -169,8 +170,20 @@ are worth understanding if you fork this connector.
 `GECXStreamingSession` runs a background thread per conversation that holds one
 CES `BidiRunSession` open. WxCC caller audio is pushed onto an inbound queue and
 forwarded to CES; CES server messages (STT, agent text, TTS audio, barge-in,
-end-of-session) are mapped to BYOVA responses on an outbound queue that the
-gateway drains back to WxCC.
+end-of-session) are mapped to BYOVA responses on an outbound queue. The gateway
+drains responses while caller audio is flowing and, after gateway speech-end
+detection, waits for CES `turn_completed` before returning the final turn to
+WxCC. This prevents a response that arrives after `END_OF_INPUT` from remaining
+queued when WxCC stops sending caller audio.
+
+### Speech boundaries
+
+The gateway's central Silero observer owns Webex `START_OF_INPUT` and
+`END_OF_INPUT` events. GECX does not run a second local speech detector: every
+caller-audio frame is forwarded to CES immediately, and speech-boundary
+notifications are used only to coordinate turn completion and response
+delivery. Configure the observer under the top-level
+`voice_activity_detection` block in `config/config.yaml`.
 
 ### Audio format: WxCC expects a self-describing WAV clip
 
@@ -197,9 +210,10 @@ agent stops talking when the caller interrupts.
 
 ### Input audio
 
-WxCC sends 8 kHz mu-law. The gateway forwards WxCC's encoding + sample rate as
-metadata; the connector normalizes/converts to the CES `InputAudioConfig` format
-(`force_input_format: "wxcc"` pins detection to 8 kHz MULAW).
+WxCC sends 8 kHz mu-law. The gateway forwards WxCC's declared encoding and
+sample rate in `audio_metadata`; the connector normalizes/converts to the CES
+`InputAudioConfig` format. `force_input_format: "wxcc"` remains a compatibility
+fallback for clients that omit that metadata.
 
 ## Escalation to a human agent
 
@@ -276,7 +290,8 @@ Wire that branch to a queue that routes to human agents. (A normal
 | `service_account_key` | No | Path to SA JSON; omit to use ADC |
 | `initial_message` | No | Text sent when the CES stream opens (default: `Hello`) |
 | `enable_partial_responses` | No | Map CES partial outputs to WxCC `PARTIAL` responses |
-| `force_input_format` | No | `wxcc` forces 8 kHz MULAW input detection |
+| `force_input_format` | No | `wxcc` forces 8 kHz MULAW when input metadata is unavailable |
+| `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
 | `transfer_metadata_keys` | No | EndSession metadata keys that, when truthy, trigger a human transfer (see [Escalation](#escalation-to-a-human-agent)) |
 | `transfer_reason_keywords` | No | Substrings that, if found in a reason/type metadata value, trigger a transfer |
 | `transfer_reason_metadata_keys` | No | Which metadata keys are scanned for `transfer_reason_keywords` |
@@ -303,7 +318,8 @@ and grant the represented identity `roles/ces.client`.
 | `404` / `UNIMPLEMENTED` on BidiRunSession | Wrong endpoint — must be regional `ces.<location>.rep.googleapis.com` (auto-derived from `location`) |
 | `429 Resource exhausted` | CES per-app session quota; retry/backoff or request more quota |
 | No audio to caller (silence) | WxCC needs a WAV-wrapped clip, not raw audio. Confirm `Audio out: NNNN bytes WAV` in logs and `output_audio_encoding: MULAW` / `output_sample_rate_hertz: 8000`. See [How it works](#audio-format-wxcc-expects-a-self-describing-wav-clip). |
-| Garbled speech | Set `force_input_format: "wxcc"`; gateway now forwards WxCC encoding metadata |
+| Garbled speech | Confirm the gateway logs the declared WxCC encoding/sample rate; use `force_input_format: "wxcc"` only when the client omits metadata |
+| No response after `END_OF_INPUT` | Check for `turn_completed` or a turn-completion timeout in `[GECX]` logs; increase `turn_response_timeout_seconds` if the agent regularly needs more than 30 seconds |
 | Import error | `pip install google-cloud-ces` |
 
 ## Logs

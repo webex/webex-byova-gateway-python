@@ -126,9 +126,11 @@ class TestServerMessageMapping:
             ),
         )
 
+        session.begin_input_turn()
         session._handle_server_message(message)
-        responses = session.drain_responses()
+        completed, responses = session.wait_for_turn_responses(timeout=0.1)
 
+        assert completed
         assert len(responses) == 2
         assert responses[0]["message_type"] == "agent_response"
         assert responses[0]["text"] == "Hi there"
@@ -237,14 +239,27 @@ class TestServerMessageMapping:
 
 
 class TestAudioFormat:
-    def test_resolve_input_format_from_gateway_metadata(self, connector):
+    def test_resolve_input_format_from_nested_gateway_metadata(self, connector):
+        rate, encoding = connector._resolve_input_format(
+            b"\x00" * 640,
+            {
+                "audio_metadata": {
+                    "sample_rate_hertz": 16000,
+                    "encoding": 1,
+                }
+            },
+            "conv-1",
+        )
+        assert rate == 16000
+        assert encoding == "LINEAR_16"
+
+    def test_resolve_input_format_accepts_legacy_flat_metadata(self, connector):
         rate, encoding = connector._resolve_input_format(
             b"\x00" * 640,
             {"sample_rate_hertz": 8000, "encoding": 2},
             "conv-1",
         )
-        assert rate == 8000
-        assert encoding == "MULAW"
+        assert (rate, encoding) == (8000, "MULAW")
 
     def test_ces_audio_encoding_mulaw(self):
         with patch("src.connectors.gecx_connector.ces_v1") as mock_ces:
@@ -274,3 +289,43 @@ class TestSendMessage:
 
         stream_session.enqueue_audio.assert_called_once()
         assert responses[0]["text"] == "OK"
+
+
+class TestSpeechBoundaries:
+    def test_declares_streaming_audio_delivery(self, connector):
+        assert connector.get_audio_delivery_mode() == "streaming"
+
+    def test_speech_started_resets_turn_completion(self, connector):
+        stream_session = MagicMock()
+
+        with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
+            responses = list(
+                connector.handle_speech_boundary(
+                    "conv-1",
+                    {"speech_boundary": {"kind": "speech_started"}},
+                )
+            )
+
+        assert responses == []
+        stream_session.begin_input_turn.assert_called_once_with()
+
+    def test_speech_ended_waits_for_and_yields_completed_turn(self, connector):
+        stream_session = MagicMock()
+        expected = connector.create_response(
+            conversation_id="conv-1",
+            message_type="audio",
+            audio_content=b"RIFFaudio",
+            response_type="final",
+        )
+        stream_session.wait_for_turn_responses.return_value = (True, [expected])
+
+        with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
+            responses = list(
+                connector.handle_speech_boundary(
+                    "conv-1",
+                    {"speech_boundary": {"kind": "speech_ended"}},
+                )
+            )
+
+        assert responses == [expected]
+        stream_session.wait_for_turn_responses.assert_called_once_with(timeout=30.0)

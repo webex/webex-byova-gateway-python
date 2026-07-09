@@ -489,118 +489,46 @@ class TestAWSLexConnector:
         }
 
     def test_send_message_audio_input_no_speech(self, connector):
-        """Test handling of audio input with no speech detected (should yield None)."""
+        """Audio frames append without connector-owned boundary events."""
         connector.session_manager._sessions["conv123"] = {
-            "bot_name": "TestBot",
-            "session_id": "session123",
-            "actual_bot_id": "bot123",
-            "bot_alias_id": "TESTALIAS"
+            "session_id": "s",
+            "actual_bot_id": "b",
+            "bot_name": "n",
         }
-        
-        message_data = {
-            "input_type": "audio",
-            "audio_data": b"silence_audio",
-            "conversation_id": "conv123"
-        }
-        
-        # Mock audio processor to return no speech detected
-        with patch.object(connector.audio_processor, 'process_audio_for_buffering') as mock_process:
-            mock_process.return_value = {
-                'speech_detected': False,
-                'silence_detected': False
-            }
-            
-            response = list(connector.send_message("conv123", message_data))
-            assert len(response) == 1  # Should yield one response (None was yielded)
-            assert response[0] is None  # The response should be None
-        
-        # Mock audio extraction and processing to simulate speech detection
-        with patch.object(connector, 'extract_audio_data', return_value=b"input_audio"):
-            with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
-                "silence_detected": False,
-                "speech_detected": True,
-                "waiting_for_speech": False,
-                "buffer_size": 100
-            }):
-                # First call should send START_OF_INPUT event when speech is detected
-                responses = list(connector.send_message("conv123", message_data))
-                assert len(responses) == 1
-                assert responses[0]["message_type"] == "silence"
-                assert responses[0]["text"] == ""
-                assert "output_events" in responses[0]
-                assert len(responses[0]["output_events"]) == 1
-                assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
-                assert responses[0]["output_events"][0]["name"] == ""  # Empty name for START_OF_INPUT
-                assert responses[0]["barge_in_enabled"] is True
-                assert responses[0]["response_type"] == "silence"
-        
-        # Second call should return no response since START_OF_INPUT already sent
-        # (audio is just being buffered)
-        responses = list(connector.send_message("conv123", message_data))
-        assert len(responses) == 0  # No response when just buffering audio
+        with patch.object(connector.audio_processor, "append_audio_frame") as append:
+            responses = list(
+                connector.send_message(
+                    "conv123", {"input_type": "audio", "audio_data": b"frame"}
+                )
+            )
+
+        assert responses == [None]
+        append.assert_called_once_with(b"frame", "conv123")
 
     def test_send_message_audio_input_no_speech_detected(self, connector):
-        """Test that START_OF_INPUT is NOT sent when speech is not detected."""
+        """Central speech-ended notification alone flushes Lex."""
         connector.session_manager._sessions["conv123"] = {
-            "bot_name": "TestBot",
-            "session_id": "session123",
-            "actual_bot_id": "bot123",
-            "bot_alias_id": "TESTALIAS"
+            "session_id": "s",
+            "actual_bot_id": "b",
+            "bot_name": "n",
         }
-        
-        message_data = {
-            "input_type": "audio",
-            "audio_data": b"input_audio",
-            "conversation_id": "conv123"
-        }
-        
-        # Mock audio extraction and processing to simulate NO speech detection
-        with patch.object(connector, 'extract_audio_data', return_value=b"input_audio"):
-            with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
-                "silence_detected": False,
-                "speech_detected": False,
-                "waiting_for_speech": True,
-                "buffer_size": 50
-            }):
-                # Should NOT send START_OF_INPUT when speech is not detected
-                responses = list(connector.send_message("conv123", message_data))
-                assert len(responses) == 1  # One response (None) when waiting for speech
-                assert responses[0] is None  # The response should be None
-                
-                # Verify conversation is NOT in START_OF_INPUT tracking
-                assert "conv123" not in connector.session_manager.conversations_with_start_of_input
-        
-        # Test with multiple audio inputs - still no START_OF_INPUT until speech detected
-        for i in range(3):
-            with patch.object(connector, 'extract_audio_data', return_value=b"more_audio"):
-                with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
-                    "silence_detected": False,
-                    "speech_detected": False,
-                    "waiting_for_speech": True,
-                    "buffer_size": 50 + (i * 10)
-                }):
-                    responses = list(connector.send_message("conv123", message_data))
-                    assert len(responses) == 1  # Still one response (None)
-                    assert responses[0] is None  # The response should be None
-                    assert "conv123" not in connector.session_manager.conversations_with_start_of_input
-        
-        # Now test that START_OF_INPUT IS sent when speech is finally detected
-        with patch.object(connector, 'extract_audio_data', return_value=b"speech_audio"):
-            with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
-                "silence_detected": False,
-                "speech_detected": True,
-                "waiting_for_speech": False,
-                "buffer_size": 100
-            }):
-                responses = list(connector.send_message("conv123", message_data))
-                assert len(responses) == 1  # Now we get a response
-                assert responses[0]["message_type"] == "silence"
-                assert "output_events" in responses[0]
-                assert len(responses[0]["output_events"]) == 1
-                assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
-                
-                # Verify conversation IS now in START_OF_INPUT tracking
-                assert "conv123" in connector.session_manager.conversations_with_start_of_input
+        with patch.object(
+            connector,
+            "_send_audio_to_lex",
+            return_value=iter([{"message_type": "response"}]),
+        ) as flush:
+            responses = list(
+                connector.send_message(
+                    "conv123",
+                    {
+                        "input_type": "speech_boundary",
+                        "speech_boundary": {"kind": "speech_ended"},
+                    },
+                )
+            )
+
+        assert responses == [{"message_type": "response"}]
+        flush.assert_called_once_with("conv123")
 
     def test_send_message_no_session(self, connector):
         """Test handling of message with no active session."""
@@ -973,94 +901,18 @@ class TestAWSLexConnector:
             # Restore the original set
             connector.session_manager.conversations_with_start_of_input = original_set
 
-    def test_multiple_audio_input_cycles_success(self, connector, mock_lex_runtime):
-        """Test that multiple audio input cycles work correctly with reset functionality."""
-        conversation_id = "test_conv_792"
-        bot_id = "test_bot_123"
-        session_id = "session_123"
-        
-        # Set up session
-        connector.session_manager._sessions[conversation_id] = {
-            "session_id": session_id,
-            "actual_bot_id": bot_id,
-            "bot_name": "TestBot",
-            "bot_alias_id": "TESTALIAS"
-        }
-        
-        # Set up audio buffer
-        connector.audio_processor.init_audio_buffer(conversation_id)
-        audio_buffer = connector.audio_processor.audio_buffers[conversation_id]
-        
-        # Add some audio data to the buffer so it's not empty
-        # Use bytes that will be detected as non-silent (need at least 10 unique values)
-        test_audio = bytes([0, 50, 100, 150, 200, 250, 1, 99, 25, 75, 125, 175, 225, 255, 10, 90])
-        audio_buffer.add_audio_data(test_audio, encoding="ulaw")
-        assert audio_buffer.get_buffer_size() > 0
-        
-        # Mock Lex response
-        mock_audio_stream = MagicMock()
-        mock_audio_stream.read.return_value = b"mock_audio_response"
-        mock_audio_stream.close.return_value = None
-        
-        mock_response = {
-            'audioStream': mock_audio_stream,
-            'messages': 'gAAAAABk...',  # Mock encoded messages
-            'inputTranscript': 'gAAAAABk...'  # Mock encoded transcript
-        }
-        
-        # Mock the decode method to return test data
-        with patch.object(connector.response_handler, '_decode_lex_response') as mock_decode:
-            mock_decode.side_effect = [
-                "What type of room would you like?",  # inputTranscript (called first)
-                [{'content': 'What type of room would you like? king, queen, or deluxe?', 'contentType': 'PlainText'}],  # messages (called second)
-                [{'intent': {'name': 'BookRoom', 'state': 'InProgress'}}],  # interpretations (called third)
-                {'dialogAction': {'type': 'ElicitSlot'}, 'activeContexts': []}  # sessionState (called fourth)
-            ]
-            
-            # Mock audio conversion
-            with patch('src.utils.audio_utils.convert_aws_lex_audio_to_wxcc') as mock_convert:
-                mock_convert.return_value = (b"converted_audio", "audio/wav")
-                
-                # Mock Lex runtime call
-                with patch.object(connector.lex_runtime, 'recognize_utterance', return_value=mock_response):
-                    
-                    # First cycle: Send audio to Lex and get response
-                    responses = list(connector._send_audio_to_lex(conversation_id))
-                    
-                    # Verify response was generated
-                    assert len(responses) == 1
-                    response = responses[0]
-                    assert response["conversation_id"] == conversation_id
-                    # The response type may vary based on the actual implementation
-                    assert response["message_type"] in ["response", "error"]
-                    assert response["response_type"] == "final"
-                    
-                    # Verify conversation state was reset
-                    assert conversation_id not in connector.session_manager.conversations_with_start_of_input
-                    
-                    # Verify audio buffer was reset
-                    assert audio_buffer.get_buffer_size() == 0
-                    
-                    # Second cycle: Should be able to send START_OF_INPUT again
-                    message_data = {"input_type": "audio", "audio_data": b"new_audio_input"}
-                    
-                    # Mock audio extraction
-                    with patch.object(connector, 'extract_audio_data', return_value=b"new_audio_input"):
-                        # Mock audio buffering
-                        with patch.object(connector.audio_processor, 'process_audio_for_buffering', return_value={
-                            "silence_detected": False,
-                            "speech_detected": True,
-                            "waiting_for_speech": False,
-                            "buffer_size": 100
-                        }):
-                            responses = list(connector._handle_audio_input(conversation_id, message_data, bot_id, session_id, "TestBot"))
-                            
-                            # Should send START_OF_INPUT since conversation was reset
-                            assert len(responses) == 1
-                            start_response = responses[0]
-                            assert "output_events" in start_response
-                            assert len(start_response["output_events"]) == 1
-                            assert start_response["output_events"][0]["event_type"] == "START_OF_INPUT"
+    def test_multiple_audio_input_cycles_success(self, connector):
+        """A post-flush cycle appends the next frame without a START event."""
+        connector.session_manager.has_session = MagicMock(return_value=True)
+        with patch.object(connector.audio_processor, "append_audio_frame") as append:
+            responses = list(
+                connector._handle_audio_input(
+                    "conv", {"audio_data": b"next"}, "b", "s", "n"
+                )
+            )
+
+        assert responses == [None]
+        append.assert_called_once_with(b"next", "conv")
 
     def test_reset_integration_with_dtmf_transfer(self, connector):
         """Test that conversation reset works correctly with DTMF transfer."""
@@ -2087,242 +1939,40 @@ class TestAWSLexConnector:
         assert dtmf1["inter_digit_timeout_msec"] == dtmf2["inter_digit_timeout_msec"]
         assert dtmf1["dtmf_input_length"] == dtmf2["dtmf_input_length"]
 
-    def test_multi_segment_audio_processing(self, connector, mock_lex_runtime):
-        """Test that each audio segment follows the same independent flow."""
-        conversation_id = "test-conversation-123"
-        
-        # Mock the session manager methods
-        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=False)
-        connector.session_manager.add_start_of_input_tracking = MagicMock()
-        connector.session_manager.remove_start_of_input_tracking = MagicMock()
-        connector.session_manager.create_session = MagicMock(return_value={"session_id": "test-session"})
+    def test_multi_segment_audio_processing(self, connector):
+        """Multiple frames append before central end is delivered."""
         connector.session_manager.has_session = MagicMock(return_value=True)
-        connector.session_manager.get_bot_id = MagicMock(return_value="test-bot")
-        connector.session_manager.get_session_id = MagicMock(return_value="test-session")
-        connector.session_manager.get_bot_name = MagicMock(return_value="Test Bot")
-        connector.session_manager.get_bot_alias_id_for_session = MagicMock(return_value="TESTALIAS")
-        
-        # Mock audio processor
-        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
-            "silence_detected": False,
-            "speech_detected": True,
-            "waiting_for_speech": False,
-            "buffer_size": 100
-        })
-        connector.audio_processor.has_audio_buffer = MagicMock(return_value=True)
-        connector.audio_processor.get_buffered_audio = MagicMock(return_value=b"test_audio")
-        connector.audio_processor.reset_audio_buffer = MagicMock()
-        connector.audio_processor.log_wxcc_audio = MagicMock()
-        connector.audio_processor.convert_wxcc_audio_to_lex_format = MagicMock(return_value=b"converted_audio")
-        connector.audio_processor.convert_lex_audio_to_wxcc_format = MagicMock(return_value=(b"response_audio", "audio/wav"))
-        connector.audio_processor.log_aws_audio = MagicMock()
-        
-        # Mock response handler
-        connector.response_handler.create_audio_response = MagicMock(return_value={
-            "message_type": "response",
-            "text": "Test response",
-            "audio_content": b"response_audio",
-            "response_type": "final"
-        })
-        
-        # Mock Lex response
-        mock_response = MagicMock()
-        mock_response.get.return_value = None  # No audio stream for first response
-        mock_lex_runtime.recognize_utterance.return_value = mock_response
-        
-        # First audio segment - should send START_OF_INPUT
-        message_data = {
-            "input_type": "audio",
-            "audio_data": b"test_audio_data",
-            "conversation_id": conversation_id
-        }
-        
-        responses = list(connector.send_message(conversation_id, message_data))
-        
-        # Should have START_OF_INPUT response
-        assert len(responses) == 1
-        assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
-        
-        # Verify START_OF_INPUT tracking was added
-        connector.session_manager.add_start_of_input_tracking.assert_called_with(conversation_id)
-        
-        # Now simulate the second audio segment - should follow same flow
-        # First, simulate speech detection for START_OF_INPUT
-        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
-            "silence_detected": False,
-            "speech_detected": True,
-            "waiting_for_speech": False,
-            "buffer_size": 100
-        })
-        
-        # Reset the mock call count
-        connector.session_manager.add_start_of_input_tracking.reset_mock()
-        
-        # Second audio segment - should send START_OF_INPUT again (independent flow)
-        responses = list(connector.send_message(conversation_id, message_data))
-        
-        # Should have START_OF_INPUT response for second segment too
-        assert len(responses) == 1
-        assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
-        
-        # Verify START_OF_INPUT tracking was added again
-        connector.session_manager.add_start_of_input_tracking.assert_called_with(conversation_id)
-        
-        # Now simulate silence detection for END_OF_INPUT
-        # First, need to set up that we have START_OF_INPUT tracking 
-        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=True)
-        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
-            "silence_detected": True,
-            "speech_detected": True,
-            "waiting_for_speech": False,
-            "buffer_size": 200
-        })
-        
-        # Mock Lex response with audio
-        mock_audio_stream = MagicMock()
-        mock_audio_stream.read.return_value = b"lex_audio_response"
-        mock_response.get.return_value = mock_audio_stream
-        mock_lex_runtime.recognize_utterance.return_value = mock_response
-        
-        # Third audio segment - should send END_OF_INPUT and process audio
-        responses = list(connector.send_message(conversation_id, message_data))
-        
-        # Should have at least one response (the actual implementation may vary)
-        assert len(responses) >= 1
-        
-        # Check that END_OF_INPUT was sent
-        end_of_input_found = False
-        for response in responses:
-            if "output_events" in response:
-                for event in response["output_events"]:
-                    if event.get("event_type") == "END_OF_INPUT":
-                        end_of_input_found = True
-                        break
-        
-        assert end_of_input_found, "END_OF_INPUT event should be sent for audio segment with silence detection"
-        
-        # Verify that START_OF_INPUT tracking was reset after processing
-        connector.session_manager.remove_start_of_input_tracking.assert_called_with(conversation_id)
-
-    def test_end_of_input_sent_after_silence_detection(self, connector, mock_lex_runtime):
-        """Test that END_OF_INPUT is sent when silence is detected in any audio segment."""
-        conversation_id = "test-conversation-456"
-        
-        # Mock the session manager methods
-        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=True)  # Already has START_OF_INPUT
-        connector.session_manager.add_start_of_input_tracking = MagicMock()
-        connector.session_manager.remove_start_of_input_tracking = MagicMock()
-        connector.session_manager.create_session = MagicMock(return_value={"session_id": "test-session"})
-        connector.session_manager.has_session = MagicMock(return_value=True)
-        connector.session_manager.get_bot_id = MagicMock(return_value="test-bot")
-        connector.session_manager.get_session_id = MagicMock(return_value="test-session")
-        connector.session_manager.get_bot_name = MagicMock(return_value="Test Bot")
-        connector.session_manager.get_bot_alias_id_for_session = MagicMock(return_value="TESTALIAS")
-        
-        # Mock audio processor to return silence detected
-        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
-            "silence_detected": True,
-            "speech_detected": True,
-            "waiting_for_speech": False,
-            "buffer_size": 200
-        })
-        connector.audio_processor.has_audio_buffer = MagicMock(return_value=True)
-        connector.audio_processor.get_buffered_audio = MagicMock(return_value=b"test_audio")
-        connector.audio_processor.reset_audio_buffer = MagicMock()
-        connector.audio_processor.log_wxcc_audio = MagicMock()
-        connector.audio_processor.convert_wxcc_audio_to_lex_format = MagicMock(return_value=b"converted_audio")
-        connector.audio_processor.convert_lex_audio_to_wxcc_format = MagicMock(return_value=(b"response_audio", "audio/wav"))
-        connector.audio_processor.log_aws_audio = MagicMock()
-        
-        # Mock response handler
-        connector.response_handler.create_audio_response = MagicMock(return_value={
-            "message_type": "response",
-            "text": "Test response",
-            "audio_content": b"response_audio",
-            "response_type": "final"
-        })
-        
-        # Mock Lex response with audio
-        mock_response = MagicMock()
-        mock_audio_stream = MagicMock()
-        mock_audio_stream.read.return_value = b"lex_audio_response"
-        mock_response.get.return_value = mock_audio_stream
-        mock_lex_runtime.recognize_utterance.return_value = mock_response
-        
-        # Audio segment with silence detected - should send END_OF_INPUT
-        message_data = {
-            "input_type": "audio",
-            "audio_data": b"test_audio_data",
-            "conversation_id": conversation_id
-        }
-        
-        responses = list(connector.send_message(conversation_id, message_data))
-        
-        # Should have END_OF_INPUT, audio processing, and DTMF response
-        assert len(responses) >= 2  # At least END_OF_INPUT and audio response
-        
-        # Check that END_OF_INPUT was sent
-        end_of_input_found = False
-        for response in responses:
-            if "output_events" in response:
-                for event in response["output_events"]:
-                    if event.get("event_type") == "END_OF_INPUT":
-                        end_of_input_found = True
-                        break
-        
-        assert end_of_input_found, "END_OF_INPUT event should be sent when silence is detected"
+        with patch.object(connector.audio_processor, "append_audio_frame") as append:
+            first_response = list(
+                connector.send_message(
+                    "conv", {"input_type": "audio", "audio_data": b"one"}
+                )
+            )
+            second_response = list(
+                connector.send_message(
+                    "conv", {"input_type": "audio", "audio_data": b"two"}
+                )
+            )
+        assert first_response == [None]
+        assert second_response == [None]
+        assert append.call_count == 2
 
     def test_dtmf_mode_tracking_speech_detection_disabled(self, connector):
-        """Test that speech detection is disabled when conversation is in DTMF mode."""
-        conversation_id = "test_dtmf_mode_conv"
-        
-        # Set up session
-        connector.session_manager._sessions[conversation_id] = {
-            "session_id": "session_123",
-            "actual_bot_id": "test_bot",
-            "bot_name": "TestBot"
+        """DTMF mode prevents Lex from buffering caller audio."""
+        connector.session_manager._sessions["conv"] = {
+            "session_id": "s",
+            "actual_bot_id": "b",
+            "bot_name": "n",
         }
-        
-        # Mock audio processor to return speech detected
-        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
-            "speech_detected": True,
-            "silence_detected": False,
-            "waiting_for_speech": False,
-            "buffer_size": 100
-        })
-        
-        # First, verify that speech detection works normally when NOT in DTMF mode
-        message_data = {
-            "input_type": "audio",
-            "audio_data": b"test_audio_data"
-        }
-        
-        # Mock the session manager methods
-        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=False)
-        connector.session_manager.add_start_of_input_tracking = MagicMock()
-        connector.session_manager.has_dtmf_mode_tracking = MagicMock(return_value=False)
-        
-        # Process audio input - should detect speech and send START_OF_INPUT
-        responses = list(connector._handle_audio_input(conversation_id, message_data, "test_bot", "session_123", "TestBot"))
-        
-        # Should send START_OF_INPUT when speech is detected
-        assert len(responses) == 1
-        assert responses[0]["output_events"][0]["event_type"] == "START_OF_INPUT"
-        
-        # Now add conversation to DTMF mode tracking
-        connector.session_manager.add_dtmf_mode_tracking(conversation_id)
         connector.session_manager.has_dtmf_mode_tracking = MagicMock(return_value=True)
-        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=False)
-        connector.session_manager.add_start_of_input_tracking = MagicMock()
-        
-        # Process audio input again - should skip speech detection entirely
-        responses = list(connector._handle_audio_input(conversation_id, message_data, "test_bot", "session_123", "TestBot"))
-        
-        # Should NOT send any response when in DTMF mode
-        assert len(responses) == 0
-        
-        # Verify that START_OF_INPUT tracking was NOT added
-        connector.session_manager.add_start_of_input_tracking.assert_not_called()
+        responses = list(
+            connector._handle_audio_input(
+                "conv", {"audio_data": b"frame"}, "b", "s", "n"
+            )
+        )
+
+        assert responses == []
+        assert not connector.should_observe_speech_boundaries("conv")
 
     def test_dtmf_mode_tracking_removed_after_dtmf_input(self, connector):
         """Test that DTMF mode tracking is removed after DTMF input is processed."""
@@ -2393,46 +2043,29 @@ class TestAWSLexConnector:
         # Verify that conversation is now in DTMF mode
         assert connector.session_manager.has_dtmf_mode_tracking(conversation_id)
 
-    def test_dtmf_mode_completely_disables_speech_detection(self, connector):
-        """Test that speech detection is completely disabled when in DTMF mode (simulating the reported issue)."""
-        conversation_id = "a9cbbe79-5e95-4f1c-a122-5979f0e9bb05"  # Use the actual conversation ID from the report
-        
-        # Set up session
+    def test_dtmf_mode_completely_disables_audio_buffering(self, connector):
+        """Lex does not buffer audio while DTMF mode is active."""
+        conversation_id = "dtmf-mode-conversation"
         connector.session_manager._sessions[conversation_id] = {
             "session_id": "session_123",
             "actual_bot_id": "test_bot",
-            "bot_name": "TestBot"
+            "bot_name": "TestBot",
         }
-        
-        # Mock audio processor to return speech detected
-        connector.audio_processor.process_audio_for_buffering = MagicMock(return_value={
-            "speech_detected": True,
-            "silence_detected": False,
-            "waiting_for_speech": False,
-            "buffer_size": 100
-        })
-        
-        # Mock the session manager methods
-        connector.session_manager.has_start_of_input_tracking = MagicMock(return_value=False)
-        connector.session_manager.add_start_of_input_tracking = MagicMock()
-        connector.session_manager.has_dtmf_mode_tracking = MagicMock(return_value=True)  # Simulate DTMF mode
-        
-        # Process audio input - should skip all processing due to DTMF mode
-        message_data = {
-            "input_type": "audio",
-            "audio_data": b"test_audio_data"
-        }
-        
-        responses = list(connector._handle_audio_input(conversation_id, message_data, "test_bot", "session_123", "TestBot"))
-        
-        # Should NOT send any response when in DTMF mode
-        assert len(responses) == 0
-        
-        # Verify that audio processor was NOT called (since we return early)
-        connector.audio_processor.process_audio_for_buffering.assert_not_called()
-        
-        # Verify that START_OF_INPUT tracking was NOT added
-        connector.session_manager.add_start_of_input_tracking.assert_not_called()
+        connector.session_manager.has_dtmf_mode_tracking = MagicMock(return_value=True)
+
+        with patch.object(connector.audio_processor, "append_audio_frame") as append:
+            responses = list(
+                connector._handle_audio_input(
+                    conversation_id,
+                    {"audio_data": b"test_audio_data"},
+                    "test_bot",
+                    "session_123",
+                    "TestBot",
+                )
+            )
+
+        assert responses == []
+        append.assert_not_called()
 
 
 if __name__ == "__main__":

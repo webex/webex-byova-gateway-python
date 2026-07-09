@@ -187,6 +187,7 @@ connectors:
   #     output_sample_rate_hertz: 8000
   #     output_audio_encoding: "MULAW"
   #     force_input_format: "wxcc"
+  #     turn_response_timeout_seconds: 30
   #     agents:
   #       - "My GECX Agent"
 
@@ -682,7 +683,7 @@ byova.VoiceVirtualAgentService: SERVING (1)
 - **Virtual Agent Router**: Dynamically routes requests to different connector implementations
 - **Local Audio Connector**: Simulates virtual agents using local audio files
 - **AWS Lex Connector**: Integration with Amazon Lex v2 for production virtual agents
-- **GECX Connector**: Streaming integration with Google CX Agent Studio through CES BidiRunSession
+- **GECX Connector**: Streams caller audio to Google CX Agent Studio through CES BidiRunSession and returns each completed agent turn as a WAV response
 - **Web Monitoring Interface**: Real-time dashboard for monitoring connections and status
 - **Session Management**: Tracks active sessions and connection events
 - **Extensible Architecture**: Easy to add new connector implementations

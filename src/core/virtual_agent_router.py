@@ -192,6 +192,18 @@ class VirtualAgentRouter:
 
         return self.agent_to_connector_map[agent_id]
 
+    def get_audio_delivery_mode(self, agent_id: str) -> str:
+        """Get the connector's declared audio delivery capability."""
+        return self.get_connector_for_agent(agent_id).get_audio_delivery_mode()
+
+    def should_observe_speech_boundaries(
+        self, agent_id: str, conversation_id: str
+    ) -> bool:
+        """Ask the connector whether gateway VAD should observe a frame."""
+        return self.get_connector_for_agent(
+            agent_id
+        ).should_observe_speech_boundaries(conversation_id)
+
     def route_request(self, agent_id: str, method: str, *args, **kwargs) -> Any:
         """
         Route a request to the appropriate connector.

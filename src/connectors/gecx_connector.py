@@ -98,6 +98,7 @@ class GECXStreamingSession:
         self.outbound_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
         self._stream_started = threading.Event()
+        self._turn_completed = threading.Event()
         self._stream_error: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -123,6 +124,7 @@ class GECXStreamingSession:
     def stop(self) -> None:
         """Signal the stream to stop and wait for the thread."""
         self._stop_event.set()
+        self._turn_completed.set()
         self.inbound_queue.put(_STREAM_STOP)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=10)
@@ -152,18 +154,22 @@ class GECXStreamingSession:
                 break
         return responses
 
-    def wait_for_responses(self, timeout: float = 5.0) -> list[Dict[str, Any]]:
-        """Block up to timeout collecting outbound responses."""
-        responses: list[Dict[str, Any]] = []
-        deadline = timeout
-        while deadline > 0:
-            try:
-                responses.append(self.outbound_queue.get(timeout=min(0.5, deadline)))
-            except queue.Empty:
-                deadline -= 0.5
-                if responses:
-                    break
-        return responses
+    def begin_input_turn(self) -> None:
+        """Reset completion tracking when gateway VAD detects caller speech."""
+        self._turn_completed.clear()
+
+    def wait_for_turn_responses(
+        self, timeout: float
+    ) -> Tuple[bool, list[Dict[str, Any]]]:
+        """Wait for CES to complete the current turn, then drain its responses."""
+        completed = self._turn_completed.wait(timeout=timeout)
+        if not completed:
+            self.logger.warning(
+                "[%s] [GECX] Timed out after %.1fs waiting for turn completion",
+                self.conversation_id,
+                timeout,
+            )
+        return completed, self.drain_responses()
 
     def _request_generator(self) -> Iterator[Any]:
         """Yield BidiSessionClientMessage objects for bidi_run_session."""
@@ -247,10 +253,12 @@ class GECXStreamingSession:
             )
         finally:
             self._stream_started.set()
+            self._turn_completed.set()
 
     def _handle_server_message(self, message: Any) -> None:
         """Map CES server messages to BYOVA connector responses."""
         conversation_id = self.conversation_id
+        turn_completed = False
 
         if message.recognition_result and message.recognition_result.transcript:
             transcript = message.recognition_result.transcript.strip()
@@ -301,20 +309,27 @@ class GECXStreamingSession:
             # emit it to WxCC as a single WAV clip.
             if output.turn_completed:
                 self._flush_audio_buffer()
+                turn_completed = True
 
             if output.end_session:
                 self._flush_audio_buffer()
                 self._emit_session_end(conversation_id, output)
                 self._begin_half_close()
+                turn_completed = True
 
         if message.end_session:
             self._flush_audio_buffer()
             self._emit_session_end(conversation_id, message.end_session)
             self._begin_half_close()
+            turn_completed = True
 
         if message.go_away:
             self.logger.warning(f"[{conversation_id}] [GECX] GoAway received, stopping stream")
             self._stop_event.set()
+            turn_completed = True
+
+        if turn_completed:
+            self._turn_completed.set()
 
     def _begin_half_close(self) -> None:
         """Half-close the client side of the bidi stream after CES ends a session.
@@ -558,6 +573,9 @@ class GECXConnector(IVendorConnector):
         self.initial_message = config.get("initial_message", "Hello")
         self.enable_partial_responses = config.get("enable_partial_responses", True)
         self.force_input_format = config.get("force_input_format", "").lower()
+        self.turn_response_timeout_seconds = float(
+            config.get("turn_response_timeout_seconds", 30.0)
+        )
         self.agents = config.get("agents", ["GECX Agent"])
 
         # --- Escalation / human handoff detection ---------------------------
@@ -779,6 +797,36 @@ class GECXConnector(IVendorConnector):
             self.output_audio_encoding,
         )
 
+    def get_audio_delivery_mode(self) -> str:
+        """GECX receives caller audio frames as they arrive from WxCC."""
+        return "streaming"
+
+    def handle_speech_boundary(
+        self, conversation_id: str, message_data: Dict[str, Any]
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Coordinate gateway speech boundaries with asynchronous CES output."""
+        with self.sessions_lock:
+            stream_session = self.streaming_sessions.get(conversation_id)
+
+        if not stream_session:
+            self.logger.warning(
+                "[GECX] No active stream for speech boundary: %s", conversation_id
+            )
+            return
+
+        boundary_kind = message_data.get("speech_boundary", {}).get("kind")
+        if boundary_kind == "speech_started":
+            stream_session.begin_input_turn()
+            return
+
+        if boundary_kind != "speech_ended":
+            return
+
+        _, responses = stream_session.wait_for_turn_responses(
+            timeout=self.turn_response_timeout_seconds
+        )
+        yield from responses
+
     def get_available_agents(self) -> list:
         return self.agents
 
@@ -805,7 +853,8 @@ class GECXConnector(IVendorConnector):
             welcome_text = "Connected to GECX agent"
             got_text = False
             welcome_audio = b""
-            for response in stream_session.wait_for_responses(timeout=8.0):
+            _, greeting_responses = stream_session.wait_for_turn_responses(timeout=8.0)
+            for response in greeting_responses:
                 if response.get("text") and not got_text:
                     welcome_text = response["text"]
                     got_text = True
@@ -920,9 +969,12 @@ class GECXConnector(IVendorConnector):
         text = message_data.get("text", "")
         if not text:
             return
+        stream_session.begin_input_turn()
         stream_session.enqueue_text(text)
-        for response in stream_session.wait_for_responses(timeout=10.0):
-            yield response
+        _, responses = stream_session.wait_for_turn_responses(
+            timeout=self.turn_response_timeout_seconds
+        )
+        yield from responses
 
     def _handle_event_input(
         self,
@@ -935,9 +987,12 @@ class GECXConnector(IVendorConnector):
             event_name = message_data["event_data"].get("name", "")
         if not event_name:
             return
+        stream_session.begin_input_turn()
         stream_session.enqueue_event(event_name)
-        for response in stream_session.wait_for_responses(timeout=10.0):
-            yield response
+        _, responses = stream_session.wait_for_turn_responses(
+            timeout=self.turn_response_timeout_seconds
+        )
+        yield from responses
 
     def end_conversation(
         self, conversation_id: str, message_data: Optional[Dict[str, Any]] = None
@@ -973,9 +1028,16 @@ class GECXConnector(IVendorConnector):
         message_data: Dict[str, Any],
         conversation_id: str,
     ) -> Tuple[int, str]:
-        if message_data.get("sample_rate_hertz"):
-            rate = int(message_data["sample_rate_hertz"])
-            encoding = self._encoding_from_proto(message_data.get("encoding"))
+        audio_metadata = message_data.get("audio_metadata") or {}
+        sample_rate_hertz = audio_metadata.get(
+            "sample_rate_hertz", message_data.get("sample_rate_hertz")
+        )
+        encoding_value = audio_metadata.get(
+            "encoding", message_data.get("encoding")
+        )
+        if sample_rate_hertz:
+            rate = int(sample_rate_hertz)
+            encoding = self._encoding_from_proto(encoding_value)
             self.detected_formats[conversation_id] = (rate, encoding)
             return rate, encoding
 

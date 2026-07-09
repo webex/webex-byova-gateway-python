@@ -32,6 +32,8 @@ from src.generated.voicevirtualagent_pb2_grpc import VoiceVirtualAgentServicer
 
 from .virtual_agent_router import VirtualAgentRouter
 from .health_service import HealthCheckService
+from src.utils.audio_normalizer import normalize_wxcc_audio
+from src.utils.silero_speech_boundary import SileroSpeechBoundaryObserver
 
 
 class ConversationProcessor:
@@ -53,7 +55,8 @@ class ConversationProcessor:
     }
 
     def __init__(
-        self, conversation_id: str, virtual_agent_id: str, router: VirtualAgentRouter
+        self, conversation_id: str, virtual_agent_id: str, router: VirtualAgentRouter,
+        vad_config: Optional[Dict[str, Any]] = None,
     ):
         self.conversation_id = conversation_id
         self.virtual_agent_id = virtual_agent_id
@@ -64,6 +67,18 @@ class ConversationProcessor:
         self.start_time = time.time()
         self.session_started = False
         self.can_be_deleted = False
+        vad_settings = vad_config or {}
+        self.vad_fallback_sample_rate_hertz = vad_settings.get(
+            "fallback_sample_rate_hertz", 8000
+        )
+        self.speech_boundary_observer = SileroSpeechBoundaryObserver(
+            conversation_id,
+            **{
+                key: value
+                for key, value in vad_settings.items()
+                if key != "fallback_sample_rate_hertz"
+            },
+        )
 
         self.logger.info(
             f"Created conversation processor for {conversation_id} with agent {virtual_agent_id}"
@@ -172,9 +187,11 @@ class ConversationProcessor:
                 "virtual_agent_id": self.virtual_agent_id,
                 "input_type": "audio",
                 "audio_data": audio_input.caller_audio,
-                "encoding": audio_input.encoding,
-                "sample_rate_hertz": audio_input.sample_rate_hertz,
-                "language_code": audio_input.language_code,
+                "audio_metadata": {
+                    "encoding": audio_input.encoding,
+                    "sample_rate_hertz": audio_input.sample_rate_hertz,
+                    "language_code": audio_input.language_code,
+                },
             }
 
             # Route to connector
@@ -185,40 +202,81 @@ class ConversationProcessor:
                 message_data,
             )
 
-            # Handle the new yield pattern from connectors
-            if hasattr(connector_response, "__iter__") and not isinstance(
-                connector_response, (dict, str, bytes)
+            yield from self._iter_grpc_connector_responses(connector_response)
+
+            if not self.router.should_observe_speech_boundaries(
+                self.virtual_agent_id, self.conversation_id
             ):
-                # It's a generator/iterator, yield each response
-                for response in connector_response:
-                    if response is not None:  # Skip None responses
-                        grpc_response = self._convert_connector_response_to_grpc(
-                            response
-                        )
-                        if grpc_response is not None:
-                            yield grpc_response
-                    else:
-                        self.logger.debug(
-                            f"Skipping None response for conversation {self.conversation_id}"
-                        )
-            else:
-                # It's a single response (backward compatibility)
-                if connector_response is not None:  # Skip None responses
-                    grpc_response = self._convert_connector_response_to_grpc(
-                        connector_response
-                    )
-                    if grpc_response is not None:
-                        yield grpc_response
-                else:
-                    self.logger.debug(
-                        f"Skipping None response for conversation {self.conversation_id}"
-                    )
+                self.logger.debug(
+                    "Skipping speech-boundary observation during DTMF input for "
+                    "conversation %s",
+                    self.conversation_id,
+                )
+                return
+
+            frame = normalize_wxcc_audio(
+                audio_input.caller_audio,
+                audio_input.encoding,
+                audio_input.sample_rate_hertz,
+                fallback_sample_rate_hertz=self.vad_fallback_sample_rate_hertz,
+            )
+            for signal in self.speech_boundary_observer.observe(frame):
+                event_type = "START_OF_INPUT" if signal.kind == "speech_started" else "END_OF_INPUT"
+                self.logger.info(
+                    "Silero VAD emitted %s (%s) for conversation %s",
+                    signal.kind,
+                    event_type,
+                    self.conversation_id,
+                )
+                response = self._convert_connector_response_to_grpc({
+                    "message_type": "silence",
+                    "output_events": [{"event_type": event_type, "name": "" if event_type == "START_OF_INPUT" else "end_of_input"}],
+                })
+                if response is not None:
+                    yield response
+                boundary_response = self.router.route_request(
+                    self.virtual_agent_id,
+                    "handle_speech_boundary",
+                    self.conversation_id,
+                    {
+                        "conversation_id": self.conversation_id,
+                        "virtual_agent_id": self.virtual_agent_id,
+                        "input_type": "speech_boundary",
+                        "speech_boundary": {"kind": signal.kind},
+                    },
+                )
+                yield from self._iter_grpc_connector_responses(
+                    boundary_response, include_single_response=False
+                )
 
         except Exception as e:
             self.logger.error(
                 f"Error processing audio input for conversation {self.conversation_id}: {e}"
             )
             yield self._create_error_response(f"Audio processing error: {str(e)}")
+
+    def _iter_grpc_connector_responses(
+        self, connector_response, *, include_single_response: bool = True
+    ) -> Iterator[VoiceVAResponse]:
+        """Convert a connector response or response iterator to gRPC responses."""
+        is_iterator = hasattr(connector_response, "__iter__") and not isinstance(
+            connector_response, (dict, str, bytes)
+        )
+        if not is_iterator and not include_single_response:
+            return
+
+        responses = connector_response if is_iterator else (connector_response,)
+
+        for response in responses:
+            if response is None:
+                self.logger.debug(
+                    "Skipping None response for conversation %s", self.conversation_id
+                )
+                continue
+
+            grpc_response = self._convert_connector_response_to_grpc(response)
+            if grpc_response is not None:
+                yield grpc_response
 
     def _process_dtmf_input(self, dtmf_input) -> Iterator[VoiceVAResponse]:
         """Process DTMF input."""
@@ -810,14 +868,16 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
     virtual agent connectors.
     """
 
-    def __init__(self, router: VirtualAgentRouter) -> None:
+    def __init__(self, router: VirtualAgentRouter, vad_config: Optional[Dict[str, Any]] = None) -> None:
         """
         Initialize the WxCC Gateway Server.
 
         Args:
             router: VirtualAgentRouter instance for routing requests to connectors
+            vad_config: Gateway-owned voice activity detection settings.
         """
         self.router = router
+        self.vad_config = vad_config or {}
         self.logger = logging.getLogger(__name__)
 
         # Conversation state management - track active conversations by conversation_id
@@ -1022,7 +1082,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     # Create or get conversation processor
                     if conversation_id not in self.conversations:
                         processor = ConversationProcessor(
-                            conversation_id, agent_id, self.router
+                            conversation_id, agent_id, self.router, self.vad_config
                         )
                         self.conversations[conversation_id] = processor
                         self.add_connection_event("start", conversation_id, agent_id)

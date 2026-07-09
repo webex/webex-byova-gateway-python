@@ -183,6 +183,7 @@ connectors:
       output_sample_rate_hertz: 8000
       output_audio_encoding: "MULAW"
       force_input_format: "wxcc"
+      turn_response_timeout_seconds: 30
       # Omit auth settings to use Application Default Credentials.
       # service_account_key: "/path/to/service-account.json"
       agents:

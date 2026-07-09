@@ -33,6 +33,32 @@ class IVendorConnector(ABC):
     for virtual agent communication.
     """
 
+    def get_audio_delivery_mode(self) -> str:
+        """Return whether connector audio is streamed or utterance buffered."""
+        return "streaming"
+
+    def should_observe_speech_boundaries(self, conversation_id: str) -> bool:
+        """Return whether gateway VAD should observe this conversation's frames."""
+        del conversation_id
+        return True
+
+    def handle_speech_boundary(
+        self, conversation_id: str, message_data: Dict[str, Any]
+    ) -> Optional[Iterator[Optional[Dict[str, Any]]]]:
+        """Handle a gateway-detected speech boundary.
+
+        Utterance-buffered connectors use the end boundary to submit their
+        accumulated caller audio. Streaming connectors may override this hook
+        to coordinate asynchronously produced vendor responses.
+        """
+        boundary_kind = message_data.get("speech_boundary", {}).get("kind")
+        if (
+            self.get_audio_delivery_mode() == "utterance_buffered"
+            and boundary_kind == "speech_ended"
+        ):
+            return self.send_message(conversation_id, message_data)
+        return None
+
     @abstractmethod
     def __init__(self, config: Dict[str, Any]) -> None:
         """

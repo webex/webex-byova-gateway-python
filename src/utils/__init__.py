@@ -6,6 +6,7 @@ including audio format conversion utilities.
 """
 
 from .audio_buffer import AudioBuffer
+from .audio_normalizer import NormalizedAudioFrame, UnsupportedAudioFormatError, normalize_wxcc_audio
 from .audio_recorder import AudioRecorder
 
-__all__ = ['AudioBuffer', 'AudioRecorder']
+__all__ = ['AudioBuffer', 'AudioRecorder', 'NormalizedAudioFrame', 'UnsupportedAudioFormatError', 'normalize_wxcc_audio']

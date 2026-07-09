@@ -300,7 +300,8 @@ def main():
         logger.info("Connectors loaded successfully")
 
         # Create WxCCGatewayServer
-        server = WxCCGatewayServer(router)
+        vad_config = config.get("voice_activity_detection", {})
+        server = WxCCGatewayServer(router, vad_config)
         logger.info("WxCCGatewayServer created")
 
         # Create health service with router for real health monitoring
@@ -385,7 +386,7 @@ def main():
         print(f"🌐 Access URL: grpc://{host}:{port}")
         print(f"📁 Configuration: {config_path}")
         print(f"📝 Log Level: {gateway_config.get('level', 'INFO')}")
-        print(f"🔧 Gateway Version: {gateway_config.get('version', '1.0.0')}")
+        print(f"🔧 Gateway Version: {gateway_config.get('version', '1.1.0')}")
         print()
 
         # Print connector information

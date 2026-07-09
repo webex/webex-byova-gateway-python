@@ -38,6 +38,7 @@ gecx_connector:
     initial_message: "Hello"
     enable_partial_responses: true
     force_input_format: "wxcc"
+    turn_response_timeout_seconds: 30
 
     # --- Escalation / human handoff -------------------------------------
     # CES signals escalation as an EndSession carrying a metadata Struct. The

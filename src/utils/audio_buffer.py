@@ -1,548 +1,76 @@
-"""
-Audio buffer utility class for the Webex Contact Center BYOVA Gateway.
-
-This module provides audio buffering functionality with silence detection
-that can be used independently of audio recording.
-"""
+"""Bounded byte storage for connector-owned audio utterances."""
 
 import logging
-import time
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 
 class AudioBuffer:
-    """
-    Audio buffer utility class for buffering caller audio with silence detection.
-
-    Features:
-    - Buffers audio data in memory
-    - Implements silence detection
-    - Automatically triggers callback when silence threshold is reached
-    - Supports various audio formats and sample rates
-    - Configurable buffer size limits
-    """
+    """Store audio bytes; speech boundary detection belongs to the gateway VAD."""
 
     def __init__(
-        self,
-        conversation_id: str,
-        max_buffer_size: int = 1024 * 1024,  # 1MB default
-        silence_threshold: int = 4000,  # Increased from 3000 for more conservative detection
-        silence_duration: float = 2.0,
-        quiet_threshold: int = 20,
-        sample_rate: int = 8000,
-        bit_depth: int = 8,
-        channels: int = 1,
-        encoding: str = "ulaw",
-        logger: Optional[logging.Logger] = None,
+        self, conversation_id: str, max_buffer_size: int = 1024 * 1024,
+        logger: Optional[logging.Logger] = None, **_ignored: Any,
     ) -> None:
-        """
-        Initialize the audio buffer.
-
-        Args:
-            conversation_id: Unique identifier for the conversation
-            max_buffer_size: Maximum buffer size in bytes (default: 1MB)
-            silence_threshold: Amplitude threshold for silence detection
-            silence_duration: Amount of silence (in seconds) before considering audio ready
-            quiet_threshold: How far from 127 (quiet background) to consider "silence" (default: 20)
-            sample_rate: Audio sample rate in Hz
-            bit_depth: Audio bit depth
-            channels: Number of audio channels
-            encoding: Audio encoding format
-            logger: Optional logger instance
-        """
-        self.logger = logger or logging.getLogger(__name__)
         self.conversation_id = conversation_id
         self.max_buffer_size = max_buffer_size
-        self.silence_threshold = silence_threshold
-        self.silence_duration = silence_duration
-        self.quiet_threshold = quiet_threshold
-        self.sample_rate = sample_rate
-        self.bit_depth = bit_depth
-        self.channels = channels
-        self.encoding = encoding
-
-        # Pattern detection thresholds
-        self.min_alternating_percentage = 5.0  # Minimum alternation percentage for speech
-        self.min_unique_values = 10  # Minimum unique values for speech
-
-        # Internal state
+        self.sample_rate = _ignored.get("sample_rate", 8000)
+        self.bit_depth = _ignored.get("bit_depth", 8)
+        self.channels = _ignored.get("channels", 1)
+        self.encoding = _ignored.get("encoding", "ulaw")
+        self.logger = logger or logging.getLogger(__name__)
         self.audio_buffer = bytearray()
         self.buffering = False
-        self.last_audio_time = 0
-        self.waiting_for_speech = True  # Wait for first non-silence before starting buffering
-        self.speech_detected = False    # Track if we've ever detected speech
-
-        self.logger.info(
-            f"AudioBuffer initialized for conversation {conversation_id} "
-            f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, "
-            f"quiet threshold: {quiet_threshold}, max buffer size: {max_buffer_size} bytes, "
-            f"pattern detection: min alternation {self.min_alternating_percentage}%, "
-            f"min unique values {self.min_unique_values}, waiting for speech: {self.waiting_for_speech})"
-        )
 
     def start_buffering(self) -> None:
-        """
-        Start a new audio buffering session.
-
-        If buffering is already in progress, it will be reset first.
-        """
-        if self.buffering:
-            self.logger.info(
-                f"Resetting previous buffering session for {self.conversation_id}"
-            )
-            self.clear_buffer()
-
-        # Reset state
-        self.audio_buffer = bytearray()
+        self.clear_buffer()
         self.buffering = True
-        self.last_audio_time = time.time()
-        self.waiting_for_speech = True   # We're waiting for speech to start
-        self.speech_detected = False     # Haven't detected speech yet
 
-        self.logger.info(
-            f"Started buffering audio for conversation {self.conversation_id}"
-        )
-
-    def add_audio_data(self, audio_data: bytes, encoding: str = "ulaw") -> Dict[str, Any]:
-        """
-        Add audio data to the current buffer.
-
-        Args:
-            audio_data: Audio data bytes to add to the buffer
-            encoding: Format of the input audio data (default: 'ulaw')
-
-        Returns:
-            Dictionary containing buffer status information:
-            - buffering_continues: True if buffering continues, False if callback was triggered
-            - silence_detected: True if silence threshold was hit during this call
-            - buffer_size: Current size of the buffer in bytes
-            - speech_detected: Whether speech has been detected in this session
-            - waiting_for_speech: Whether still waiting for first speech
-        """
+    def append(self, audio_data: bytes) -> int:
         if not audio_data:
-            self.logger.warning(
-                f"Received empty audio data for conversation {self.conversation_id}"
-            )
-            return {
-                "buffering_continues": True,
-                "silence_detected": False,
-                "buffer_size": len(self.audio_buffer),
-                "speech_detected": self.speech_detected,
-                "waiting_for_speech": self.waiting_for_speech
-            }
+            return 0
+        accepted = audio_data[:max(0, self.max_buffer_size - len(self.audio_buffer))]
+        self.audio_buffer.extend(accepted)
+        if len(accepted) < len(audio_data):
+            self.logger.warning("Audio buffer limit reached for %s", self.conversation_id)
+        return len(accepted)
 
-        # Log audio data characteristics
-        if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug(
-                f"Adding {len(audio_data)} bytes of {encoding} audio data to buffer"
-            )
-            self.logger.debug(f"First 10 bytes: {audio_data[:10]}")
-            # Log hex representation for debugging
-            hex_preview = audio_data[:20].hex()
-            self.logger.debug(f"Audio data hex preview: {hex_preview}...")
-
-        # Convert audio data to the buffer format if needed
-        processed_audio = self._convert_audio_to_buffer_format(audio_data, encoding)
-        
-        # Check if we have enough data to process
-        # Use frame-aligned buffer sizes based on encoding and bit depth
-        frame_size = self._get_frame_size()
-        
-        # Check for silence first to determine if we should start buffering
-        is_silence = self.detect_silence(processed_audio)
-        
-        if self.waiting_for_speech:
-            if is_silence:
-                # Still waiting for speech, don't start buffering yet
-                self.logger.debug(
-                    f"Still waiting for speech in conversation {self.conversation_id}, "
-                    f"silence detected in audio segment"
-                )
-                return {
-                    "buffering_continues": True,
-                    "silence_detected": False,
-                    "buffer_size": len(self.audio_buffer),
-                    "speech_detected": self.speech_detected,
-                    "waiting_for_speech": self.waiting_for_speech
-                }
-            else:
-                # Speech detected! Start buffering now
-                self.waiting_for_speech = False
-                self.speech_detected = True
-                self.last_audio_time = time.time()
-                self.buffering = True
-                self.logger.info(
-                    f"Speech detected! Starting buffering for conversation {self.conversation_id}"
-                )
-        
-        # At this point, we're either already buffering or just started
-        if self.buffering:
-            # Check buffer size limit before adding data
-            if len(self.audio_buffer) + len(processed_audio) > self.max_buffer_size:
-                self.logger.warning(
-                    f"Buffer size limit reached ({self.max_buffer_size} bytes) for conversation {self.conversation_id}, "
-                    f"truncating audio data"
-                )
-                # Truncate to fit within buffer limit
-                remaining_space = self.max_buffer_size - len(self.audio_buffer)
-                if remaining_space > 0:
-                    processed_audio = processed_audio[:remaining_space]
-                else:
-                    # Buffer is full, can't add more data
-                    return {
-                        "buffering_continues": True,
-                        "silence_detected": False,
-                        "buffer_size": len(self.audio_buffer),
-                        "speech_detected": self.speech_detected,
-                        "waiting_for_speech": self.waiting_for_speech
-                    }
-
-            # Add audio data to buffer only after speech is detected
-            self.audio_buffer.extend(processed_audio)
-            self.logger.debug(
-                f"Buffer size after adding data: {len(self.audio_buffer)} bytes"
-            )
-            
-            # Check for silence after buffering has started
-            if is_silence:
-                # Check if silence duration threshold exceeded
-                silence_time = time.time() - self.last_audio_time
-                self.logger.debug(
-                    f"Silence detected in audio segment, silence duration so far: {silence_time:.2f}s "
-                    f"(threshold: {self.silence_duration}s)"
-                )
-                if silence_time >= self.silence_duration:
-                    # Silence threshold reached - audio is ready for processing
-                    # The caller should check silence_detected and call get_buffered_audio()
-                    self.logger.info(
-                        f"Silence threshold reached for conversation {self.conversation_id}, "
-                        f"audio ready for processing"
-                    )
-                    
-                    return {
-                        "buffering_continues": False,
-                        "silence_detected": True,
-                        "buffer_size": len(self.audio_buffer),
-                        "speech_detected": self.speech_detected,
-                        "waiting_for_speech": False
-                    }
-            else:
-                # Reset the last audio time as we detected non-silence
-                self.logger.debug(
-                    f"Non-silence detected in audio segment, resetting silence timer for {self.conversation_id}"
-                )
-                self.last_audio_time = time.time()
-
-        return {
-            "buffering_continues": True,
-            "silence_detected": False,
-            "buffer_size": len(self.audio_buffer),
-            "speech_detected": self.speech_detected,
-            "waiting_for_speech": self.waiting_for_speech
-        }
-
-    def check_silence_timeout(self) -> Dict[str, Any]:
-        """
-        Check if the buffer should trigger callback due to silence timeout.
-        This method can be called periodically to check for silence even when no audio data is received.
-        
-        Returns:
-            Dictionary containing buffer status information:
-            - buffering_continues: True if buffering continues, False if callback was triggered
-            - silence_detected: True if silence timeout was reached
-            - buffer_size: Current size of the buffer in bytes
-            - speech_detected: Whether speech has been detected in this session
-            - waiting_for_speech: Whether still waiting for first speech
-        """
-        if not self.buffering:
-            # If we're not buffering yet, check if we should start buffering
-            if self.waiting_for_speech:
-                self.logger.debug(
-                    f"Still waiting for speech in conversation {self.conversation_id}, "
-                    f"no buffering started yet"
-                )
-                return {
-                    "buffering_continues": True,
-                    "silence_detected": False,
-                    "buffer_size": len(self.audio_buffer),
-                    "speech_detected": self.speech_detected,
-                    "waiting_for_speech": self.waiting_for_speech
-                }
-            return {
-                "buffering_continues": True,
-                "silence_detected": False,
-                "buffer_size": len(self.audio_buffer),
-                "speech_detected": self.speech_detected,
-                "waiting_for_speech": self.waiting_for_speech
-            }
-            
-        # Check if we've exceeded the silence duration
-        current_time = time.time()
-        silence_time = current_time - self.last_audio_time
-        
-        if silence_time >= self.silence_duration:
-            # Silence timeout reached - audio is ready for processing
-            # The caller should check silence_detected and call get_buffered_audio()
-            self.logger.info(
-                f"Silence timeout reached for conversation {self.conversation_id}, "
-                f"audio ready for processing"
-            )
-            
-            return {
-                "buffering_continues": False,
-                "silence_detected": True,
-                "buffer_size": len(self.audio_buffer),
-                "speech_detected": self.speech_detected,
-                "waiting_for_speech": False
-            }
-            
-            return {
-                "buffering_continues": False,
-                "silence_detected": True,
-                "buffer_size": 0,  # Buffer was cleared
-                "speech_detected": False,  # Reset after callback
-                "waiting_for_speech": True  # Reset after callback
-            }
-            
-        return {
-            "buffering_continues": True,
-            "silence_detected": False,
-            "buffer_size": len(self.audio_buffer),
-            "speech_detected": self.speech_detected,
-            "waiting_for_speech": self.waiting_for_speech
-        }
-
-    def _get_frame_size(self) -> int:
-        """
-        Get the appropriate frame size for buffering based on audio format.
-        
-        Returns:
-            Frame size in bytes for optimal buffering
-        """
-        # For 8kHz audio, use 160 samples per frame (20ms chunks)
-        # This provides good balance between latency and efficiency
-        samples_per_frame = 160
-        
-        if self.encoding == "ulaw":
-            # u-law is 8-bit, so 1 byte per sample
-            return samples_per_frame
-        elif self.encoding == "pcm":
-            # PCM bit depth determines bytes per sample
-            bytes_per_sample = self.bit_depth // 8
-            return samples_per_frame * bytes_per_sample
-        else:
-            # Default to 640 bytes for unknown formats
-            return 640
-
-    def _convert_audio_to_buffer_format(self, audio_data: bytes, input_encoding: str) -> bytes:
-        """
-        Convert incoming audio data to the buffer format.
-        
-        Args:
-            audio_data: Raw audio data bytes
-            input_encoding: Encoding of the input audio data
-            
-        Returns:
-            Audio data converted to the buffer format
-        """
-        try:
-            # If input encoding matches buffer encoding, return as-is
-            if input_encoding.lower() == self.encoding.lower():
-                self.logger.debug(f"Audio format matches buffer format ({input_encoding})")
-                return audio_data
-            
-            # For now, return as-is and log a warning for unsupported conversions
-            # This can be enhanced later with proper format conversion
-            self.logger.warning(
-                f"Audio format conversion not implemented: {input_encoding} -> {self.encoding}, "
-                f"using original data"
-            )
-            return audio_data
-                
-        except Exception as e:
-            self.logger.error(f"Error converting audio format: {e}")
-            # Return original data if conversion fails
-            return audio_data
-
-    def detect_silence(self, audio_data: bytes) -> bool:
-        """
-        Enhanced silence detection with pattern analysis to prevent false positives.
-
-        Args:
-            audio_data: Audio data bytes to analyze
-
-        Returns:
-            True if the audio is below the silence threshold or shows background noise patterns
-        """
-        if not audio_data or len(audio_data) == 0:
-            self.logger.debug("Empty audio data passed to silence detection")
-            return True
-
-        # For u-law encoding, we can directly check byte values
-        if self.encoding == "ulaw":
-            bytes_list = list(audio_data)
-            
-            # Check for constant patterns (very low alternation) - indicates background noise
-            sample_size = min(1000, len(bytes_list))
-            sample = bytes_list[:sample_size]
-            alternating_count = sum(1 for i in range(1, len(sample)) 
-                                  if sample[i] != sample[i-1])
-            alternating_percentage = (alternating_count / (len(sample) - 1)) * 100
-            
-            # If too constant, it's likely background noise, not speech
-            if alternating_percentage < self.min_alternating_percentage:
-                self.logger.debug(
-                    f"Constant pattern detected ({alternating_percentage:.1f}% alternation) - "
-                    f"treating as silence (background noise, threshold: {self.min_alternating_percentage}%)"
-                )
-                return True
-            
-            # Check for very low variation (constant tones)
-            unique_values = len(set(bytes_list))
-            if unique_values < self.min_unique_values:
-                self.logger.debug(
-                    f"Low variation detected ({unique_values} unique values) - "
-                    f"treating as silence (constant tone, threshold: {self.min_unique_values})"
-                )
-                return True
-            
-            # Use the configured silence threshold to determine sensitivity
-            # The threshold represents the percentage of non-silent samples allowed
-            # Higher threshold = more sensitive (more likely to detect silence)
-            threshold_percentage = min(100, max(1, 100 - (self.silence_threshold / 100)))
-            
-            # Enhanced silence detection: consider both true silence (0xFF) and quiet background noise
-            # In u-law, 127 represents very quiet background noise (room tone, breathing, etc.)
-            # Values closer to 127 are quieter, values closer to 0 or 255 are louder
-            
-            # Count bytes that represent significant audio (not silence or quiet background)
-            # We'll consider values in the "quiet" range (around 127) as effective silence
-            quiet_threshold = self.quiet_threshold  # Use the quiet_threshold from __init__
-            significant_audio_count = sum(
-                1 for byte in bytes_list 
-                if abs(byte - 127) > quiet_threshold and byte != 0xFF
-            )
-            
-            # Calculate percentage of significant audio samples
-            if len(bytes_list) > 0:
-                significant_audio_percentage = (significant_audio_count / len(bytes_list)) * 100
-                self.logger.debug(
-                    f"Detected {significant_audio_percentage:.2f}% significant audio samples "
-                    f"(threshold: {threshold_percentage:.1f}%, configured: {self.silence_threshold})"
-                )
-
-                # If less than threshold percentage of samples are significant audio, consider it silence
-                is_silence = significant_audio_percentage < threshold_percentage
-                if is_silence:
-                    self.logger.debug("Audio segment detected as silence (including quiet background)")
-                else:
-                    self.logger.debug("Audio segment contains significant speech/audio")
-
-                return is_silence
-
-        # For PCM data, analyze amplitude
-        # TODO: Implement proper PCM silence detection if needed
-        return False
-
+    def add_audio_data(self, audio_data: bytes, encoding: str = "ulaw") -> int:
+        """Compatibility alias for callers that only need byte storage."""
+        del encoding
+        return self.append(audio_data)
 
     def get_buffered_audio(self) -> Optional[bytes]:
-        """
-        Get the current buffered audio data without clearing the buffer.
-        
-        Returns:
-            The buffered audio data as bytes, or None if no data is available
-        """
-        if self.audio_buffer and len(self.audio_buffer) > 0:
-            return bytes(self.audio_buffer)
-        return None
+        return bytes(self.audio_buffer) if self.audio_buffer else None
 
     def get_buffer_size(self) -> int:
-        """
-        Get the current size of the audio buffer.
-        
-        Returns:
-            Number of bytes currently in the buffer
-        """
         return len(self.audio_buffer)
 
     def is_buffer_full(self) -> bool:
-        """
-        Check if the audio buffer has reached its maximum capacity.
-        
-        Returns:
-            True if buffer is at or above capacity, False otherwise
-        """
         return len(self.audio_buffer) >= self.max_buffer_size
 
     def clear_buffer(self) -> None:
-        """
-        Clear the audio buffer.
-        
-        This method is useful for resetting the buffer without changing buffering state.
-        """
-        self.audio_buffer = bytearray()
-        self.logger.debug(f"Cleared audio buffer for conversation {self.conversation_id}")
+        self.audio_buffer.clear()
 
     def reset_buffer(self) -> None:
-        """
-        Reset the buffer to its initial state after processing audio.
-        
-        This method should be called after processing the buffered audio to prepare
-        the buffer for detecting the next speech segment.
-        """
-        self.buffering = False
-        self.waiting_for_speech = True
-        self.speech_detected = False
-        self.last_audio_time = 0.0
         self.clear_buffer()
-        self.logger.info(
-            f"Reset buffer to waiting for speech state for conversation {self.conversation_id}"
-        )
+        self.buffering = False
 
     def stop_buffering(self) -> None:
-        """
-        Stop the current buffering session.
-        
-        This will clear the buffer and reset the buffering state.
-        """
-        self.buffering = False
-        self.waiting_for_speech = True
-        self.speech_detected = False
-        self.clear_buffer()
-        self.logger.info(f"Stopped buffering for conversation {self.conversation_id}")
+        self.reset_buffer()
 
     def is_buffering(self) -> bool:
-        """
-        Check if audio buffering is currently active.
-        
-        Returns:
-            True if buffering is active, False otherwise
-        """
         return self.buffering
 
     def get_buffering_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the current buffering session.
-        
-        Returns:
-            Dictionary containing buffering statistics
-        """
+        buffer_size = len(self.audio_buffer)
         return {
             "conversation_id": self.conversation_id,
             "is_buffering": self.buffering,
-            "waiting_for_speech": self.waiting_for_speech,
-            "speech_detected": self.speech_detected,
-            "buffer_size": len(self.audio_buffer),
+            "buffer_size": buffer_size,
             "max_buffer_size": self.max_buffer_size,
-            "buffer_utilization": (len(self.audio_buffer) / self.max_buffer_size) * 100 if self.max_buffer_size > 0 else 0,
-            "last_audio_time": self.last_audio_time,
-            "silence_threshold": self.silence_threshold,
-            "silence_duration": self.silence_duration,
-            "quiet_threshold": self.quiet_threshold,
-            "sample_rate": self.sample_rate,
-            "bit_depth": self.bit_depth,
-            "channels": self.channels,
-            "encoding": self.encoding
+            "buffer_utilization": (
+                buffer_size / self.max_buffer_size * 100
+                if self.max_buffer_size
+                else 0
+            ),
         }
-
-
