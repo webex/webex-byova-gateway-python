@@ -1,8 +1,8 @@
 """
 Audio recorder utility class for the Webex Contact Center BYOVA Gateway.
 
-This module provides audio recording functionality that integrates with AudioBuffer
-for audio data management and silence detection.
+This module provides audio recording functionality that integrates with
+AudioBuffer for byte storage.
 """
 
 import logging
@@ -24,7 +24,7 @@ class AudioRecorder:
     Features:
     - Records audio data to WAV files
     - Integrates with AudioBuffer for audio data management
-    - Automatically finalizes recording after silence detection
+    - Leaves speech endpointing to the gateway VAD observer
     - Supports various audio formats and sample rates
     - File management and cleanup
     """
@@ -119,15 +119,15 @@ class AudioRecorder:
         """
         Add audio data to the current recording.
 
-        This method delegates to the AudioBuffer for audio data management
-        and silence detection, then writes to the WAV file if recording.
+        This method stores the frame and writes it if recording. Speech
+        endpointing is owned by the gateway's central VAD observer.
 
         Args:
             audio_data: Audio data bytes to add to the recording
             encoding: Format of the input audio data (default: 'ulaw')
 
         Returns:
-            True if recording continues, False if recording was finalized due to silence
+            True when the frame was accepted.
         """
         if not audio_data:
             self.logger.warning(
@@ -135,65 +135,30 @@ class AudioRecorder:
             )
             return True
 
-        # Delegate to AudioBuffer for audio data management and silence detection
-        buffer_continues = self.audio_buffer.add_audio_data(audio_data, encoding)
-        
-        # If buffer triggered callback (silence detected), finalize recording
-        if not buffer_continues and self.recording:
-            self.logger.info(
-                f"Silence detected by AudioBuffer, finalizing recording for conversation {self.conversation_id}"
-            )
-            self.finalize_recording()
-            return False
+        self.audio_buffer.append(audio_data)
 
         # If we're recording and have audio data, write to WAV file
-        if self.recording and self.audio_buffer.get_buffer_size() > 0:
-            # Get the buffered audio data
-            buffered_audio = self.audio_buffer.get_buffered_audio()
-            if buffered_audio:
-                try:
-                    if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
-                        # Use custom u-law writing
-                        self._write_ulaw_audio_data(buffered_audio)
-                        bytes_written = len(buffered_audio)
-                        self.logger.debug(
-                            f"Wrote {bytes_written} bytes to u-law WAV file {self.file_path}"
-                        )
-                    elif self.wav_file:
-                        # Use standard wave module
-                        bytes_written = len(buffered_audio)
-                        self.wav_file.writeframes(buffered_audio)
-                        self.logger.debug(
-                            f"Wrote {bytes_written} bytes to WAV file {self.file_path}"
-                        )
-                    else:
-                        self.logger.error("No WAV file handle available for writing")
-                        
-                except Exception as e:
-                    self.logger.error(f"Error writing to WAV file: {e}")
+        if self.recording:
+            try:
+                if self.encoding.lower() == "ulaw" and hasattr(self, '_wav_file_handle'):
+                    self._write_ulaw_audio_data(audio_data)
+                    bytes_written = len(audio_data)
+                    self.logger.debug(
+                        f"Wrote {bytes_written} bytes to u-law WAV file {self.file_path}"
+                    )
+                elif self.wav_file:
+                    bytes_written = len(audio_data)
+                    self.wav_file.writeframes(audio_data)
+                    self.logger.debug(
+                        f"Wrote {bytes_written} bytes to WAV file {self.file_path}"
+                    )
+                else:
+                    self.logger.error("No WAV file handle available for writing")
+            except Exception as e:
+                self.logger.error(f"Error writing to WAV file: {e}")
 
         return True
 
-    def check_silence_timeout(self) -> bool:
-        """
-        Check if the recording should be finalized due to silence timeout.
-        This method delegates to the AudioBuffer for silence detection.
-        
-        Returns:
-            True if recording continues, False if recording was finalized due to silence
-        """
-        # Delegate to AudioBuffer for silence detection
-        buffer_continues = self.audio_buffer.check_silence_timeout()
-        
-        # If buffer triggered callback (silence detected), finalize recording
-        if not buffer_continues and self.recording:
-            self.logger.info(
-                f"Silence timeout detected by AudioBuffer, finalizing recording for conversation {self.conversation_id}"
-            )
-            self.finalize_recording()
-            return False
-            
-        return True
 
     def _create_ulaw_wav_file(self, file_path: str) -> None:
         """

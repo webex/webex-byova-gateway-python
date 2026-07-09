@@ -129,6 +129,13 @@ class AWSLexConnector(IVendorConnector):
         """
         return self.session_manager.get_available_agents(self.lex_client)
 
+    def get_audio_delivery_mode(self) -> str:
+        return "utterance_buffered"
+
+    def should_observe_speech_boundaries(self, conversation_id: str) -> bool:
+        """Disable gateway VAD while Lex is handling DTMF input."""
+        return not self.session_manager.has_dtmf_mode_tracking(conversation_id)
+
     def start_conversation(self, conversation_id: str, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Start a new conversation with a Lex bot.
@@ -314,6 +321,11 @@ class AWSLexConnector(IVendorConnector):
             yield from self._handle_audio_input(conversation_id, message_data, bot_id, session_id, bot_name)
             return
 
+        if message_data.get("input_type") == "speech_boundary":
+            if message_data.get("speech_boundary", {}).get("kind") == "speech_ended":
+                yield from self._send_audio_to_lex(conversation_id)
+            return
+
         # Handle event input
         if message_data.get("input_type") == "event":
             yield self.handle_event(conversation_id, message_data, self.logger)
@@ -424,34 +436,8 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.error(f"No valid audio data found for conversation {conversation_id}")
                 return
 
-            # Process audio for buffering to detect speech
-            buffer_status = self.audio_processor.process_audio_for_buffering(audio_bytes, conversation_id, self.extract_audio_data)
-            
-            # Check if START_OF_INPUT event has been sent, if not send it only when speech is detected
-            if not self.session_manager.has_start_of_input_tracking(conversation_id):
-                # Only send START_OF_INPUT when speech is actually detected, not just any audio
-                if buffer_status.get('speech_detected', False):
-                    self.logger.debug(f"Speech detected, sending START_OF_INPUT event for conversation {conversation_id}")
-                    self.session_manager.add_start_of_input_tracking(conversation_id)
-                    
-                    yield self.create_start_of_input_response(conversation_id)
-                    return  # Return after sending START_OF_INPUT event
-                else:
-                    # Still waiting for speech, yield None (no response needed)
-                    self.logger.debug(f"Still waiting for speech in conversation {conversation_id}, yielding None")
-                    yield None
-                    return
-
-            # Check if silence threshold was detected, if so send END_OF_INPUT event
-            # This applies to both first and subsequent audio segments
-            if buffer_status.get('silence_detected', False):
-                self.logger.debug("Silence threshold detected, sending END_OF_INPUT event for next audio input cycle")
-                yield self.create_end_of_input_response(conversation_id)
-
-                # Send buffered audio to AWS Lex
-                yield from self._send_audio_to_lex(conversation_id)
-
-                return
+            self.audio_processor.append_audio_frame(audio_bytes, conversation_id)
+            yield None
 
         except Exception as e:
             self.error_handler.handle_audio_processing_error(e, conversation_id)
@@ -818,9 +804,6 @@ class AWSLexConnector(IVendorConnector):
         """Refresh the cached list of available bots."""
         self.session_manager.refresh_bot_cache()
         self.get_available_agents()
-
-
-
 
 
 

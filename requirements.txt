@@ -86,3 +86,5 @@ propcache>=0.3.2
 
 # Scientific computing (if needed)
 numpy>=2.2.0
+torch>=2.5.1,<2.6
+silero-vad==6.2.1

@@ -31,7 +31,8 @@ class AWSLexAudioProcessor:
         """
         self.logger = logger
         
-        # Audio buffering configuration
+        # Retained for configuration compatibility. AudioBuffer stores bytes only;
+        # speech boundaries come from the gateway VAD observer.
         self.audio_buffering_config = config.get("audio_buffering", {
             "silence_threshold": 2000,   # Moderate sensitivity - detect silence but not too aggressively
             "silence_duration": 2.5,    # Reasonable silence duration - wait for natural speech pauses
@@ -102,19 +103,9 @@ class AWSLexAudioProcessor:
             return
 
         try:
-            # Get audio buffering configuration
-            silence_threshold = self.audio_buffering_config.get(
-                "silence_threshold", 3000
-            )
-            silence_duration = self.audio_buffering_config.get("silence_duration", 2.0)
-            quiet_threshold = self.audio_buffering_config.get("quiet_threshold", 20)
-
-            # Create audio buffer
+            # Create a connector-owned utterance buffer with no VAD decisions.
             self.audio_buffers[conversation_id] = AudioBuffer(
                 conversation_id=conversation_id,
-                silence_threshold=silence_threshold,
-                silence_duration=silence_duration,
-                quiet_threshold=quiet_threshold,
                 sample_rate=8000,  # WxCC compatible sample rate
                 bit_depth=8,       # WxCC compatible bit depth
                 channels=1,        # WxCC compatible channels
@@ -124,91 +115,18 @@ class AWSLexAudioProcessor:
 
             self.logger.info(
                 f"Initialized audio buffer for conversation {conversation_id} "
-                f"(silence threshold: {silence_threshold}, duration: {silence_duration}s, "
-                f"quiet threshold: {quiet_threshold})"
+                "for central VAD endpointing"
             )
         except Exception as e:
             self.logger.error(f"Failed to initialize audio buffer: {e}")
             # Don't raise the exception, continue without buffering
 
-    def process_audio_for_buffering(self, audio_data, conversation_id: str, extract_audio_data_func) -> Dict[str, Any]:
-        """
-        Process audio data for buffering.
-
-        Args:
-            audio_data: Audio data to buffer (bytes, bytearray, or str)
-            conversation_id: Unique identifier for the conversation
-            extract_audio_data_func: Function to extract audio bytes from data
-
-        Returns:
-            Dictionary containing buffer status information:
-            - silence_detected: True if silence threshold was detected
-            - speech_detected: True if speech has been detected in this session
-            - waiting_for_speech: True if still waiting for first speech
-            - buffer_size: Current size of the buffer in bytes
-        """
-        if not audio_data:
-            return {
-                "silence_detected": False,
-                "speech_detected": False,
-                "waiting_for_speech": True,
-                "buffer_size": 0
-            }
-
-        # Initialize buffer if not already done
+    def append_audio_frame(self, audio_data: bytes, conversation_id: str) -> None:
+        """Append raw connector-owned bytes without making a speech decision."""
         if conversation_id not in self.audio_buffers:
             self.init_audio_buffer(conversation_id)
-
-        if conversation_id not in self.audio_buffers:
-            # Initialization failed
-            return {
-                "silence_detected": False,
-                "speech_detected": False,
-                "waiting_for_speech": True,
-                "buffer_size": 0
-            }
-
-        try:
-            # Use the provided function to extract audio bytes
-            audio_bytes = extract_audio_data_func(audio_data, conversation_id, self.logger)
-
-            # Ensure we have valid audio bytes before proceeding
-            if audio_bytes is None:
-                self.logger.error(f"Failed to extract audio data for conversation {conversation_id}")
-                return {
-                    "silence_detected": False,
-                    "speech_detected": False,
-                    "waiting_for_speech": True,
-                    "buffer_size": 0
-                }
-
-            # Get the audio buffer for this conversation
-            audio_buffer = self.audio_buffers[conversation_id]
-            
-            # Add audio data to the buffer and get status
-            buffer_status = audio_buffer.add_audio_data(audio_bytes, encoding="ulaw")
-            
-            self.logger.debug(
-                f"Added {len(audio_bytes)} bytes to buffer for conversation {conversation_id}, "
-                f"current buffer size: {buffer_status['buffer_size']} bytes, "
-                f"silence detected: {buffer_status['silence_detected']}, "
-                f"speech detected: {buffer_status['speech_detected']}"
-            )
-            
-            # Return the full buffer status for more detailed information
-            return buffer_status
-            
-        except Exception as e:
-            self.logger.error(
-                f"Error buffering audio for conversation {conversation_id}: {e}"
-            )
-            # Don't raise the exception, continue without buffering
-            return {
-                "silence_detected": False,
-                "speech_detected": False,
-                "waiting_for_speech": True,
-                "buffer_size": 0
-            }
+        if conversation_id in self.audio_buffers and audio_data:
+            self.audio_buffers[conversation_id].append(audio_data)
 
     def get_buffered_audio(self, conversation_id: str) -> Optional[bytes]:
         """
@@ -399,5 +317,4 @@ class AWSLexAudioProcessor:
         return {
             'buffer_size': audio_buffer.get_buffer_size(),
             'is_buffering': audio_buffer.is_buffering(),
-            'silence_detected': audio_buffer.get_silence_status()
         }

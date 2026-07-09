@@ -518,8 +518,8 @@ class TestLocalAudioConnector:
                 # The method returns early when extraction fails, so no error is logged
                 # We're testing the early return behavior
 
-    def test_process_audio_for_recording_processing_failure(self, connector):
-        """Test audio processing when processing fails."""
+    def test_process_audio_for_recording_does_not_guess_codec(self, connector):
+        """Test raw input reaches recording without codec guessing."""
         connector.record_caller_audio = True
         
         with patch.object(connector, '_init_audio_recorder') as mock_init:
@@ -531,17 +531,11 @@ class TestLocalAudioConnector:
             with patch.object(connector, 'extract_audio_data') as mock_extract:
                 mock_extract.return_value = b"extracted_audio"
                 
-                # Mock process_audio_format to fail
                 with patch.object(connector, 'process_audio_format') as mock_process:
-                    mock_process.side_effect = Exception("Processing failed")
-                    
                     connector._process_audio_for_recording(b"input_audio", "conv123")
-                    
+
                     mock_init.assert_called_once()
-                    # Verify that process_audio_format was called
-                    mock_process.assert_called_once()
-                    # The method catches exceptions and logs them, so error should be called
-                    connector.logger.error.assert_called()
+                    mock_process.assert_not_called()
 
     def test_convert_audio_to_wxcc_format_success(self, connector):
         """Test successful audio conversion to WxCC format."""

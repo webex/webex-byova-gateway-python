@@ -5,6 +5,16 @@ gateway:
   host: "0.0.0.0"
   port: 50051
 
+# Voice activity detection controls. The configured detector implementation is internal.
+voice_activity_detection:
+  threshold: 0.5
+  start_debounce_ms: 96
+  # One second balances natural pauses with responsive turn-taking for
+  # utterance-buffered connectors such as AWS Lex.
+  end_silence_ms: 1000
+  # Used only when WxCC omits the mandatory audio_input.sample_rate_hertz field.
+  fallback_sample_rate_hertz: 8000
+
 # Connectors configuration
 connectors:
   # Local Audio Connector

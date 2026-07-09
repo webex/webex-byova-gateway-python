@@ -33,6 +33,15 @@ class IVendorConnector(ABC):
     for virtual agent communication.
     """
 
+    def get_audio_delivery_mode(self) -> str:
+        """Return whether connector audio is streamed or utterance buffered."""
+        return "streaming"
+
+    def should_observe_speech_boundaries(self, conversation_id: str) -> bool:
+        """Return whether gateway VAD should observe this conversation's frames."""
+        del conversation_id
+        return True
+
     @abstractmethod
     def __init__(self, config: Dict[str, Any]) -> None:
         """
