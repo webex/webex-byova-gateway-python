@@ -204,6 +204,18 @@ class VirtualAgentRouter:
             agent_id
         ).should_observe_speech_boundaries(conversation_id)
 
+    def should_cleanup_on_client_stream_end(self, agent_id: str) -> bool:
+        """Return whether the connector opts into stream-end cleanup."""
+        return self.get_connector_for_agent(
+            agent_id
+        ).should_cleanup_on_client_stream_end()
+
+    def should_coalesce_speech_end_with_response(self, agent_id: str) -> bool:
+        """Return whether END_OF_INPUT should share the connector response."""
+        return self.get_connector_for_agent(
+            agent_id
+        ).should_coalesce_speech_end_with_response()
+
     def route_request(self, agent_id: str, method: str, *args, **kwargs) -> Any:
         """
         Route a request to the appropriate connector.

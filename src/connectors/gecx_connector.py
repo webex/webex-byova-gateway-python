@@ -14,7 +14,10 @@ import queue
 import re
 import struct
 import threading
+import time
 import uuid
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, Generator, Iterator, Optional, Tuple
 
 try:
@@ -46,7 +49,7 @@ except ImportError:
     Request = None
     client_options_lib = None
 
-from .i_vendor_connector import EventTypes, IVendorConnector
+from .i_vendor_connector import IVendorConnector
 
 # CES session IDs: [a-zA-Z0-9][a-zA-Z0-9-_]{4,62}
 _SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-_]{4,62}$")
@@ -54,6 +57,38 @@ _SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-_]{4,62}$")
 # Sentinel objects for the inbound control queue
 _AUDIO_END = object()
 _STREAM_STOP = object()
+
+
+class GECXTerminalReason(str, Enum):
+    """Reasons a GECX streaming session can reach a terminal state."""
+
+    NORMAL_END = "normal_end"
+    ESCALATION = "escalation"
+    TIMEOUT = "timeout"
+    GO_AWAY = "go_away"
+    CLIENT_CANCELLED = "client_cancelled"
+    CLIENT_HALF_CLOSE = "client_half_close"
+    STREAM_ERROR = "stream_error"
+    EXPLICIT_SHUTDOWN = "explicit_shutdown"
+
+
+class GECXTerminalOutcome(str, Enum):
+    """Response behavior selected by a GECX terminal decision."""
+
+    TRANSFER = "transfer"
+    SESSION_END = "session_end"
+    SILENT = "silent"
+
+
+@dataclass(frozen=True)
+class GECXTerminalDecision:
+    """The immutable first terminal decision for a GECX session."""
+
+    reason: GECXTerminalReason
+    outcome: GECXTerminalOutcome
+    source: str
+    metadata: Dict[str, Any]
+    decided_at: float
 
 
 def _make_ces_session_id() -> str:
@@ -98,13 +133,19 @@ class GECXStreamingSession:
         self.outbound_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
         self._stream_started = threading.Event()
+        self._turn_completed = threading.Event()
         self._stream_error: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
-        # CES streams TTS output as many small frames per agent turn. WxCC
-        # expects one complete, self-describing audio clip per prompt, so we
-        # accumulate the raw frames here and emit a single WAV-wrapped clip when
-        # the turn completes.
+        self._lifecycle_lock = threading.Lock()
+        self._terminal_decision: Optional[GECXTerminalDecision] = None
+        self._join_attempted = False
+        self._started_at = time.monotonic()
+        # CES streams text and TTS output separately during an agent turn. WxCC
+        # expects one complete prompt, so keep both forms together and emit one
+        # response when the turn completes. Sending the text early as its own
+        # prompt makes WxCC synthesize it and blocks the later CES audio/event.
+        self._text_buffer: list[str] = []
         self._audio_buffer = bytearray()
 
     def start(self) -> None:
@@ -120,27 +161,90 @@ class GECXStreamingSession:
         if self._stream_error:
             raise RuntimeError(self._stream_error)
 
-    def stop(self) -> None:
-        """Signal the stream to stop and wait for the thread."""
-        self._stop_event.set()
-        self.inbound_queue.put(_STREAM_STOP)
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=10)
+    @property
+    def terminal_decision(self) -> Optional[GECXTerminalDecision]:
+        """Return the session's first terminal decision, if one exists."""
+        with self._lifecycle_lock:
+            return self._terminal_decision
 
-    def enqueue_audio(self, audio_chunk: bytes) -> None:
+    @property
+    def is_terminal(self) -> bool:
+        """Return whether the session has made a terminal decision."""
+        return self.terminal_decision is not None
+
+    def stop(
+        self,
+        reason: GECXTerminalReason = GECXTerminalReason.EXPLICIT_SHUTDOWN,
+        source: str = "connector_stop",
+    ) -> None:
+        """Terminate silently and wait once for the stream thread."""
+        self.terminate(
+            reason=reason,
+            outcome=GECXTerminalOutcome.SILENT,
+            source=source,
+        )
+
+        with self._lifecycle_lock:
+            if self._join_attempted:
+                return
+            self._join_attempted = True
+            thread = self._thread
+
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=10)
+            if thread.is_alive():
+                self.logger.error(
+                    "gecx_session_join_timeout conversation_id=%s session=%s "
+                    "terminal_reason=%s",
+                    self.conversation_id,
+                    self.session_path,
+                    self.terminal_decision.reason.value,
+                )
+
+    def enqueue_audio(self, audio_chunk: bytes) -> bool:
         """Queue an audio chunk for the CES stream."""
-        if audio_chunk:
+        if not audio_chunk:
+            return False
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                self._log_late_input("audio")
+                return False
             self.inbound_queue.put(audio_chunk)
+        return True
 
-    def enqueue_text(self, text: str) -> None:
+    def enqueue_text(self, text: str) -> bool:
         """Queue a text turn for the CES stream."""
-        if text:
+        if not text:
+            return False
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                self._log_late_input("text")
+                return False
             self.inbound_queue.put(("text", text))
+        return True
 
-    def enqueue_event(self, event_name: str) -> None:
+    def enqueue_event(self, event_name: str) -> bool:
         """Queue an event for the CES stream."""
-        if event_name:
+        if not event_name:
+            return False
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                self._log_late_input("event")
+                return False
             self.inbound_queue.put(("event", event_name))
+        return True
+
+    def _log_late_input(self, input_type: str) -> None:
+        decision = self._terminal_decision
+        self.logger.warning(
+            "gecx_late_input_suppressed conversation_id=%s session=%s "
+            "input_type=%s terminal_reason=%s terminal_outcome=%s",
+            self.conversation_id,
+            self.session_path,
+            input_type,
+            decision.reason.value if decision else "unknown",
+            decision.outcome.value if decision else "unknown",
+        )
 
     def drain_responses(self) -> list[Dict[str, Any]]:
         """Non-blocking drain of outbound connector responses."""
@@ -152,18 +256,168 @@ class GECXStreamingSession:
                 break
         return responses
 
-    def wait_for_responses(self, timeout: float = 5.0) -> list[Dict[str, Any]]:
-        """Block up to timeout collecting outbound responses."""
-        responses: list[Dict[str, Any]] = []
-        deadline = timeout
-        while deadline > 0:
-            try:
-                responses.append(self.outbound_queue.get(timeout=min(0.5, deadline)))
-            except queue.Empty:
-                deadline -= 0.5
-                if responses:
-                    break
-        return responses
+    def begin_input_turn(self) -> bool:
+        """Reset completion tracking when gateway VAD detects caller speech."""
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                self._log_late_input("speech_boundary")
+                return False
+            self._turn_completed.clear()
+        return True
+
+    def wait_for_turn_responses(
+        self, timeout: float, *, terminate_on_timeout: bool = True
+    ) -> Tuple[bool, list[Dict[str, Any]]]:
+        """Wait for CES to complete the current turn, then drain its responses."""
+        completed = self._turn_completed.wait(timeout=timeout)
+        if not completed:
+            self.logger.warning(
+                "[%s] [GECX] Timed out after %.1fs waiting for turn completion",
+                self.conversation_id,
+                timeout,
+            )
+            if terminate_on_timeout:
+                self.terminate(
+                    reason=GECXTerminalReason.TIMEOUT,
+                    outcome=GECXTerminalOutcome.SESSION_END,
+                    source="turn_response_timeout",
+                    metadata={"timeout_seconds": timeout},
+                )
+        return completed, self.drain_responses()
+
+    def terminate(
+        self,
+        reason: GECXTerminalReason,
+        outcome: GECXTerminalOutcome,
+        source: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        response_text: str = "",
+    ) -> bool:
+        """Make the session's terminal decision exactly once.
+
+        The winning call rejects future input, preserves already-buffered agent
+        audio when the response channel is usable, half-closes the CES request
+        stream, wakes response waiters, and optionally queues one canonical
+        terminal response for the gateway. Preserved audio is attached to that
+        same response so WxCC receives the final prompt and terminal event
+        atomically. Later calls are no-ops.
+        """
+        terminal_metadata = dict(metadata or {})
+        decided_at = time.monotonic()
+
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                current = self._terminal_decision
+                self.logger.warning(
+                    "gecx_duplicate_terminal_suppressed conversation_id=%s "
+                    "session=%s attempted_reason=%s attempted_outcome=%s "
+                    "attempted_source=%s terminal_reason=%s terminal_outcome=%s "
+                    "terminal_source=%s",
+                    self.conversation_id,
+                    self.session_path,
+                    reason.value,
+                    outcome.value,
+                    source,
+                    current.reason.value,
+                    current.outcome.value,
+                    current.source,
+                )
+                return False
+
+            decision = GECXTerminalDecision(
+                reason=reason,
+                outcome=outcome,
+                source=source,
+                metadata=terminal_metadata,
+                decided_at=decided_at,
+            )
+            self._terminal_decision = decision
+            self._stop_event.set()
+
+            with self._lock:
+                buffered_text = "".join(self._text_buffer)
+                raw_audio = bytes(self._audio_buffer)
+                self._text_buffer = []
+                self._audio_buffer = bytearray()
+
+            # Queue the stop sentinel exactly once. The request generator also
+            # checks terminal state after dequeuing to close the final race where
+            # it already pulled caller audio as termination was decided.
+            self.inbound_queue.put(_STREAM_STOP)
+
+            # Preserve final CES output ahead of the terminal event. WxCC skips
+            # a prompt when TRANSFER_TO_AGENT shares its response, so the audio
+            # must be its own response. Gateway backpressure then advances to
+            # the terminal response as soon as prompt playback completes.
+            preserved_output = False
+            if outcome != GECXTerminalOutcome.SILENT:
+                wav_audio = (
+                    self.connector.wrap_output_audio(raw_audio) if raw_audio else b""
+                )
+                if buffered_text or wav_audio:
+                    self.outbound_queue.put(
+                        self.connector.create_response(
+                            conversation_id=self.conversation_id,
+                            message_type="audio" if wav_audio else "agent_response",
+                            text=buffered_text or response_text,
+                            audio_content=wav_audio,
+                            barge_in_enabled=False,
+                            response_type="final",
+                        )
+                    )
+                    preserved_output = True
+
+            terminal_response = self._create_terminal_response(
+                decision,
+                response_text="" if preserved_output else (response_text or None),
+            )
+            if terminal_response is not None:
+                self.outbound_queue.put(terminal_response)
+
+            # Set completion only after the terminal response is visible so a
+            # waiter cannot wake and drain the queue too early.
+            self._turn_completed.set()
+
+        self.logger.info(
+            "gecx_terminal_decision conversation_id=%s session=%s reason=%s "
+            "outcome=%s source=%s elapsed_seconds=%.3f metadata=%s",
+            self.conversation_id,
+            self.session_path,
+            reason.value,
+            outcome.value,
+            source,
+            decided_at - self._started_at,
+            terminal_metadata or {},
+        )
+        return True
+
+    def _create_terminal_response(
+        self,
+        decision: GECXTerminalDecision,
+        response_text: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build one canonical connector response for a terminal decision."""
+        if decision.outcome == GECXTerminalOutcome.SILENT:
+            return None
+        if decision.outcome == GECXTerminalOutcome.TRANSFER:
+            return self.connector.create_response(
+                conversation_id=self.conversation_id,
+                message_type="transfer",
+                text=(
+                    "Transferring you to an agent."
+                    if response_text is None
+                    else response_text
+                ),
+                barge_in_enabled=False,
+                response_type="final",
+            )
+        return self.connector.create_response(
+            conversation_id=self.conversation_id,
+            message_type="session_end",
+            text=response_text or "",
+            barge_in_enabled=False,
+            response_type="final",
+        )
 
     def _request_generator(self) -> Iterator[Any]:
         """Yield BidiSessionClientMessage objects for bidi_run_session."""
@@ -193,7 +447,7 @@ class GECXStreamingSession:
         yield ces_v1.BidiSessionClientMessage(config=session_config)
         self._stream_started.set()
 
-        if self.initial_message:
+        if self.initial_message and not self.is_terminal:
             yield ces_v1.BidiSessionClientMessage(
                 realtime_input=ces_v1.SessionInput(text=self.initial_message)
             )
@@ -205,6 +459,8 @@ class GECXStreamingSession:
                 continue
 
             if item is _STREAM_STOP:
+                break
+            if self.is_terminal:
                 break
             if item is _AUDIO_END:
                 continue
@@ -234,23 +490,57 @@ class GECXStreamingSession:
                     break
                 self._handle_server_message(server_message)
         except Exception as exc:
-            self.logger.error(
-                f"[{self.conversation_id}] [GECX] BidiRunSession error: {exc}",
-                exc_info=True,
-            )
-            self._stream_error = str(exc)
-            self.outbound_queue.put(
-                self.connector.create_error_response(
-                    conversation_id=self.conversation_id,
-                    error_message=f"GECX stream error: {exc}",
+            if self.is_terminal:
+                self.logger.debug(
+                    "gecx_stream_closed_after_terminal conversation_id=%s "
+                    "session=%s error=%r",
+                    self.conversation_id,
+                    self.session_path,
+                    exc,
                 )
-            )
+            else:
+                self.logger.error(
+                    "gecx_stream_error conversation_id=%s session=%s error=%r",
+                    self.conversation_id,
+                    self.session_path,
+                    exc,
+                    exc_info=True,
+                )
+                self._stream_error = str(exc)
+                self.terminate(
+                    reason=GECXTerminalReason.STREAM_ERROR,
+                    outcome=GECXTerminalOutcome.SESSION_END,
+                    source="bidi_run_session_exception",
+                    metadata={"error": str(exc)},
+                )
         finally:
+            if not self.is_terminal:
+                self._stream_error = "CES response stream closed without EndSession"
+                self.terminate(
+                    reason=GECXTerminalReason.STREAM_ERROR,
+                    outcome=GECXTerminalOutcome.SESSION_END,
+                    source="bidi_run_session_closed",
+                    metadata={"error": self._stream_error},
+                )
             self._stream_started.set()
+            self._turn_completed.set()
 
     def _handle_server_message(self, message: Any) -> None:
         """Map CES server messages to BYOVA connector responses."""
         conversation_id = self.conversation_id
+        turn_completed = False
+
+        if self.is_terminal:
+            decision = self.terminal_decision
+            self.logger.warning(
+                "gecx_late_server_message_suppressed conversation_id=%s "
+                "session=%s terminal_reason=%s terminal_outcome=%s",
+                conversation_id,
+                self.session_path,
+                decision.reason.value,
+                decision.outcome.value,
+            )
+            return
 
         if message.recognition_result and message.recognition_result.transcript:
             transcript = message.recognition_result.transcript.strip()
@@ -261,16 +551,22 @@ class GECXStreamingSession:
 
         if message.interruption_signal:
             self.logger.info(f"[{conversation_id}] [GECX] Barge-in interruption signal")
-            with self._lock:
-                self._audio_buffer = bytearray()
-                while not self.outbound_queue.empty():
-                    try:
-                        self.outbound_queue.get_nowait()
-                    except queue.Empty:
-                        break
+            # Keep lifecycle -> audio locking consistent with terminate() so a
+            # concurrent interruption cannot erase the winning terminal response.
+            with self._lifecycle_lock:
+                if self._terminal_decision is None:
+                    with self._lock:
+                        self._text_buffer = []
+                        self._audio_buffer = bytearray()
+                    while True:
+                        try:
+                            self.outbound_queue.get_nowait()
+                        except queue.Empty:
+                            break
 
         if message.session_output:
             output = message.session_output
+            has_terminal_output = bool(output.end_session)
             response_type = (
                 "final" if output.turn_completed else "partial"
             )
@@ -279,14 +575,7 @@ class GECXStreamingSession:
                 self.logger.info(
                     f"[{conversation_id}] [GECX] Agent: '{output.text}'"
                 )
-                self.outbound_queue.put(
-                    self.connector.create_response(
-                        conversation_id=conversation_id,
-                        message_type="agent_response",
-                        text=output.text,
-                        response_type=response_type,
-                    )
-                )
+                self._buffer_active_text(output.text)
 
             audio_bytes = self._decode_output_audio(output.audio)
             if audio_bytes:
@@ -294,76 +583,102 @@ class GECXStreamingSession:
                     f"[{conversation_id}] [GECX] Buffered audio frame: "
                     f"{len(audio_bytes)} bytes"
                 )
-                with self._lock:
-                    self._audio_buffer.extend(audio_bytes)
+                self._buffer_active_audio(audio_bytes)
 
             # A completed turn means the full agent utterance has been streamed;
             # emit it to WxCC as a single WAV clip.
-            if output.turn_completed:
+            if output.turn_completed and not has_terminal_output:
                 self._flush_audio_buffer()
+                turn_completed = True
 
-            if output.end_session:
-                self._flush_audio_buffer()
-                self._emit_session_end(conversation_id, output)
-                self._begin_half_close()
+            if has_terminal_output:
+                self._handle_end_session(
+                    conversation_id,
+                    output.end_session,
+                )
+                turn_completed = True
 
         if message.end_session:
-            self._flush_audio_buffer()
-            self._emit_session_end(conversation_id, message.end_session)
-            self._begin_half_close()
+            self._handle_end_session(conversation_id, message.end_session)
+            turn_completed = True
 
         if message.go_away:
-            self.logger.warning(f"[{conversation_id}] [GECX] GoAway received, stopping stream")
-            self._stop_event.set()
+            self.terminate(
+                reason=GECXTerminalReason.GO_AWAY,
+                outcome=GECXTerminalOutcome.SESSION_END,
+                source="ces_go_away",
+            )
+            turn_completed = True
 
-    def _begin_half_close(self) -> None:
-        """Half-close the client side of the bidi stream after CES ends a session.
+        if turn_completed:
+            self._turn_completed.set()
 
-        CES requires the client to stop sending (half-close) within 30s of an
-        ``EndSession`` message; otherwise it aborts the RPC with
-        ``CLIENT_HALF_CLOSE_TIMEOUT``, which surfaces as a stream error and
-        tears the turn down before the transfer/session-end response is
-        delivered to WxCC. Signalling the request generator to return
-        half-closes the stream cleanly so the RPC completes normally.
-        """
-        if self._stop_event.is_set():
-            return
-        self.logger.info(
-            f"[{self.conversation_id}] [GECX] EndSession received; half-closing stream"
-        )
-        self._stop_event.set()
-        # Unblock the request generator immediately so it returns (rather than
-        # waiting for its queue poll to time out).
-        self.inbound_queue.put(_STREAM_STOP)
+    def _enqueue_active_response(self, response: Dict[str, Any]) -> bool:
+        """Queue a non-terminal response only while the session is active."""
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                return False
+            self.outbound_queue.put(response)
+        return True
+
+    def _buffer_active_audio(self, audio_bytes: bytes) -> bool:
+        """Buffer agent audio only while the session is active."""
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                return False
+            with self._lock:
+                self._audio_buffer.extend(audio_bytes)
+        return True
+
+    def _buffer_active_text(self, text: str) -> bool:
+        """Buffer CES text until its matching audio turn is complete."""
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                return False
+            with self._lock:
+                self._text_buffer.append(text)
+        return True
 
     def _flush_audio_buffer(self, response_type: str = "final") -> bool:
-        """Wrap buffered CES audio in a WxCC WAV clip and enqueue it.
+        """Emit buffered CES text and audio as one WxCC prompt response.
 
-        Returns True if a clip was emitted. Safe to call repeatedly; it is a
-        no-op when the buffer is empty.
+        Returns True if a response was emitted. Safe to call repeatedly; it is
+        a no-op when both buffers are empty.
         """
-        with self._lock:
-            if not self._audio_buffer:
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                with self._lock:
+                    self._text_buffer = []
+                    self._audio_buffer = bytearray()
                 return False
-            raw_audio = bytes(self._audio_buffer)
-            self._audio_buffer = bytearray()
+            with self._lock:
+                if not self._text_buffer and not self._audio_buffer:
+                    return False
+                buffered_text = "".join(self._text_buffer)
+                raw_audio = bytes(self._audio_buffer)
+                self._text_buffer = []
+                self._audio_buffer = bytearray()
 
-        wav_audio = self.connector.wrap_output_audio(raw_audio)
-        if not wav_audio:
-            return False
-
-        self.logger.info(
-            f"[{self.conversation_id}] [GECX] Audio out: {len(wav_audio)} bytes "
-            f"WAV ({len(raw_audio)} raw)"
-        )
-        self.outbound_queue.put(
-            self.connector.create_response(
-                conversation_id=self.conversation_id,
-                message_type="audio",
-                audio_content=wav_audio,
-                response_type=response_type,
+            wav_audio = (
+                self.connector.wrap_output_audio(raw_audio) if raw_audio else b""
             )
-        )
+            if not buffered_text and not wav_audio:
+                return False
+
+            if wav_audio:
+                self.logger.info(
+                    f"[{self.conversation_id}] [GECX] Audio out: "
+                    f"{len(wav_audio)} bytes WAV ({len(raw_audio)} raw)"
+                )
+            self.outbound_queue.put(
+                self.connector.create_response(
+                    conversation_id=self.conversation_id,
+                    message_type="audio" if wav_audio else "agent_response",
+                    text=buffered_text,
+                    audio_content=wav_audio,
+                    response_type=response_type,
+                )
+            )
         return True
 
     @staticmethod
@@ -393,6 +708,23 @@ class GECXStreamingSession:
         """
         truthy = {"true", "1", "yes", "y", "on"}
         lowered = {str(k).lower(): v for k, v in metadata.items()}
+
+        # CES documents this exact flag for escalated EndSession messages. Keep
+        # it ahead of configurable aliases so the supported contract is obvious.
+        escalated = lowered.get("session_escalated")
+        if (
+            escalated is True
+            or (
+                isinstance(escalated, (int, float))
+                and not isinstance(escalated, bool)
+                and escalated != 0
+            )
+            or (
+                isinstance(escalated, str)
+                and escalated.strip().lower() in truthy
+            )
+        ):
+            return True, str(lowered.get("reason", "session_escalated"))
 
         # 1) Explicit boolean-ish flag keys.
         for key in self.connector.transfer_metadata_keys:
@@ -432,7 +764,12 @@ class GECXStreamingSession:
 
         return False, ""
 
-    def _emit_session_end(self, conversation_id: str, end_obj: Any) -> None:
+    def _handle_end_session(
+        self,
+        conversation_id: str,
+        end_obj: Any,
+        response_text: str = "",
+    ) -> None:
         metadata = self._metadata_to_dict(end_obj)
 
         # Log the raw metadata so operators can see exactly what the agent sends
@@ -443,32 +780,24 @@ class GECXStreamingSession:
 
         is_transfer, reason = self._detect_transfer(metadata)
         if is_transfer:
-            self.logger.info(
-                f"[{conversation_id}] [GECX] Escalation detected -> "
-                f"TRANSFER_TO_AGENT (reason: {reason or 'agent_requested_transfer'})"
-            )
-            self.outbound_queue.put(
-                self.connector.create_transfer_response(
-                    conversation_id=conversation_id,
-                    text="Transferring you to an agent.",
-                    reason=reason or "agent_requested_transfer",
-                )
+            self.terminate(
+                reason=GECXTerminalReason.ESCALATION,
+                outcome=GECXTerminalOutcome.TRANSFER,
+                source="ces_end_session",
+                metadata={
+                    "transfer_reason": reason or "agent_requested_transfer",
+                    "end_session": metadata,
+                },
+                response_text=response_text,
             )
             return
 
-        end_event = self.connector.create_output_event(
-            EventTypes.SESSION_END,
-            "session_ended_by_gecx",
-            metadata or None,
-        )
-        self.outbound_queue.put(
-            self.connector.create_response(
-                conversation_id=conversation_id,
-                message_type="session_end",
-                text="",
-                response_type="final",
-                output_events=[end_event],
-            )
+        self.terminate(
+            reason=GECXTerminalReason.NORMAL_END,
+            outcome=GECXTerminalOutcome.SESSION_END,
+            source="ces_end_session",
+            metadata={"end_session": metadata},
+            response_text=response_text,
         )
 
     @staticmethod
@@ -558,6 +887,9 @@ class GECXConnector(IVendorConnector):
         self.initial_message = config.get("initial_message", "Hello")
         self.enable_partial_responses = config.get("enable_partial_responses", True)
         self.force_input_format = config.get("force_input_format", "").lower()
+        self.turn_response_timeout_seconds = float(
+            config.get("turn_response_timeout_seconds", 30.0)
+        )
         self.agents = config.get("agents", ["GECX Agent"])
 
         # --- Escalation / human handoff detection ---------------------------
@@ -779,6 +1111,48 @@ class GECXConnector(IVendorConnector):
             self.output_audio_encoding,
         )
 
+    def get_audio_delivery_mode(self) -> str:
+        """GECX receives caller audio frames as they arrive from WxCC."""
+        return "streaming"
+
+    def should_cleanup_on_client_stream_end(self) -> bool:
+        """Close CES after WxCC cancellation or request-stream failure."""
+        return True
+
+    def should_coalesce_speech_end_with_response(self) -> bool:
+        """Send END_OF_INPUT with the completed CES prompt and terminal event."""
+        return True
+
+    def handle_speech_boundary(
+        self, conversation_id: str, message_data: Dict[str, Any]
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Coordinate gateway speech boundaries with asynchronous CES output."""
+        with self.sessions_lock:
+            stream_session = self.streaming_sessions.get(conversation_id)
+
+        if not stream_session:
+            self.logger.warning(
+                "[GECX] No active stream for speech boundary: %s", conversation_id
+            )
+            return
+
+        if stream_session.is_terminal:
+            yield from stream_session.drain_responses()
+            return
+
+        boundary_kind = message_data.get("speech_boundary", {}).get("kind")
+        if boundary_kind == "speech_started":
+            stream_session.begin_input_turn()
+            return
+
+        if boundary_kind != "speech_ended":
+            return
+
+        _, responses = stream_session.wait_for_turn_responses(
+            timeout=self.turn_response_timeout_seconds
+        )
+        yield from responses
+
     def get_available_agents(self) -> list:
         return self.agents
 
@@ -805,7 +1179,13 @@ class GECXConnector(IVendorConnector):
             welcome_text = "Connected to GECX agent"
             got_text = False
             welcome_audio = b""
-            for response in stream_session.wait_for_responses(timeout=8.0):
+            terminal_response: Optional[Dict[str, Any]] = None
+            _, greeting_responses = stream_session.wait_for_turn_responses(
+                timeout=8.0, terminate_on_timeout=False
+            )
+            for response in greeting_responses:
+                if response.get("message_type") in {"transfer", "session_end"}:
+                    terminal_response = response
                 if response.get("text") and not got_text:
                     welcome_text = response["text"]
                     got_text = True
@@ -821,6 +1201,18 @@ class GECXConnector(IVendorConnector):
                 for response in stream_session.drain_responses():
                     if response.get("audio_content"):
                         welcome_audio = response["audio_content"]
+
+            # CES may legitimately end or escalate during the initial turn.
+            # Preserve that first terminal decision instead of following it with
+            # a contradictory session-start response. Fold any greeting output
+            # received first into the one response shape start_conversation can
+            # return so the terminal event does not discard agent output.
+            if terminal_response is not None:
+                if got_text:
+                    terminal_response["text"] = welcome_text
+                if welcome_audio:
+                    terminal_response["audio_content"] = welcome_audio
+                return terminal_response
 
             return self.create_session_start_response(
                 conversation_id=conversation_id,
@@ -847,6 +1239,10 @@ class GECXConnector(IVendorConnector):
             self.logger.error(
                 f"[GECX] No active stream for conversation: {conversation_id}"
             )
+            return
+
+        if stream_session.is_terminal:
+            yield from stream_session.drain_responses()
             return
 
         message_type = message_data.get("input_type") or message_data.get("type", "audio")
@@ -906,7 +1302,9 @@ class GECXConnector(IVendorConnector):
                 conversation_id=conversation_id,
             )
 
-        stream_session.enqueue_audio(audio_chunk)
+        if not stream_session.enqueue_audio(audio_chunk):
+            yield from stream_session.drain_responses()
+            return
 
         for response in stream_session.drain_responses():
             yield response
@@ -920,9 +1318,16 @@ class GECXConnector(IVendorConnector):
         text = message_data.get("text", "")
         if not text:
             return
-        stream_session.enqueue_text(text)
-        for response in stream_session.wait_for_responses(timeout=10.0):
-            yield response
+        if not stream_session.begin_input_turn():
+            yield from stream_session.drain_responses()
+            return
+        if not stream_session.enqueue_text(text):
+            yield from stream_session.drain_responses()
+            return
+        _, responses = stream_session.wait_for_turn_responses(
+            timeout=self.turn_response_timeout_seconds
+        )
+        yield from responses
 
     def _handle_event_input(
         self,
@@ -935,20 +1340,45 @@ class GECXConnector(IVendorConnector):
             event_name = message_data["event_data"].get("name", "")
         if not event_name:
             return
-        stream_session.enqueue_event(event_name)
-        for response in stream_session.wait_for_responses(timeout=10.0):
-            yield response
+        if not stream_session.begin_input_turn():
+            yield from stream_session.drain_responses()
+            return
+        if not stream_session.enqueue_event(event_name):
+            yield from stream_session.drain_responses()
+            return
+        _, responses = stream_session.wait_for_turn_responses(
+            timeout=self.turn_response_timeout_seconds
+        )
+        yield from responses
 
     def end_conversation(
         self, conversation_id: str, message_data: Optional[Dict[str, Any]] = None
     ) -> None:
-        self.logger.info(f"[GECX] Ending conversation: {conversation_id}")
+        termination_reason = (message_data or {}).get(
+            "termination_reason", "explicit_shutdown"
+        )
+        reason_map = {
+            "client_cancelled": GECXTerminalReason.CLIENT_CANCELLED,
+            "client_half_close": GECXTerminalReason.CLIENT_HALF_CLOSE,
+            "stream_error": GECXTerminalReason.STREAM_ERROR,
+        }
+        terminal_reason = reason_map.get(
+            termination_reason, GECXTerminalReason.EXPLICIT_SHUTDOWN
+        )
+        self.logger.info(
+            "gecx_end_conversation conversation_id=%s reason=%s",
+            conversation_id,
+            termination_reason,
+        )
         with self.sessions_lock:
             stream_session = self.streaming_sessions.pop(conversation_id, None)
             self.detected_formats.pop(conversation_id, None)
 
         if stream_session:
-            stream_session.stop()
+            stream_session.stop(
+                reason=terminal_reason,
+                source=f"gateway_{termination_reason}",
+            )
 
     def convert_wxcc_to_vendor(self, grpc_data: Any) -> Dict[str, Any]:
         return {"data": grpc_data, "converted_for": "gecx"}
@@ -973,9 +1403,16 @@ class GECXConnector(IVendorConnector):
         message_data: Dict[str, Any],
         conversation_id: str,
     ) -> Tuple[int, str]:
-        if message_data.get("sample_rate_hertz"):
-            rate = int(message_data["sample_rate_hertz"])
-            encoding = self._encoding_from_proto(message_data.get("encoding"))
+        audio_metadata = message_data.get("audio_metadata") or {}
+        sample_rate_hertz = audio_metadata.get(
+            "sample_rate_hertz", message_data.get("sample_rate_hertz")
+        )
+        encoding_value = audio_metadata.get(
+            "encoding", message_data.get("encoding")
+        )
+        if sample_rate_hertz:
+            rate = int(sample_rate_hertz)
+            encoding = self._encoding_from_proto(encoding_value)
             self.detected_formats[conversation_id] = (rate, encoding)
             return rate, encoding
 
