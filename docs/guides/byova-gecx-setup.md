@@ -87,6 +87,7 @@ gecx_connector:
     initial_message: "Hello"
     enable_partial_responses: true
     force_input_format: "wxcc"
+    turn_response_timeout_seconds: 30
     # Omit auth entirely to use Application Default Credentials (recommended on
     # Google Cloud; the runtime service account needs roles/ces.client).
     # service_account_key: "C:/path/to/ces-service-account.json"
@@ -169,8 +170,44 @@ are worth understanding if you fork this connector.
 `GECXStreamingSession` runs a background thread per conversation that holds one
 CES `BidiRunSession` open. WxCC caller audio is pushed onto an inbound queue and
 forwarded to CES; CES server messages (STT, agent text, TTS audio, barge-in,
-end-of-session) are mapped to BYOVA responses on an outbound queue that the
-gateway drains back to WxCC.
+end-of-session) are mapped to BYOVA responses on an outbound queue. The gateway
+drains responses while caller audio is flowing and, after gateway speech-end
+detection, waits for CES `turn_completed` before returning the final turn to
+WxCC. This prevents a response that arrives after `END_OF_INPUT` from remaining
+queued when WxCC stops sending caller audio.
+
+All terminal causes pass through one session-scoped decision guard. The first
+decision rejects later caller input, finalizes agent audio received before the
+decision, half-closes the CES request stream once, and emits at most one
+terminal response. Duplicate `EndSession` messages and late CES output are
+ignored.
+
+| Terminal cause | WxCC outcome |
+|----------------|--------------|
+| CES `EndSession` with `session_escalated=true` (or a configured compatibility alias) | `TRANSFER_TO_AGENT` |
+| Normal CES `EndSession` | `SESSION_END` |
+| Turn-response timeout | `SESSION_END` |
+| CES `GoAway` | `SESSION_END` |
+| Unexpected CES stream failure/closure | `SESSION_END` |
+| WxCC cancellation or request-stream failure | Silent CES cleanup; no continuation is expected |
+| Normal WxCC request-stream half-close | Preserve the CES session for the next RPC carrying the same conversation ID |
+| Explicit gateway shutdown | Silent CES cleanup |
+
+CES documents [`EndSession`](https://docs.cloud.google.com/python/docs/reference/google-cloud-ces/latest/google.cloud.ces_v1.types.EndSession)
+as ending the session and prohibiting further input. CES documents
+[`GoAway`](https://docs.cloud.google.com/python/docs/reference/google-cloud-ces/latest/google.cloud.ces_v1.types.GoAway)
+as requiring half-close and reconnection. This connector deliberately ends the
+WxCC virtual-agent session on `GoAway`; reconnection, retry, and backoff are not
+implemented here.
+
+### Speech boundaries
+
+The gateway's central Silero observer owns Webex `START_OF_INPUT` and
+`END_OF_INPUT` events. GECX does not run a second local speech detector: every
+caller-audio frame is forwarded to CES immediately, and speech-boundary
+notifications are used only to coordinate turn completion and response
+delivery. Configure the observer under the top-level
+`voice_activity_detection` block in `config/config.yaml`.
 
 ### Audio format: WxCC expects a self-describing WAV clip
 
@@ -197,9 +234,10 @@ agent stops talking when the caller interrupts.
 
 ### Input audio
 
-WxCC sends 8 kHz mu-law. The gateway forwards WxCC's encoding + sample rate as
-metadata; the connector normalizes/converts to the CES `InputAudioConfig` format
-(`force_input_format: "wxcc"` pins detection to 8 kHz MULAW).
+WxCC sends 8 kHz mu-law. The gateway forwards WxCC's declared encoding and
+sample rate in `audio_metadata`; the connector normalizes/converts to the CES
+`InputAudioConfig` format. `force_input_format: "wxcc"` remains a compatibility
+fallback for clients that omit that metadata.
 
 ## Escalation to a human agent
 
@@ -222,9 +260,11 @@ Agent escalates ─► CES EndSession { metadata: {...} }
 
 1. In your agent's instructions/playbook, define **when** to hand off (e.g.
    "if the caller asks for a human, or after two failed attempts, escalate").
-2. Make that escalation **end the session and attach metadata** that flags a
-   transfer. The connector recognizes, by default, any of these truthy metadata
-   keys: `transfer`, `transfer_to_agent`, `transfer_to_human`, `escalate`,
+2. Make that escalation **end the session and attach
+   `session_escalated=true` metadata**. This is the canonical CES escalation
+   signal and is checked first. For compatibility, the connector also recognizes
+   any of these truthy metadata keys: `transfer`, `transfer_to_agent`,
+   `transfer_to_human`, `escalate`,
    `escalation`, `escalated`, `session_escalated`, `handoff`, `human_handoff`,
    `live_agent_handoff` — and also a
    `reason`/`type`/`status`/`intent`/`action` value containing `transfer`,
@@ -253,7 +293,7 @@ no code change needed:
 When detected, you'll see:
 
 ```
-[<conv>] [GECX] Escalation detected -> TRANSFER_TO_AGENT (reason: ...)
+gecx_terminal_decision conversation_id=<conv> session=<session> reason=escalation outcome=transfer source=ces_end_session ...
 ```
 
 ### 3. Handle it in the WxCC flow
@@ -261,6 +301,21 @@ When detected, you'll see:
 The Virtual Agent element emits a **Transfer** branch on `TRANSFER_TO_AGENT`.
 Wire that branch to a queue that routes to human agents. (A normal
 `SESSION_END` ends the virtual-agent interaction without a transfer.)
+
+When CES includes its final spoken announcement with `EndSession`, the GECX
+connector sends the CES announcement first and follows it with a prompt-free
+terminal response. WxCC skips prompt audio when `TRANSFER_TO_AGENT` shares the
+same response, so this ordering lets the full CES announcement play and then
+transfers as soon as playback completes. The gateway calculates that gate from
+the CES WAV byte rate and data length rather than applying a fixed termination
+delay.
+
+The connector also keeps CES text with its matching CES audio until the turn is
+complete. This prevents WxCC from synthesizing a separate text-only prompt ahead
+of the provider audio, which would duplicate speech and delay later responses.
+For GECX, the gateway also places `END_OF_INPUT` on that completed response
+instead of sending it as a preceding standalone response; `START_OF_INPUT`
+remains immediate.
 
 ## Configuration reference
 
@@ -276,7 +331,8 @@ Wire that branch to a queue that routes to human agents. (A normal
 | `service_account_key` | No | Path to SA JSON; omit to use ADC |
 | `initial_message` | No | Text sent when the CES stream opens (default: `Hello`) |
 | `enable_partial_responses` | No | Map CES partial outputs to WxCC `PARTIAL` responses |
-| `force_input_format` | No | `wxcc` forces 8 kHz MULAW input detection |
+| `force_input_format` | No | `wxcc` forces 8 kHz MULAW when input metadata is unavailable |
+| `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
 | `transfer_metadata_keys` | No | EndSession metadata keys that, when truthy, trigger a human transfer (see [Escalation](#escalation-to-a-human-agent)) |
 | `transfer_reason_keywords` | No | Substrings that, if found in a reason/type metadata value, trigger a transfer |
 | `transfer_reason_metadata_keys` | No | Which metadata keys are scanned for `transfer_reason_keywords` |
@@ -303,7 +359,9 @@ and grant the represented identity `roles/ces.client`.
 | `404` / `UNIMPLEMENTED` on BidiRunSession | Wrong endpoint — must be regional `ces.<location>.rep.googleapis.com` (auto-derived from `location`) |
 | `429 Resource exhausted` | CES per-app session quota; retry/backoff or request more quota |
 | No audio to caller (silence) | WxCC needs a WAV-wrapped clip, not raw audio. Confirm `Audio out: NNNN bytes WAV` in logs and `output_audio_encoding: MULAW` / `output_sample_rate_hertz: 8000`. See [How it works](#audio-format-wxcc-expects-a-self-describing-wav-clip). |
-| Garbled speech | Set `force_input_format: "wxcc"`; gateway now forwards WxCC encoding metadata |
+| Garbled speech | Confirm the gateway logs the declared WxCC encoding/sample rate; use `force_input_format: "wxcc"` only when the client omits metadata |
+| No response after `END_OF_INPUT` | Check for `turn_completed` or a turn-completion timeout in `[GECX]` logs; increase `turn_response_timeout_seconds` if the agent regularly needs more than 30 seconds |
+| `GoAway` from CES | The connector intentionally emits one `SESSION_END` and half-closes CES; it does not reconnect in the current implementation |
 | Import error | `pip install google-cloud-ces` |
 
 ## Logs
@@ -316,6 +374,14 @@ Search gateway logs for `[GECX]`:
 - `Audio out: NNNN bytes WAV (MMMM raw)` — one WAV clip emitted per agent turn
   (`NNNN` includes the WAV header; `MMMM` is the raw CES bytes buffered)
 - `Barge-in` — interruption signal from CES
+- `gecx_terminal_decision` — the winning lifecycle decision, with
+  `conversation_id`, CES `session`, `reason`, `outcome`, `source`,
+  `elapsed_seconds`, and terminal metadata
+- `gecx_duplicate_terminal_suppressed` — a later terminal signal was ignored
+- `gecx_late_input_suppressed` / `gecx_late_server_message_suppressed` — caller
+  or CES data arrived after the terminal decision
+- `gecx_session_join_timeout` — the CES stream thread did not stop within the
+  cleanup join window
 
 ## Related documentation
 
