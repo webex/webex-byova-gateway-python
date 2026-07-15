@@ -5,6 +5,7 @@ Tests for the GECX (CX Agent Studio / CES) connector.
 from __future__ import annotations
 
 import re
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,9 @@ import pytest
 from src.connectors.gecx_connector import (
     GECXConnector,
     GECXStreamingSession,
+    GECXTerminalOutcome,
+    GECXTerminalReason,
+    _STREAM_STOP,
     _make_ces_session_id,
     _ces_audio_encoding,
 )
@@ -103,6 +107,26 @@ class TestRequestGenerator:
 
         assert second.realtime_input.text == "Hello"
 
+    def test_no_caller_audio_is_yielded_after_terminal_decision(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+        session.enqueue_audio(b"caller audio")
+        session.terminate(
+            GECXTerminalReason.NORMAL_END,
+            GECXTerminalOutcome.SESSION_END,
+            "test",
+        )
+
+        generator = session._request_generator()
+        next(generator)  # Session config is always the first CES message.
+        with pytest.raises(StopIteration):
+            next(generator)
+
 
 class TestServerMessageMapping:
     def test_session_output_maps_to_connector_responses(self, connector):
@@ -126,17 +150,19 @@ class TestServerMessageMapping:
             ),
         )
 
+        session.begin_input_turn()
         session._handle_server_message(message)
-        responses = session.drain_responses()
+        completed, responses = session.wait_for_turn_responses(timeout=0.1)
 
-        assert len(responses) == 2
-        assert responses[0]["message_type"] == "agent_response"
+        assert completed
+        assert len(responses) == 1
+        assert responses[0]["message_type"] == "audio"
         assert responses[0]["text"] == "Hi there"
         assert responses[0]["response_type"] == "final"
-        assert responses[1]["message_type"] == "audio"
-        # Audio is buffered per turn and wrapped in a WxCC WAV container.
-        assert responses[1]["audio_content"].startswith(b"RIFF")
-        assert responses[1]["audio_content"].endswith(b"\x01\x02")
+        # Text and audio are emitted atomically so WxCC does not synthesize a
+        # duplicate text-only prompt before playing the CES audio.
+        assert responses[0]["audio_content"].startswith(b"RIFF")
+        assert responses[0]["audio_content"].endswith(b"\x01\x02")
 
     def test_end_session_emits_session_end_event(self, connector):
         session = GECXStreamingSession(
@@ -157,8 +183,10 @@ class TestServerMessageMapping:
         session._handle_server_message(message)
         responses = session.drain_responses()
 
+        assert len(responses) == 1
         assert responses[0]["message_type"] == "session_end"
-        assert responses[0]["output_events"][0]["event_type"] == "SESSION_END"
+        assert responses[0]["output_events"] == []
+        assert session.terminal_decision.reason == GECXTerminalReason.NORMAL_END
 
     def _end_session(self, connector, metadata):
         session = GECXStreamingSession(
@@ -181,11 +209,9 @@ class TestServerMessageMapping:
         responses = self._end_session(
             connector, {"transfer": True, "reason": "caller asked for a human"}
         )
+        assert len(responses) == 1
         assert responses[0]["message_type"] == "transfer"
-        assert responses[0]["output_events"][0]["event_type"] == "TRANSFER_TO_HUMAN"
-        assert responses[0]["output_events"][0]["metadata"]["reason"] == (
-            "caller asked for a human"
-        )
+        assert responses[0]["output_events"] == []
 
     def test_end_session_with_reason_keyword_emits_transfer(self, connector):
         responses = self._end_session(
@@ -200,6 +226,63 @@ class TestServerMessageMapping:
     def test_end_session_with_session_escalated_flag_emits_transfer(self, connector):
         # This is the exact payload GECX emits on escalation.
         responses = self._end_session(connector, {"session_escalated": True})
+        assert responses[0]["message_type"] == "transfer"
+
+    def test_session_output_end_session_uses_nested_metadata(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        text_message = SimpleNamespace(
+            recognition_result=None,
+            interruption_signal=None,
+            end_session=None,
+            go_away=None,
+            session_output=SimpleNamespace(
+                text="Certainly. Let me connect you with a hotel specialist.",
+                audio=b"",
+                turn_completed=False,
+                end_session=False,
+            ),
+        )
+        terminal_message = SimpleNamespace(
+            recognition_result=None,
+            interruption_signal=None,
+            end_session=None,
+            go_away=None,
+            session_output=SimpleNamespace(
+                text="",
+                audio=b"transfer audio",
+                turn_completed=True,
+                end_session=SimpleNamespace(
+                    metadata={"session_escalated": True}
+                ),
+            ),
+        )
+
+        session._handle_server_message(text_message)
+        assert session.drain_responses() == []
+        session._handle_server_message(terminal_message)
+
+        assert session.terminal_decision.reason == GECXTerminalReason.ESCALATION
+        responses = session.drain_responses()
+        assert [response["message_type"] for response in responses] == [
+            "audio",
+            "transfer",
+        ]
+        assert responses[0]["text"] == (
+            "Certainly. Let me connect you with a hotel specialist."
+        )
+        assert responses[0]["audio_content"].endswith(b"transfer audio")
+        assert responses[0]["output_events"] == []
+        assert responses[1]["text"] == ""
+        assert responses[1]["audio_content"] == b""
+
+    def test_configurable_escalation_alias_remains_supported(self, connector):
+        connector.transfer_metadata_keys = ["custom_handoff"]
+        responses = self._end_session(connector, {"custom_handoff": "yes"})
         assert responses[0]["message_type"] == "transfer"
 
     def test_end_session_with_escalation_key_name_emits_transfer(self, connector):
@@ -235,16 +318,204 @@ class TestServerMessageMapping:
         assert session._stop_event.is_set()
         assert session.inbound_queue.get_nowait() is gecx_mod._STREAM_STOP
 
+    def test_go_away_ends_session_without_reconnection(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        message = SimpleNamespace(
+            recognition_result=None,
+            interruption_signal=None,
+            session_output=None,
+            end_session=None,
+            go_away=SimpleNamespace(),
+        )
+
+        session._handle_server_message(message)
+
+        assert session.terminal_decision.reason == GECXTerminalReason.GO_AWAY
+        assert session.drain_responses()[0]["message_type"] == "session_end"
+
+
+class TestTerminalLifecycle:
+    def _session(self, connector):
+        return GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+
+    def test_turn_timeout_decides_session_end(self, connector):
+        session = self._session(connector)
+
+        completed, responses = session.wait_for_turn_responses(timeout=0)
+
+        assert not completed
+        assert session.terminal_decision.reason == GECXTerminalReason.TIMEOUT
+        assert [response["message_type"] for response in responses] == ["session_end"]
+
+    def test_unexpected_stream_exception_decides_session_end(self, connector):
+        session = self._session(connector)
+        connector.session_client.bidi_run_session.side_effect = RuntimeError("boom")
+
+        session._run_stream()
+
+        assert session.terminal_decision.reason == GECXTerminalReason.STREAM_ERROR
+        assert session.terminal_decision.outcome == GECXTerminalOutcome.SESSION_END
+        assert session.drain_responses()[0]["message_type"] == "session_end"
+
+    def test_first_terminal_decision_wins_under_race(self, connector):
+        session = self._session(connector)
+        barrier = threading.Barrier(3)
+        results = []
+
+        def decide(reason, outcome):
+            barrier.wait()
+            results.append(session.terminate(reason, outcome, "race_test"))
+
+        threads = [
+            threading.Thread(
+                target=decide,
+                args=(GECXTerminalReason.NORMAL_END, GECXTerminalOutcome.SESSION_END),
+            ),
+            threading.Thread(
+                target=decide,
+                args=(GECXTerminalReason.ESCALATION, GECXTerminalOutcome.TRANSFER),
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+
+        assert sorted(results) == [False, True]
+        assert len(session.drain_responses()) == 1
+        queued_items = []
+        while not session.inbound_queue.empty():
+            queued_items.append(session.inbound_queue.get_nowait())
+        assert queued_items.count(_STREAM_STOP) == 1
+
+    def test_duplicate_end_and_late_output_are_suppressed(self, connector):
+        session = self._session(connector)
+        normal_end = SimpleNamespace(
+            recognition_result=None,
+            interruption_signal=None,
+            session_output=None,
+            go_away=None,
+            end_session=SimpleNamespace(metadata={}),
+        )
+        late_output = SimpleNamespace(
+            recognition_result=None,
+            interruption_signal=None,
+            end_session=None,
+            go_away=None,
+            session_output=SimpleNamespace(
+                text="late prompt",
+                audio=b"late audio",
+                turn_completed=True,
+                end_session=False,
+            ),
+        )
+
+        session._handle_server_message(normal_end)
+        session._handle_server_message(normal_end)
+        session._handle_server_message(late_output)
+
+        responses = session.drain_responses()
+        assert [response["message_type"] for response in responses] == ["session_end"]
+        assert session.enqueue_audio(b"late caller audio") is False
+
+    def test_agent_output_before_terminal_is_preserved(self, connector):
+        session = self._session(connector)
+        output = SimpleNamespace(
+            recognition_result=None,
+            interruption_signal=None,
+            end_session=None,
+            go_away=None,
+            session_output=SimpleNamespace(
+                text="I can help with that",
+                audio=b"",
+                turn_completed=False,
+                end_session=False,
+            ),
+        )
+
+        session._handle_server_message(output)
+        session._handle_end_session("conv-1", SimpleNamespace(metadata={}))
+
+        responses = session.drain_responses()
+        assert [response["message_type"] for response in responses] == [
+            "agent_response",
+            "session_end",
+        ]
+        assert responses[0]["text"] == "I can help with that"
+        assert responses[1]["text"] == ""
+
+    def test_buffered_agent_audio_before_terminal_is_preserved(self, connector):
+        session = self._session(connector)
+        session._buffer_active_audio(b"agent audio")
+
+        session.terminate(
+            GECXTerminalReason.GO_AWAY,
+            GECXTerminalOutcome.SESSION_END,
+            "test_go_away",
+        )
+
+        responses = session.drain_responses()
+        assert [response["message_type"] for response in responses] == [
+            "audio",
+            "session_end",
+        ]
+        assert responses[0]["audio_content"].endswith(b"agent audio")
+
+    @pytest.mark.parametrize(
+        ("gateway_reason", "terminal_reason"),
+        [
+            ("client_cancelled", GECXTerminalReason.CLIENT_CANCELLED),
+            ("client_half_close", GECXTerminalReason.CLIENT_HALF_CLOSE),
+            ("gateway_shutdown", GECXTerminalReason.EXPLICIT_SHUTDOWN),
+        ],
+    )
+    def test_gateway_cleanup_is_silent(self, connector, gateway_reason, terminal_reason):
+        session = self._session(connector)
+        connector.streaming_sessions["conv-1"] = session
+
+        connector.end_conversation(
+            "conv-1", {"termination_reason": gateway_reason}
+        )
+
+        assert session.terminal_decision.reason == terminal_reason
+        assert session.terminal_decision.outcome == GECXTerminalOutcome.SILENT
+        assert session.drain_responses() == []
+        assert "conv-1" not in connector.streaming_sessions
+
 
 class TestAudioFormat:
-    def test_resolve_input_format_from_gateway_metadata(self, connector):
+    def test_resolve_input_format_from_nested_gateway_metadata(self, connector):
+        rate, encoding = connector._resolve_input_format(
+            b"\x00" * 640,
+            {
+                "audio_metadata": {
+                    "sample_rate_hertz": 16000,
+                    "encoding": 1,
+                }
+            },
+            "conv-1",
+        )
+        assert rate == 16000
+        assert encoding == "LINEAR_16"
+
+    def test_resolve_input_format_accepts_legacy_flat_metadata(self, connector):
         rate, encoding = connector._resolve_input_format(
             b"\x00" * 640,
             {"sample_rate_hertz": 8000, "encoding": 2},
             "conv-1",
         )
-        assert rate == 8000
-        assert encoding == "MULAW"
+        assert (rate, encoding) == (8000, "MULAW")
 
     def test_ces_audio_encoding_mulaw(self):
         with patch("src.connectors.gecx_connector.ces_v1") as mock_ces:
@@ -255,6 +526,8 @@ class TestAudioFormat:
 class TestSendMessage:
     def test_send_message_enqueues_audio_and_drains_responses(self, connector):
         stream_session = MagicMock()
+        stream_session.is_terminal = False
+        stream_session.enqueue_audio.return_value = True
         stream_session.drain_responses.return_value = [
             connector.create_response(
                 conversation_id="conv-1",
@@ -274,3 +547,51 @@ class TestSendMessage:
 
         stream_session.enqueue_audio.assert_called_once()
         assert responses[0]["text"] == "OK"
+
+
+class TestSpeechBoundaries:
+    def test_declares_streaming_audio_delivery(self, connector):
+        assert connector.get_audio_delivery_mode() == "streaming"
+
+    def test_opts_into_client_stream_end_cleanup(self, connector):
+        assert connector.should_cleanup_on_client_stream_end() is True
+
+    def test_opts_into_coalesced_speech_end_response(self, connector):
+        assert connector.should_coalesce_speech_end_with_response() is True
+
+    def test_speech_started_resets_turn_completion(self, connector):
+        stream_session = MagicMock()
+        stream_session.is_terminal = False
+
+        with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
+            responses = list(
+                connector.handle_speech_boundary(
+                    "conv-1",
+                    {"speech_boundary": {"kind": "speech_started"}},
+                )
+            )
+
+        assert responses == []
+        stream_session.begin_input_turn.assert_called_once_with()
+
+    def test_speech_ended_waits_for_and_yields_completed_turn(self, connector):
+        stream_session = MagicMock()
+        stream_session.is_terminal = False
+        expected = connector.create_response(
+            conversation_id="conv-1",
+            message_type="audio",
+            audio_content=b"RIFFaudio",
+            response_type="final",
+        )
+        stream_session.wait_for_turn_responses.return_value = (True, [expected])
+
+        with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
+            responses = list(
+                connector.handle_speech_boundary(
+                    "conv-1",
+                    {"speech_boundary": {"kind": "speech_ended"}},
+                )
+            )
+
+        assert responses == [expected]
+        stream_session.wait_for_turn_responses.assert_called_once_with(timeout=30.0)
