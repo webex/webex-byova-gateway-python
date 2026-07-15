@@ -9,12 +9,7 @@ Welcome to the documentation for the Webex Contact Center BYOVA (Bring Your Own 
 
 ## 🚀 Quick Start
 
-If you have a Webex Contact Center sandbox but have not chosen a voice-agent
-provider, start with the bundled local audio connector:
-
-**[📖 Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md)**
-
-For an Amazon Lex integration, use the comprehensive setup guide:
+Get up and running in minutes with our comprehensive setup guide:
 
 **[📖 Complete Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)**
 
@@ -41,9 +36,14 @@ A fully functional voice AI system where customers can:
 
 ## 📚 Documentation
 
-- **[Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md)** - Vendor-neutral first test with a Contact Center sandbox
+- **[Customer Evaluation](CUSTOMER_EVALUATION.md)** - Determine whether BYOVA fits an existing voice-agent platform and plan a proof of concept
+- **[Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md)** - Validate BYOVA with a Contact Center sandbox before choosing a voice-agent provider
+- **[Local Development](LOCAL_DEVELOPMENT.md)** - Install, run, and troubleshoot the sample locally
+- **[JWT Authentication](JWT_AUTHENTICATION.md)** - Configure Webex runtime token validation
+- **[Testing](TESTING.md)** - Run automated, HTTP, gRPC, and end-to-end tests
 - **[Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Complete step-by-step setup
-- **[API Reference](api/)** - Detailed API documentation
+- **[Productization and Production Readiness Guide](PRODUCTION_READINESS.md)** - Requirements for operating a derivative of this sample at high call volume
+- **[Protocol Definitions](https://github.com/webex/webex-byova-gateway-python/tree/main/proto)** - BYOVA and health protocol source files
 - **[GitHub Repository](https://github.com/webex/webex-byova-gateway-python)** - Source code and issues
 
 ## 🛠️ Development
@@ -65,6 +65,4 @@ For questions about BYOVA integration:
 
 ---
 
-**Not sure which voice-agent provider to use?** [Begin with the Local Audio Connector](LOCAL_AUDIO_CONFIGURATION.md).
-
-**Using Amazon Lex?** [Follow the Complete Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex).
+**Ready to get started?** [Begin with the Complete Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)

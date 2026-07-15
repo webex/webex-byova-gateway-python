@@ -261,9 +261,6 @@ When disabled, the dashboard is accessible without login. **Never disable authen
 - `GET /api/connections` - Active sessions and connection history
 - `GET /api/debug/sessions` - Detailed session debugging information
 
-### Testing and Development
-- `GET /api/test/create-session` - Create test session for UI testing
-
 ## Dashboard Components
 
 ### Status Overview
@@ -477,4 +474,4 @@ python main.py 2>&1 | grep "monitoring"
 
 ## License
 
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.
+This code is licensed under the [Cisco Sample Code License v1.1](../../LICENSE). See the main project README for details.
