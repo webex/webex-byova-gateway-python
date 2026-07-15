@@ -42,6 +42,25 @@ class IVendorConnector(ABC):
         del conversation_id
         return True
 
+    def should_cleanup_on_client_stream_end(self) -> bool:
+        """Return whether an abnormal WxCC stream end should clean up state.
+
+        Connectors opt in when their vendor session cannot safely remain open
+        after cancellation or a request-stream failure. A normal half-close is
+        a WxCC continuation boundary and never invokes this capability. The
+        default preserves existing behavior for current connectors.
+        """
+        return False
+
+    def should_coalesce_speech_end_with_response(self) -> bool:
+        """Return whether END_OF_INPUT should share the connector response.
+
+        The default keeps the existing two-response gateway behavior. Streaming
+        connectors may opt in when a standalone END_OF_INPUT response would
+        apply backpressure before their completed audio response can be sent.
+        """
+        return False
+
     def handle_speech_boundary(
         self, conversation_id: str, message_data: Dict[str, Any]
     ) -> Optional[Iterator[Optional[Dict[str, Any]]]]:

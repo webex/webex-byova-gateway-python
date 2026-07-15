@@ -107,6 +107,12 @@ class TestLocalAudioConnector:
             assert connector.audio_files == mock_config["audio_files"]
             assert connector.audio_recorders == {}
 
+    def test_client_stream_end_cleanup_remains_default_off(self, connector):
+        assert connector.should_cleanup_on_client_stream_end() is False
+
+    def test_speech_end_response_coalescing_remains_default_off(self, connector):
+        assert connector.should_coalesce_speech_end_with_response() is False
+
     def test_init_with_minimal_config(self, mock_config_minimal):
         """Test connector initialization with minimal configuration."""
         with patch('src.connectors.local_audio_connector.AudioConverter'):

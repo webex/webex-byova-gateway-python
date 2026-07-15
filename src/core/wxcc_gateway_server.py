@@ -228,12 +228,28 @@ class ConversationProcessor:
                     event_type,
                     self.conversation_id,
                 )
-                response = self._convert_connector_response_to_grpc({
+                boundary_event = {
+                    "event_type": event_type,
+                    "name": "" if event_type == "START_OF_INPUT" else "end_of_input",
+                }
+                boundary_connector_response = {
                     "message_type": "silence",
-                    "output_events": [{"event_type": event_type, "name": "" if event_type == "START_OF_INPUT" else "end_of_input"}],
-                })
-                if response is not None:
-                    yield response
+                    "output_events": [boundary_event],
+                }
+                coalesce_speech_end = (
+                    signal.kind == "speech_ended"
+                    and self.router.should_coalesce_speech_end_with_response(
+                        self.virtual_agent_id
+                    )
+                )
+
+                if not coalesce_speech_end:
+                    response = self._convert_connector_response_to_grpc(
+                        boundary_connector_response
+                    )
+                    if response is not None:
+                        yield response
+
                 boundary_response = self.router.route_request(
                     self.virtual_agent_id,
                     "handle_speech_boundary",
@@ -245,9 +261,26 @@ class ConversationProcessor:
                         "speech_boundary": {"kind": signal.kind},
                     },
                 )
-                yield from self._iter_grpc_connector_responses(
-                    boundary_response, include_single_response=False
-                )
+                if coalesce_speech_end:
+                    coalesced_responses = list(
+                        self._iter_grpc_connector_responses(
+                            boundary_response,
+                            additional_output_event=boundary_event,
+                            delay_terminal_after_audio=True,
+                        )
+                    )
+                    if coalesced_responses:
+                        yield from coalesced_responses
+                    else:
+                        response = self._convert_connector_response_to_grpc(
+                            boundary_connector_response
+                        )
+                        if response is not None:
+                            yield response
+                else:
+                    yield from self._iter_grpc_connector_responses(
+                        boundary_response, include_single_response=False
+                    )
 
         except Exception as e:
             self.logger.error(
@@ -256,7 +289,12 @@ class ConversationProcessor:
             yield self._create_error_response(f"Audio processing error: {str(e)}")
 
     def _iter_grpc_connector_responses(
-        self, connector_response, *, include_single_response: bool = True
+        self,
+        connector_response,
+        *,
+        include_single_response: bool = True,
+        additional_output_event: Optional[Dict[str, Any]] = None,
+        delay_terminal_after_audio: bool = False,
     ) -> Iterator[VoiceVAResponse]:
         """Convert a connector response or response iterator to gRPC responses."""
         is_iterator = hasattr(connector_response, "__iter__") and not isinstance(
@@ -266,6 +304,12 @@ class ConversationProcessor:
             return
 
         responses = connector_response if is_iterator else (connector_response,)
+        pending_output_event = (
+            dict(additional_output_event)
+            if additional_output_event is not None
+            else None
+        )
+        pending_playback_seconds = 0.0
 
         for response in responses:
             if response is None:
@@ -274,9 +318,54 @@ class ConversationProcessor:
                 )
                 continue
 
+            if (
+                delay_terminal_after_audio
+                and pending_playback_seconds > 0
+                and isinstance(response, dict)
+                and response.get("message_type") in {"transfer", "session_end"}
+            ):
+                self.logger.info(
+                    "Delaying terminal response %.3f seconds for CES audio "
+                    "playback in conversation %s",
+                    pending_playback_seconds,
+                    self.conversation_id,
+                )
+                time.sleep(pending_playback_seconds)
+                pending_playback_seconds = 0.0
+
+            if pending_output_event is not None and isinstance(response, dict):
+                response = dict(response)
+                output_events = list(response.get("output_events", []))
+                output_events.append(pending_output_event)
+                response["output_events"] = output_events
+                pending_output_event = None
+
+            if delay_terminal_after_audio and isinstance(response, dict):
+                pending_playback_seconds = self._wav_playback_seconds(
+                    response.get("audio_content", b"")
+                )
+
             grpc_response = self._convert_connector_response_to_grpc(response)
             if grpc_response is not None:
                 yield grpc_response
+
+    @staticmethod
+    def _wav_playback_seconds(audio_content: bytes) -> float:
+        """Return playback duration for the connector's canonical WAV shape."""
+        if (
+            not isinstance(audio_content, bytes)
+            or len(audio_content) < 44
+            or audio_content[:4] != b"RIFF"
+            or audio_content[8:12] != b"WAVE"
+            or audio_content[36:40] != b"data"
+        ):
+            return 0.0
+
+        byte_rate = int.from_bytes(audio_content[28:32], "little")
+        data_size = int.from_bytes(audio_content[40:44], "little")
+        if byte_rate <= 0 or data_size <= 0:
+            return 0.0
+        return data_size / byte_rate
 
     def _process_dtmf_input(self, dtmf_input) -> Iterator[VoiceVAResponse]:
         """Process DTMF input."""
@@ -377,6 +466,7 @@ class ConversationProcessor:
                         "conversation_id": self.conversation_id,
                         "virtual_agent_id": self.virtual_agent_id,
                         "input_type": "conversation_end",
+                        "termination_reason": "client_session_end",
                     }
 
                     # Route to connector to end conversation
@@ -833,14 +923,15 @@ class ConversationProcessor:
         )
         return va_response
 
-    def cleanup(self):
-        """Clean up conversation resources."""
+    def cleanup(self, termination_reason: str = "gateway_cleanup"):
+        """Clean up conversation resources with a lifecycle reason."""
         try:
             # End the conversation with the connector
             message_data = {
                 "conversation_id": self.conversation_id,
                 "virtual_agent_id": self.virtual_agent_id,
                 "input_type": "conversation_end",
+                "termination_reason": termination_reason,
             }
             self.router.route_request(
                 self.virtual_agent_id,
@@ -897,15 +988,19 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
 
         # Clean up all active conversations
         for conversation_id in list(self.conversations.keys()):
-            self._cleanup_conversation(conversation_id)
+            self._cleanup_conversation(
+                conversation_id, termination_reason="gateway_shutdown"
+            )
 
         self.logger.info("WxCCGatewayServer shutdown complete")
 
-    def _cleanup_conversation(self, conversation_id: str):
+    def _cleanup_conversation(
+        self, conversation_id: str, termination_reason: str = "gateway_cleanup"
+    ):
         """Clean up a specific conversation."""
         if conversation_id in self.conversations:
             try:
-                self.conversations[conversation_id].cleanup()
+                self.conversations[conversation_id].cleanup(termination_reason)
             except Exception as e:
                 self.logger.warning(
                     f"Error cleaning up conversation {conversation_id}: {e}"
@@ -1047,6 +1142,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         conversation_id = None
         agent_id = None
         processor = None
+        stream_end_reason = "client_half_close"
 
         try:
             for request in request_iterator:
@@ -1128,21 +1224,49 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 # Track message event
                 self.add_connection_event("message", conversation_id, agent_id)
 
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.CANCELLED:
+                stream_end_reason = "client_cancelled"
+            else:
+                stream_end_reason = "stream_error"
+                self.logger.error(f"Error in ProcessCallerInput stream: {e}")
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Stream error: {str(e)}")
         except Exception as e:
+            stream_end_reason = "stream_error"
             self.logger.error(f"Error in ProcessCallerInput stream: {e}")
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Stream error: {str(e)}")
         finally:
-            # Clean up conversation if it can be deleted
+            if context and not context.is_active():
+                stream_end_reason = "client_cancelled"
+
+            # WxCC normally half-closes one request RPC and reconnects with the
+            # same conversation ID for subsequent caller input. Preserve the
+            # processor and vendor session across that continuation boundary.
+            # Connector opt-in applies only to cancellation and actual request
+            # stream failures, where no continuation is expected.
             if conversation_id and conversation_id in self.conversations:
                 processor = self.conversations[conversation_id]
-                if processor.can_be_deleted:
-                    self.logger.debug(
-                        f"Cleaning up completed conversation {conversation_id}"
+                cleanup_on_stream_end = (
+                    stream_end_reason != "client_half_close"
+                    and self.router.should_cleanup_on_client_stream_end(agent_id)
+                    is True
+                )
+                if processor.can_be_deleted or cleanup_on_stream_end:
+                    termination_reason = (
+                        "completed" if processor.can_be_deleted else stream_end_reason
                     )
-                    self._cleanup_conversation(conversation_id)
+                    self.logger.debug(
+                        "Cleaning up conversation %s (reason=%s)",
+                        conversation_id,
+                        termination_reason,
+                    )
+                    self._cleanup_conversation(
+                        conversation_id, termination_reason=termination_reason
+                    )
                     self.add_connection_event(
-                        "end", conversation_id, agent_id, reason="completed"
+                        "end", conversation_id, agent_id, reason=termination_reason
                     )
                 else:
                     self.logger.debug(
