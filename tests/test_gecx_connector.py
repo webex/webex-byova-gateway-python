@@ -4,6 +4,7 @@ Tests for the GECX (CX Agent Studio / CES) connector.
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from types import SimpleNamespace
@@ -285,6 +286,22 @@ class TestServerMessageMapping:
         responses = self._end_session(connector, {"custom_handoff": "yes"})
         assert responses[0]["message_type"] == "transfer"
 
+    def test_terminal_logs_metadata_keys_without_values(self, connector, caplog):
+        caplog.set_level(logging.INFO)
+
+        self._end_session(
+            connector,
+            {
+                "session_escalated": True,
+                "customer_email": "guest@example.com",
+                "reason": "private routing identifier",
+            },
+        )
+
+        assert "customer_email" in caplog.text
+        assert "guest@example.com" not in caplog.text
+        assert "private routing identifier" not in caplog.text
+
     def test_end_session_with_escalation_key_name_emits_transfer(self, connector):
         # Key-name keyword match catches naming variants generically.
         responses = self._end_session(connector, {"agent_escalated_call": True})
@@ -337,6 +354,37 @@ class TestServerMessageMapping:
 
         assert session.terminal_decision.reason == GECXTerminalReason.GO_AWAY
         assert session.drain_responses()[0]["message_type"] == "session_end"
+
+    def test_initial_escalation_keeps_greeting_and_transfer_separate(
+        self, connector
+    ):
+        combined_terminal_response = connector.create_response(
+            conversation_id="conv-1",
+            message_type="transfer",
+            text="Let me connect you now.",
+            audio_content=b"RIFFgreeting",
+            barge_in_enabled=False,
+            response_type="final",
+        )
+        stream_session = MagicMock()
+        stream_session.wait_for_turn_responses.return_value = (
+            True,
+            [combined_terminal_response],
+        )
+
+        with patch(
+            "src.connectors.gecx_connector.GECXStreamingSession",
+            return_value=stream_session,
+        ):
+            responses = connector.start_conversation("conv-1", {})
+
+        assert [response["message_type"] for response in responses] == [
+            "audio",
+            "transfer",
+        ]
+        assert responses[0]["audio_content"] == b"RIFFgreeting"
+        assert responses[1]["audio_content"] == b""
+        assert responses[1]["text"] == ""
 
 
 class TestTerminalLifecycle:

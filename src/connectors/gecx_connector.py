@@ -18,7 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Generator, Iterator, Optional, Tuple
+from typing import Any, Dict, Generator, Iterator, Optional, Tuple, Union
 
 try:
     import audioop
@@ -380,14 +380,20 @@ class GECXStreamingSession:
 
         self.logger.info(
             "gecx_terminal_decision conversation_id=%s session=%s reason=%s "
-            "outcome=%s source=%s elapsed_seconds=%.3f metadata=%s",
+            "outcome=%s source=%s elapsed_seconds=%.3f metadata_keys=%s "
+            "end_session_metadata_keys=%s",
             self.conversation_id,
             self.session_path,
             reason.value,
             outcome.value,
             source,
             decided_at - self._started_at,
-            terminal_metadata or {},
+            sorted(terminal_metadata),
+            sorted(
+                terminal_metadata.get("end_session", {})
+                if isinstance(terminal_metadata.get("end_session"), dict)
+                else {}
+            ),
         )
         return True
 
@@ -567,9 +573,6 @@ class GECXStreamingSession:
         if message.session_output:
             output = message.session_output
             has_terminal_output = bool(output.end_session)
-            response_type = (
-                "final" if output.turn_completed else "partial"
-            )
 
             if output.text:
                 self.logger.info(
@@ -772,11 +775,17 @@ class GECXStreamingSession:
     ) -> None:
         metadata = self._metadata_to_dict(end_obj)
 
-        # Log the raw metadata so operators can see exactly what the agent sends
-        # on escalation and map transfer_metadata_keys accordingly.
         self.logger.info(
-            f"[{conversation_id}] [GECX] EndSession metadata: {metadata or '{}'}"
+            "[%s] [GECX] EndSession metadata keys: %s",
+            conversation_id,
+            sorted(metadata),
         )
+        if self.connector.log_raw_terminal_metadata_debug:
+            self.logger.debug(
+                "[%s] [GECX] Raw EndSession metadata: %s",
+                conversation_id,
+                metadata,
+            )
 
         is_transfer, reason = self._detect_transfer(metadata)
         if is_transfer:
@@ -889,6 +898,9 @@ class GECXConnector(IVendorConnector):
         self.force_input_format = config.get("force_input_format", "").lower()
         self.turn_response_timeout_seconds = float(
             config.get("turn_response_timeout_seconds", 30.0)
+        )
+        self.log_raw_terminal_metadata_debug = bool(
+            config.get("log_raw_terminal_metadata_debug", False)
         )
         self.agents = config.get("agents", ["GECX Agent"])
 
@@ -1158,7 +1170,7 @@ class GECXConnector(IVendorConnector):
 
     def start_conversation(
         self, conversation_id: str, request_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    ) -> Union[Dict[str, Any], list[Dict[str, Any]]]:
         self.logger.info(f"[GECX] Starting conversation: {conversation_id}")
         try:
             session_id = _make_ces_session_id()
@@ -1179,6 +1191,7 @@ class GECXConnector(IVendorConnector):
             welcome_text = "Connected to GECX agent"
             got_text = False
             welcome_audio = b""
+            ordered_greeting_responses: list[Dict[str, Any]] = []
             terminal_response: Optional[Dict[str, Any]] = None
             _, greeting_responses = stream_session.wait_for_turn_responses(
                 timeout=8.0, terminate_on_timeout=False
@@ -1186,6 +1199,8 @@ class GECXConnector(IVendorConnector):
             for response in greeting_responses:
                 if response.get("message_type") in {"transfer", "session_end"}:
                     terminal_response = response
+                else:
+                    ordered_greeting_responses.append(response)
                 if response.get("text") and not got_text:
                     welcome_text = response["text"]
                     got_text = True
@@ -1199,20 +1214,37 @@ class GECXConnector(IVendorConnector):
             # caller still hears the greeting.
             if not welcome_audio and stream_session._flush_audio_buffer():
                 for response in stream_session.drain_responses():
+                    if response.get("message_type") in {"transfer", "session_end"}:
+                        terminal_response = response
+                    else:
+                        ordered_greeting_responses.append(response)
                     if response.get("audio_content"):
                         welcome_audio = response["audio_content"]
 
             # CES may legitimately end or escalate during the initial turn.
-            # Preserve that first terminal decision instead of following it with
-            # a contradictory session-start response. Fold any greeting output
-            # received first into the one response shape start_conversation can
-            # return so the terminal event does not discard agent output.
+            # Preserve output and the terminal decision as ordered responses.
+            # WxCC skips prompt audio when TRANSFER_TO_AGENT shares its response.
             if terminal_response is not None:
-                if got_text:
-                    terminal_response["text"] = welcome_text
-                if welcome_audio:
-                    terminal_response["audio_content"] = welcome_audio
-                return terminal_response
+                terminal_response = dict(terminal_response)
+                if terminal_response.get("text") or terminal_response.get(
+                    "audio_content"
+                ):
+                    terminal_audio = terminal_response.get("audio_content", b"")
+                    ordered_greeting_responses.append(
+                        self.create_response(
+                            conversation_id=conversation_id,
+                            message_type=(
+                                "audio" if terminal_audio else "agent_response"
+                            ),
+                            text=terminal_response.get("text", ""),
+                            audio_content=terminal_audio,
+                            barge_in_enabled=False,
+                            response_type="final",
+                        )
+                    )
+                    terminal_response["text"] = ""
+                    terminal_response["audio_content"] = b""
+                return [*ordered_greeting_responses, terminal_response]
 
             return self.create_session_start_response(
                 conversation_id=conversation_id,

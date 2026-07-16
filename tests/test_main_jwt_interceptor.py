@@ -18,7 +18,23 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 # Import after path is set
-from main import create_jwt_interceptor
+from main import create_jwt_interceptor, create_streaming_executor
+
+
+def test_streaming_executor_is_attached_to_process_caller_input():
+    class TestServicer:
+        def ProcessCallerInput(self):
+            return None
+
+    servicer = TestServicer()
+    executor = create_streaming_executor(servicer, max_workers=7)
+    try:
+        assert (
+            servicer.ProcessCallerInput.experimental_thread_pool is executor
+        )
+        assert executor._max_workers == 7
+    finally:
+        executor.shutdown(wait=True)
 
 
 class TestCreateJWTInterceptor:

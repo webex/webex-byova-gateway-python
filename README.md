@@ -131,6 +131,9 @@ The gateway is configured via `config/config.yaml`. Key configuration sections:
 gateway:
   host: "0.0.0.0"
   port: 50051
+  streaming_max_workers: 100
+  # Safety ceiling; actual GECX terminal gating follows each WAV duration.
+  max_terminal_playback_seconds: 30
 
 # Connectors configuration
 connectors:
@@ -276,6 +279,10 @@ audio:
 - Multiple connectors can be configured simultaneously
 - Each connector must have a unique identifier (e.g., `local_audio_connector`, `aws_lex_connector`)
 - Connectors are loaded dynamically based on the `module` and `class` specified
+
+**Streaming Capacity**:
+- Bidirectional caller streams use the dedicated `streaming_max_workers` pool so long-lived calls do not consume the shared health and unary RPC executor
+- `max_terminal_playback_seconds` is a safety ceiling; GECX derives the actual terminal gate from each CES WAV response
 
 **AWS Credentials**:
 - Prefer environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) over hardcoded credentials
