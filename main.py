@@ -267,6 +267,16 @@ def create_jwt_interceptor(
             return None
 
 
+def create_streaming_executor(servicer, max_workers: int):
+    """Create and attach a dedicated executor for caller streaming RPCs."""
+    executor = futures.ThreadPoolExecutor(
+        max_workers=max_workers,
+        thread_name_prefix="byova-stream",
+    )
+    servicer.ProcessCallerInput.__func__.experimental_thread_pool = executor
+    return executor
+
+
 def main():
     """
     Main entry point for the BYOVA Gateway.
@@ -282,6 +292,7 @@ def main():
     server = None
     grpc_server = None
     data_source_lifecycle = None
+    streaming_executor = None
     try:
         # Select an environment-specific configuration when requested.
         config_path = os.environ.get("GATEWAY_CONFIG", "config/config.yaml")
@@ -302,17 +313,24 @@ def main():
         router.load_connectors(router_config)
         logger.info("Connectors loaded successfully")
 
+        # Get server configuration
+        gateway_config = config.get("gateway", {})
+
         # Create WxCCGatewayServer
         vad_config = config.get("voice_activity_detection", {})
-        server = WxCCGatewayServer(router, vad_config)
+        server = WxCCGatewayServer(
+            router,
+            vad_config,
+            max_terminal_playback_seconds=float(
+                gateway_config.get("max_terminal_playback_seconds", 30.0)
+            ),
+        )
         logger.info("WxCCGatewayServer created")
 
         # Create health service with router for real health monitoring
         health_service = HealthCheckService(router)
         logger.info("HealthCheckService created with real health monitoring")
 
-        # Get server configuration
-        gateway_config = config.get("gateway", {})
         host = gateway_config.get("host", "0.0.0.0")
         port = int(os.environ.get("PORT", gateway_config.get("port", 50051)))
 
@@ -359,6 +377,15 @@ def main():
                 ],
             )
             logger.info("gRPC server created without interceptors")
+
+        # Keep long-lived bidirectional caller streams, including response-
+        # derived playback waits, off the shared executor used by health and
+        # unary RPCs. gRPC Python selects this method-specific pool through the
+        # handler's supported experimental_thread_pool attribute.
+        streaming_executor = create_streaming_executor(
+            server,
+            int(gateway_config.get("streaming_max_workers", 100)),
+        )
 
         # Add servicer to the server
         add_VoiceVirtualAgentServicer_to_server(server, grpc_server)
@@ -472,6 +499,8 @@ def main():
             grpc_server.stop(grace=5)
             if data_source_lifecycle:
                 data_source_lifecycle.stop()
+            if streaming_executor:
+                streaming_executor.shutdown(wait=False, cancel_futures=True)
             logger.info("Gateway shutdown complete")
 
     except Exception as e:
@@ -481,6 +510,8 @@ def main():
             server.shutdown()
         if data_source_lifecycle:
             data_source_lifecycle.stop()
+        if streaming_executor:
+            streaming_executor.shutdown(wait=False, cancel_futures=True)
         if logger:
             logger.error(f"Failed to start gateway: {e}")
         else:

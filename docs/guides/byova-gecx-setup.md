@@ -273,10 +273,11 @@ Agent escalates ─► CES EndSession { metadata: {...} }
 
 ### 2. Discover exactly what your agent sends
 
-The connector logs the raw metadata on every session end:
+The connector logs metadata key names on every session end without logging
+their values:
 
 ```
-[<conv>] [GECX] EndSession metadata: {'reason': 'agent_requested_handoff', ...}
+[<conv>] [GECX] EndSession metadata keys: ['reason', 'session_escalated']
 ```
 
 Trigger one escalation, read that log line, and confirm your keys match. If they
@@ -289,6 +290,10 @@ no code change needed:
     transfer_reason_keywords: ["transfer", "escalat", "human", "handoff"]
     transfer_reason_metadata_keys: ["reason", "type", "action"]
 ```
+
+For short-lived debugging only, `log_raw_terminal_metadata_debug: true` exposes
+the full metadata at DEBUG level. Leave it disabled when metadata may contain
+customer data or sensitive identifiers.
 
 When detected, you'll see:
 
@@ -336,6 +341,7 @@ remains immediate.
 | `transfer_metadata_keys` | No | EndSession metadata keys that, when truthy, trigger a human transfer (see [Escalation](#escalation-to-a-human-agent)) |
 | `transfer_reason_keywords` | No | Substrings that, if found in a reason/type metadata value, trigger a transfer |
 | `transfer_reason_metadata_keys` | No | Which metadata keys are scanned for `transfer_reason_keywords` |
+| `log_raw_terminal_metadata_debug` | No | Log raw EndSession metadata at DEBUG level; defaults to `false` because values may be sensitive |
 
 ## Authentication options
 
@@ -376,7 +382,7 @@ Search gateway logs for `[GECX]`:
 - `Barge-in` — interruption signal from CES
 - `gecx_terminal_decision` — the winning lifecycle decision, with
   `conversation_id`, CES `session`, `reason`, `outcome`, `source`,
-  `elapsed_seconds`, and terminal metadata
+  `elapsed_seconds`, and terminal metadata key names
 - `gecx_duplicate_terminal_suppressed` — a later terminal signal was ignored
 - `gecx_late_input_suppressed` / `gecx_late_server_message_suppressed` — caller
   or CES data arrived after the terminal decision
