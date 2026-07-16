@@ -4,6 +4,11 @@
 gateway:
   host: "0.0.0.0"
   port: 50051
+  # Long-lived caller streams use a dedicated executor so they cannot starve
+  # health and unary RPCs on the shared gRPC worker pool.
+  streaming_max_workers: 100
+  # Safety ceiling only; the actual terminal gate is derived from each CES WAV.
+  max_terminal_playback_seconds: 30
 
 # Voice activity detection controls. The configured detector implementation is internal.
 voice_activity_detection:

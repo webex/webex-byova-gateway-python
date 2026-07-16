@@ -5,13 +5,15 @@ This module tests the gateway server's ability to handle both single responses
 and generator responses from connectors, as well as proper audio input processing.
 """
 
+import grpc
 import pytest
 from unittest.mock import MagicMock, patch, Mock
 from typing import Iterator, Dict, Any
 
-from src.core.wxcc_gateway_server import ConversationProcessor
+from src.core.wxcc_gateway_server import ConversationProcessor, WxCCGatewayServer
 from src.core.virtual_agent_router import VirtualAgentRouter
-from src.generated.voicevirtualagent_pb2 import VoiceInput
+from src.generated.byova_common_pb2 import EventInput
+from src.generated.voicevirtualagent_pb2 import VoiceInput, VoiceVARequest
 from src.utils.silero_speech_boundary import SpeechBoundarySignal
 
 
@@ -22,6 +24,7 @@ class TestConversationProcessor:
     def mock_router(self):
         """Create a mock router for testing."""
         router = MagicMock(spec=VirtualAgentRouter)
+        router.should_coalesce_speech_end_with_response.return_value = False
         return router
 
     @pytest.fixture
@@ -106,6 +109,43 @@ class TestConversationProcessor:
         assert responses[0].prompts[0].text == "Hello, how can I help you?"
         assert responses[0].prompts[0].audio_content == b"audio_response_bytes"
 
+    def test_initial_escalation_plays_audio_before_transfer(
+        self, processor, mock_router
+    ):
+        wav_audio = bytearray(44 + 8000)
+        wav_audio[:4] = b"RIFF"
+        wav_audio[8:12] = b"WAVE"
+        wav_audio[28:32] = (8000).to_bytes(4, "little")
+        wav_audio[36:40] = b"data"
+        wav_audio[40:44] = (8000).to_bytes(4, "little")
+        audio_response = {
+            "message_type": "audio",
+            "text": "Let me connect you now.",
+            "audio_content": bytes(wav_audio),
+            "barge_in_enabled": False,
+        }
+        terminal_response = {
+            "message_type": "transfer",
+            "text": "",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+        }
+        mock_router.route_request.return_value = iter(
+            [audio_response, terminal_response]
+        )
+        cancel_event = MagicMock()
+        cancel_event.wait.return_value = False
+        processor.set_stream_cancel_event(cancel_event)
+
+        responses = list(processor._start_conversation())
+
+        assert len(responses) == 2
+        assert responses[0].prompts[0].audio_content == bytes(wav_audio)
+        assert responses[0].output_events == []
+        assert responses[1].prompts == []
+        assert [event.event_type for event in responses[1].output_events] == [2]
+        cancel_event.wait.assert_called_once_with(1.0)
+
     def test_process_audio_input_uses_configured_rate_when_wxcc_omits_it(self, mock_router):
         processor = ConversationProcessor(
             conversation_id="test_conv_123",
@@ -174,6 +214,120 @@ class TestConversationProcessor:
             "speech_boundary": {"kind": "speech_ended"},
         }
 
+    def test_gateway_coalesces_gecx_speech_end_with_transfer_response(
+        self, processor, mock_router, mock_audio_input
+    ):
+        processor.speech_boundary_observer = MagicMock()
+        processor.speech_boundary_observer.observe.return_value = [
+            SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)
+        ]
+        wav_audio = bytearray(44 + 8000)
+        wav_audio[:4] = b"RIFF"
+        wav_audio[8:12] = b"WAVE"
+        wav_audio[28:32] = (8000).to_bytes(4, "little")
+        wav_audio[36:40] = b"data"
+        wav_audio[40:44] = (8000).to_bytes(4, "little")
+        wav_audio = bytes(wav_audio)
+        audio_response = {
+            "message_type": "audio",
+            "text": "Let me connect you now.",
+            "audio_content": wav_audio,
+            "barge_in_enabled": False,
+            "output_events": [],
+        }
+        transfer_response = {
+            "message_type": "transfer",
+            "text": "",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+            "output_events": [],
+        }
+        mock_router.route_request.side_effect = [
+            None,
+            iter([audio_response, transfer_response]),
+        ]
+        mock_router.should_observe_speech_boundaries.return_value = True
+        mock_router.should_coalesce_speech_end_with_response.return_value = True
+
+        cancel_event = MagicMock()
+        cancel_event.wait.return_value = False
+        processor.set_stream_cancel_event(cancel_event)
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        assert len(responses) == 2
+        assert responses[0].prompts[0].audio_content == wav_audio
+        assert [event.event_type for event in responses[0].output_events] == [5]
+        assert responses[1].prompts == []
+        assert [event.event_type for event in responses[1].output_events] == [2]
+        cancel_event.wait.assert_called_once_with(1.0)
+
+    def test_gateway_suppresses_delayed_terminal_after_stream_cancellation(
+        self, processor
+    ):
+        wav_audio = bytearray(44 + 8000)
+        wav_audio[:4] = b"RIFF"
+        wav_audio[8:12] = b"WAVE"
+        wav_audio[28:32] = (8000).to_bytes(4, "little")
+        wav_audio[36:40] = b"data"
+        wav_audio[40:44] = (8000).to_bytes(4, "little")
+        responses = iter(
+            [
+                {
+                    "message_type": "audio",
+                    "text": "Transferring now.",
+                    "audio_content": bytes(wav_audio),
+                },
+                {"message_type": "transfer", "text": "", "audio_content": b""},
+            ]
+        )
+        cancel_event = MagicMock()
+        cancel_event.wait.return_value = True
+        processor.set_stream_cancel_event(cancel_event)
+
+        grpc_responses = list(
+            processor._iter_grpc_connector_responses(
+                responses, delay_terminal_after_audio=True
+            )
+        )
+
+        assert len(grpc_responses) == 1
+        assert grpc_responses[0].prompts[0].audio_content == bytes(wav_audio)
+        cancel_event.wait.assert_called_once_with(1.0)
+
+    def test_gateway_caps_response_derived_terminal_playback_wait(self, processor):
+        wav_audio = bytearray(44 + 8000)
+        wav_audio[:4] = b"RIFF"
+        wav_audio[8:12] = b"WAVE"
+        wav_audio[28:32] = (8000).to_bytes(4, "little")
+        wav_audio[36:40] = b"data"
+        wav_audio[40:44] = (8000).to_bytes(4, "little")
+        cancel_event = MagicMock()
+        cancel_event.wait.return_value = False
+        processor.set_stream_cancel_event(cancel_event)
+        processor.max_terminal_playback_seconds = 0.25
+
+        list(
+            processor._iter_grpc_connector_responses(
+                iter(
+                    [
+                        {
+                            "message_type": "audio",
+                            "text": "Transferring now.",
+                            "audio_content": bytes(wav_audio),
+                        },
+                        {
+                            "message_type": "transfer",
+                            "text": "",
+                            "audio_content": b"",
+                        },
+                    ]
+                ),
+                delay_terminal_after_audio=True,
+            )
+        )
+
+        cancel_event.wait.assert_called_once_with(0.25)
+
     def test_gateway_skips_vad_during_connector_dtmf_mode(
         self, processor, mock_router, mock_audio_input
     ):
@@ -218,7 +372,7 @@ class TestConversationProcessor:
         mock_response = {
             "message_type": "transfer",
             "text": "Let me transfer you to a human agent.",
-            "audio_content": b"",
+            "audio_content": b"ces-transfer-audio",
             "barge_in_enabled": False,
             "response_type": "final"
         }
@@ -231,6 +385,8 @@ class TestConversationProcessor:
         assert len(responses) == 1
         response = responses[0]
         assert response.prompts[0].text == "Let me transfer you to a human agent."
+        assert response.prompts[0].audio_content == b"ces-transfer-audio"
+        assert response.prompts[0].is_barge_in_enabled is False
         
         # Verify TRANSFER_TO_AGENT event was created
         assert len(response.output_events) == 1
@@ -571,6 +727,7 @@ class TestConversationProcessor:
                 "conversation_id": "test_conv_123",
                 "virtual_agent_id": "test_agent_456",
                 "input_type": "conversation_end",
+                "termination_reason": "client_session_end",
             }
         )
 
@@ -616,6 +773,21 @@ class TestConversationProcessor:
         assert len(final_response.output_events) == 1
         assert final_response.output_events[0].event_type == 1  # SESSION_END
         assert final_response.output_events[0].name == "session_ended_by_client"
+
+    def test_cleanup_forwards_termination_reason(self, processor, mock_router):
+        processor.cleanup("client_half_close")
+
+        mock_router.route_request.assert_called_once_with(
+            "test_agent_456",
+            "end_conversation",
+            "test_conv_123",
+            {
+                "conversation_id": "test_conv_123",
+                "virtual_agent_id": "test_agent_456",
+                "input_type": "conversation_end",
+                "termination_reason": "client_half_close",
+            },
+        )
 
     def test_audio_input_field_access(self, processor, mock_router, mock_audio_input):
         """Test that audio input correctly accesses caller_audio field."""
@@ -918,3 +1090,186 @@ class TestConversationProcessor:
         # Verify metadata is empty protobuf Struct (protobuf default for message fields)
         assert event.metadata is not None
         # In protobuf, message fields can't be None, they default to empty message
+
+
+class TestClientStreamEndCleanup:
+    @staticmethod
+    def _session_start_request():
+        return VoiceVARequest(
+            conversation_id="stream-end-conv",
+            virtual_agent_id="GECX Agent",
+            event_input=EventInput(
+                event_type=EventInput.EventType.SESSION_START,
+                name="call_start",
+            ),
+        )
+
+    @staticmethod
+    def _session_start_response():
+        return {
+            "message_type": "session_start",
+            "text": "Connected",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+            "response_type": "final",
+        }
+
+    @staticmethod
+    def _custom_event_request():
+        return VoiceVARequest(
+            conversation_id="stream-end-conv",
+            virtual_agent_id="GECX Agent",
+            event_input=EventInput(
+                event_type=EventInput.EventType.CUSTOM_EVENT,
+                name="continue_call",
+            ),
+        )
+
+    def test_opted_in_connector_survives_half_close_and_reconnection(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        router.route_request.side_effect = [self._session_start_response(), None]
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+
+        first_responses = list(
+            server.ProcessCallerInput(iter([self._session_start_request()]), context)
+        )
+        second_responses = list(
+            server.ProcessCallerInput(iter([self._custom_event_request()]), context)
+        )
+
+        assert len(first_responses) == 1
+        assert second_responses == []
+        assert "stream-end-conv" in server.conversations
+        start_calls = [
+            call
+            for call in router.route_request.call_args_list
+            if len(call.args) > 1 and call.args[1] == "start_conversation"
+        ]
+        assert len(start_calls) == 1
+        end_calls = [
+            call
+            for call in router.route_request.call_args_list
+            if len(call.args) > 1 and call.args[1] == "end_conversation"
+        ]
+        assert end_calls == []
+
+    def test_reconnection_rejects_virtual_agent_mismatch(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        router.route_request.side_effect = [self._session_start_response()]
+        router.should_cleanup_on_client_stream_end.return_value = True
+        first_context = MagicMock()
+        first_context.is_active.return_value = True
+        second_context = MagicMock()
+        second_context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+
+        first_responses = list(
+            server.ProcessCallerInput(
+                iter([self._session_start_request()]), first_context
+            )
+        )
+        mismatched_request = VoiceVARequest(
+            conversation_id="stream-end-conv",
+            virtual_agent_id="Different Agent",
+            event_input=EventInput(
+                event_type=EventInput.EventType.CUSTOM_EVENT,
+                name="continue_call",
+            ),
+        )
+        second_responses = list(
+            server.ProcessCallerInput(iter([mismatched_request]), second_context)
+        )
+
+        assert len(first_responses) == 1
+        assert second_responses == []
+        second_context.set_code.assert_called_once_with(
+            grpc.StatusCode.INVALID_ARGUMENT
+        )
+        assert server.conversations["stream-end-conv"].virtual_agent_id == (
+            "GECX Agent"
+        )
+        start_calls = [
+            call
+            for call in router.route_request.call_args_list
+            if len(call.args) > 1 and call.args[1] == "start_conversation"
+        ]
+        assert len(start_calls) == 1
+
+    def test_opted_in_connector_cleans_up_cancelled_stream(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        router.route_request.side_effect = [self._session_start_response(), None]
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = False
+        server = WxCCGatewayServer(router)
+
+        responses = list(
+            server.ProcessCallerInput(iter([self._session_start_request()]), context)
+        )
+
+        assert len(responses) == 1
+        router.should_cleanup_on_client_stream_end.assert_called_with("GECX Agent")
+        router.route_request.assert_any_call(
+            "GECX Agent",
+            "end_conversation",
+            "stream-end-conv",
+            {
+                "conversation_id": "stream-end-conv",
+                "virtual_agent_id": "GECX Agent",
+                "input_type": "conversation_end",
+                "termination_reason": "client_cancelled",
+            },
+        )
+        assert "stream-end-conv" not in server.conversations
+
+    def test_opted_in_connector_cleans_up_request_stream_error(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        router.route_request.side_effect = [self._session_start_response(), None]
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+
+        def failing_requests():
+            yield self._session_start_request()
+            raise RuntimeError("request stream failed")
+
+        responses = list(server.ProcessCallerInput(failing_requests(), context))
+
+        assert len(responses) == 1
+        router.route_request.assert_any_call(
+            "GECX Agent",
+            "end_conversation",
+            "stream-end-conv",
+            {
+                "conversation_id": "stream-end-conv",
+                "virtual_agent_id": "GECX Agent",
+                "input_type": "conversation_end",
+                "termination_reason": "stream_error",
+            },
+        )
+        assert "stream-end-conv" not in server.conversations
+
+    def test_default_connector_behavior_keeps_conversation_for_reconnection(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        router.route_request.return_value = self._session_start_response()
+        router.should_cleanup_on_client_stream_end.return_value = False
+        context = MagicMock()
+        context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+
+        responses = list(
+            server.ProcessCallerInput(iter([self._session_start_request()]), context)
+        )
+
+        assert len(responses) == 1
+        assert "stream-end-conv" in server.conversations
+        end_calls = [
+            call
+            for call in router.route_request.call_args_list
+            if len(call.args) > 1 and call.args[1] == "end_conversation"
+        ]
+        assert end_calls == []
