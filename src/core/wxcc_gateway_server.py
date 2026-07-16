@@ -282,21 +282,49 @@ class ConversationProcessor:
                     },
                 )
                 if coalesce_speech_end:
-                    coalesced_responses = list(
-                        self._iter_grpc_connector_responses(
-                            boundary_response,
+                    is_iterator = (
+                        hasattr(boundary_response, "__iter__")
+                        and not isinstance(boundary_response, (dict, str, bytes))
+                    )
+                    if is_iterator:
+                        boundary_responses = list(boundary_response)
+                    elif boundary_response is None:
+                        boundary_responses = []
+                    else:
+                        boundary_responses = [boundary_response]
+
+                    has_terminal_response = any(
+                        isinstance(response, dict)
+                        and response.get("message_type") in {"transfer", "session_end"}
+                        for response in boundary_responses
+                    )
+
+                    if has_terminal_response:
+                        self.logger.info(
+                            "Coalescing END_OF_INPUT with terminal connector "
+                            "response for conversation %s",
+                            self.conversation_id,
+                        )
+                        yield from self._iter_grpc_connector_responses(
+                            boundary_responses,
                             additional_output_event=boundary_event,
                             delay_terminal_after_audio=True,
                         )
-                    )
-                    if coalesced_responses:
-                        yield from coalesced_responses
                     else:
+                        self.logger.info(
+                            "Emitting END_OF_INPUT before %d normal connector "
+                            "response(s) for conversation %s",
+                            len(boundary_responses),
+                            self.conversation_id,
+                        )
                         response = self._convert_connector_response_to_grpc(
                             boundary_connector_response
                         )
                         if response is not None:
                             yield response
+                        yield from self._iter_grpc_connector_responses(
+                            boundary_responses
+                        )
                 else:
                     yield from self._iter_grpc_connector_responses(
                         boundary_response, include_single_response=False

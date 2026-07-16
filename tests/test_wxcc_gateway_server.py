@@ -212,6 +212,44 @@ class TestConversationProcessor:
             "speech_boundary": {"kind": "speech_ended"},
         }
 
+    def test_gateway_sends_gecx_speech_end_before_normal_prompt(
+        self, processor, mock_router, mock_audio_input
+    ):
+        """Keep a normal GECX prompt separate from END_OF_INPUT."""
+        processor.speech_boundary_observer = MagicMock()
+        processor.speech_boundary_observer.observe.return_value = [
+            SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)
+        ]
+        wav_audio = bytearray(44 + 8000)
+        wav_audio[:4] = b"RIFF"
+        wav_audio[8:12] = b"WAVE"
+        wav_audio[28:32] = (8000).to_bytes(4, "little")
+        wav_audio[36:40] = b"data"
+        wav_audio[40:44] = (8000).to_bytes(4, "little")
+        wav_audio = bytes(wav_audio)
+        audio_response = {
+            "message_type": "audio",
+            "text": "What dates would you like to book?",
+            "audio_content": wav_audio,
+            "barge_in_enabled": False,
+            "output_events": [],
+        }
+        mock_router.route_request.side_effect = [
+            None,
+            iter([audio_response]),
+        ]
+        mock_router.should_observe_speech_boundaries.return_value = True
+        mock_router.should_coalesce_speech_end_with_response.return_value = True
+
+        responses = list(processor._process_audio_input(mock_audio_input))
+
+        assert len(responses) == 2
+        assert responses[0].prompts == []
+        assert [event.event_type for event in responses[0].output_events] == [5]
+        assert responses[1].prompts[0].audio_content == wav_audio
+        assert responses[1].prompts[0].text == "What dates would you like to book?"
+        assert responses[1].output_events == []
+
     def test_gateway_coalesces_gecx_speech_end_with_transfer_response(
         self, processor, mock_router, mock_audio_input
     ):
