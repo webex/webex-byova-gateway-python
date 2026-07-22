@@ -284,9 +284,10 @@ export AUTHORIZED_WEBEX_ORG_IDS="Y2lzY29zcGFyazovL3VzL09SR0FOSVpBVElPTi8xMjM0NTY
 
 ## Next Steps
 
-- Review the [main README](README.md#authentication-setup) for production deployment
 - Check [monitoring README](src/monitoring/README.md#authentication) for detailed auth flow
-- Set up AWS Secrets Manager for production (see main README)
+- Review [Production Readiness](docs/PRODUCTION_READINESS.md) before exposing the dashboard
+  in a production environment
+- Store production secrets in your organization's approved secret-management service
 
 ## Support
 
@@ -294,4 +295,3 @@ For issues or questions:
 1. Check the [monitoring README troubleshooting section](src/monitoring/README.md#troubleshooting-authentication)
 2. Review [Webex OAuth documentation](https://developer.webex.com/docs/integrations)
 3. Create an issue in the repository
-

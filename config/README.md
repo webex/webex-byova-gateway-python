@@ -1,144 +1,80 @@
-# Configuration
+# Gateway Configuration
 
-This directory contains configuration files for the Webex Contact Center BYOVA Gateway, providing centralized management of gateway settings, connectors, and system behavior.
+`config/config.yaml` is the configuration file loaded by `main.py`. This reference documents
+the settings used by the current sample implementation. Connector-specific options are
+documented with their connectors.
 
-## Configuration Files
+The gateway does not perform general `${ENV_VAR}` substitution inside YAML. Environment
+variables are used directly by specific components, including Webex OAuth and the standard
+AWS credential chain.
 
-### `config.yaml`
-
-The main configuration file that defines all gateway settings:
-
-- **Connectors**: Vendor connector implementations and their settings
-- **Gateway Settings**: Global gateway configuration and behavior
-- **Monitoring**: Web interface and metrics configuration
-- **Logging**: Log file settings, levels, and formatting
-- **Session Management**: Timeout, cleanup, and session limits
-- **Audio Processing**: Supported formats, limits, and processing options
-- **Security**: Authentication, encryption, and access control settings
-
-## Configuration Structure
-
-### Gateway Settings
+## Gateway Listener
 
 ```yaml
-# Gateway configuration
 gateway:
   host: "0.0.0.0"
   port: 50051
-  max_workers: 10
-  timeout: 30
-  enable_tls: false
-  cert_file: ""
-  key_file: ""
 ```
 
-### Connectors Section
+`host` and `port` control the insecure application listener. Production deployments should
+place it behind an approved TLS boundary or add an appropriate secure listener. See
+[Security Configuration](../docs/Security-Configuration.md).
 
-Each connector is defined with comprehensive settings:
+The gRPC worker count, maximum message sizes, and concurrent-stream option are currently set
+in `main.py`; values elsewhere in YAML are not production capacity controls.
+
+## Voice Activity Detection
+
+```yaml
+voice_activity_detection:
+  threshold: 0.5
+  start_debounce_ms: 96
+  end_silence_ms: 1000
+  fallback_sample_rate_hertz: 8000
+```
+
+These values configure the gateway's speech-boundary observer for each conversation.
+`fallback_sample_rate_hertz` is used only when WxCC omits the input sample rate. Changes to
+the threshold or timing values affect turn boundaries and caller experience, so validate
+them with representative audio and latency tests before deployment.
+
+## Connectors
+
+Connectors are keyed dictionaries:
 
 ```yaml
 connectors:
-  - name: "connector_name"           # Unique identifier
-    type: "connector_type"           # Connector type
-    class: "ClassName"               # Python class name
-    module: "module.path"            # Python module path
-    enabled: true                    # Enable/disable connector
-    config:                          # Connector-specific settings
-      key1: "value1"
-      key2: "value2"
-      api_key: "${API_KEY}"          # Environment variable substitution
-      endpoint: "${VENDOR_ENDPOINT}"
-    agents:                          # List of agent IDs this connector provides
-      - "Agent 1"
-      - "Agent 2"
-    health_check:                    # Health check configuration
-      enabled: true
-      interval: 30
-      timeout: 5
-```
-
-### Monitoring Configuration
-
-```yaml
-monitoring:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8080
-  debug: false
-  metrics_enabled: true
-  health_check_interval: 30
-  cors_enabled: true
-  allowed_origins:
-    - "http://localhost:3000"
-    - "https://yourdomain.com"
-```
-
-### Logging Configuration
-
-```yaml
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  handlers:
-    - type: "console"
-      level: "INFO"
-    - type: "file"
-      filename: "logs/gateway.log"
-      level: "DEBUG"
-      max_bytes: 10485760  # 10MB
-      backup_count: 5
-  loggers:
-    grpc: "WARNING"
-    urllib3: "WARNING"
-```
-
-### Session Management
-
-```yaml
-sessions:
-  timeout: 300                    # Session timeout in seconds
-  cleanup_interval: 60           # Cleanup interval in seconds
-  max_sessions: 1000             # Maximum concurrent sessions
-  max_session_duration: 3600     # Maximum session duration
-  enable_auto_cleanup: true      # Enable automatic session cleanup
-```
-
-## Environment Variable Support
-
-Configuration supports environment variable substitution for sensitive data:
-
-```yaml
-config:
-  api_key: "${API_KEY}"             # Will be replaced with environment variable
-  endpoint: "${VENDOR_ENDPOINT}"
-  database_url: "${DATABASE_URL}"
-  secret_key: "${SECRET_KEY}"
-```
-
-### Environment Variable Loading
-
-The gateway supports multiple ways to load environment variables:
-
-1. **System Environment**: Variables set in the system environment (e.g., via `export` command)
-2. **Docker Environment**: Container environment variables
-3. **Kubernetes Secrets**: Kubernetes secret management
-4. **AWS Secrets Manager**: Production secret management (recommended for production)
-
-**Note**: This gateway **does NOT use `.env` files**. For development, set environment variables directly using `export` commands or add them to your shell profile. For production, use a secret management service.
-
-## Example Connectors
-
-### Local Audio Connector
-
-**Purpose**: Testing and development with local audio files
-
-```yaml
-connectors:
-  - name: "my_local_test_agent"
+  local_audio_connector:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
-    enabled: true
+    config:
+      agent_id: "Local Playback"
+      audio_base_path: "audio"
+```
+
+The loader requires each connector to provide `class` and `module`; an omitted `config`
+mapping defaults to an empty dictionary. It dynamically imports `src.<module>`, verifies
+that the class implements `IVendorConnector`, and registers the agents returned by the
+connector.
+
+Available connector documentation:
+
+- [Connector interface and development](../src/connectors/README.md)
+- [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
+- [AWS Lex configuration](../docs/AWS_LEX_CONFIGURATION.md)
+- `config/aws_lex_example.yaml`
+
+### Local Audio Connector
+
+The checked-in configuration maps response types to the audio files included in `audio/`:
+
+```yaml
+connectors:
+  local_audio_connector:
+    type: "local_audio_connector"
+    class: "LocalAudioConnector"
+    module: "connectors.local_audio_connector"
     config:
       agent_id: "Local Playback"
       audio_base_path: "audio"
@@ -148,254 +84,144 @@ connectors:
         goodbye: "goodbye.wav"
         error: "error.wav"
         default: "default_response.wav"
-      playback_settings:
-        volume: 1.0
-        speed: 1.0
-        format: "wav"
 ```
 
-### Vendor X Connector (Example)
+Use `agent_id`, not an `agents` list, to change the advertised local agent name. See
+[Local Audio Connector Configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md) for the local
+and end-to-end sandbox test paths.
 
-**Purpose**: Integration with Vendor X platform
+### AWS Credentials
 
-```yaml
-connectors:
-  - name: "vendor_x_connector"
-    type: "vendor_x"
-    class: "VendorXConnector"
-    module: "connectors.vendor_x_connector"
-    enabled: true
-    config:
-      api_key: "${VENDOR_X_API_KEY}"
-      endpoint: "${VENDOR_X_ENDPOINT}"
-      timeout: 30
-      retry_attempts: 3
-      authentication:
-        type: "bearer"
-        token: "${VENDOR_X_TOKEN}"
-      features:
-        speech_to_text: true
-        text_to_speech: true
-        natural_language: true
-    agents:
-      - "Vendor X Agent 1"
-      - "Vendor X Agent 2"
-```
+The AWS Lex connector uses the standard AWS SDK credential chain. Prefer workload roles or
+short-lived credentials. For local development, supported SDK sources include environment
+variables, AWS shared configuration, and AWS SSO.
 
-### OpenAI Connector (Example)
+Do not put production access keys in `config.yaml`.
 
-**Purpose**: AI-powered virtual agents
+## Monitoring Server
 
 ```yaml
-connectors:
-  - name: "openai_connector"
-    type: "openai"
-    class: "OpenAIConnector"
-    module: "connectors.openai_connector"
-    enabled: true
-    config:
-      api_key: "${OPENAI_API_KEY}"
-      model: "gpt-4"
-      max_tokens: 1000
-      temperature: 0.7
-      system_prompt: "You are a helpful virtual assistant."
-      features:
-        conversation_memory: true
-        context_awareness: true
-        multi_language: true
-    agents:
-      - "AI Assistant"
-      - "Customer Support Bot"
-```
-
-## Configuration Loading
-
-The gateway loads configuration in this order:
-
-1. **Default Configuration**: Built-in defaults for all settings
-2. **Config File**: `config/config.yaml` (overrides defaults)
-3. **Environment Variables**: Override specific settings
-4. **Command Line Arguments**: Final overrides for runtime settings
-
-### Configuration Validation
-
-Configuration is validated on startup:
-
-- **Required Fields**: Ensure all required fields are present
-- **Connector Classes**: Verify connector classes can be imported
-- **File Existence**: Check that referenced files exist (audio files, certificates)
-- **Network Connectivity**: Test API endpoints for remote connectors
-- **Type Validation**: Validate data types and value ranges
-
-### Configuration Hot Reloading
-
-The gateway supports hot reloading of certain configuration sections:
-
-```yaml
-# Enable hot reloading
-config:
-  hot_reload:
-    enabled: true
-    watch_interval: 30
-    reloadable_sections:
-      - "logging"
-      - "monitoring"
-      - "sessions"
-```
-
-## Security Configuration
-
-### Authentication and Authorization
-
-```yaml
-security:
-  authentication:
-    enabled: true
-    type: "jwt"
-    secret_key: "${JWT_SECRET_KEY}"
-    token_expiry: 3600
-  authorization:
-    enabled: true
-    roles:
-      - "admin"
-      - "operator"
-      - "viewer"
-  encryption:
-    enabled: true
-    algorithm: "AES-256-GCM"
-    key: "${ENCRYPTION_KEY}"
-```
-
-### Network Security
-
-```yaml
-network:
-  tls:
-    enabled: false
-    cert_file: "certs/server.crt"
-    key_file: "certs/server.key"
-    ca_file: "certs/ca.crt"
-  firewall:
-    allowed_ips:
-      - "192.168.1.0/24"
-      - "10.0.0.0/8"
-  rate_limiting:
-    enabled: true
-    requests_per_minute: 100
-    burst_size: 20
-```
-
-## Performance Configuration
-
-### Resource Limits
-
-```yaml
-performance:
-  memory:
-    max_heap_size: "2G"
-    gc_threshold: 0.8
-  cpu:
-    max_threads: 10
-    thread_pool_size: 20
-  network:
-    connection_timeout: 30
-    read_timeout: 60
-    write_timeout: 60
-  caching:
-    enabled: true
-    max_size: 1000
-    ttl: 3600
-```
-
-### Monitoring and Metrics
-
-```yaml
-metrics:
+monitoring:
   enabled: true
-  prometheus:
-    enabled: true
-    port: 9090
-    path: "/metrics"
-  health_checks:
-    enabled: true
-    interval: 30
-    timeout: 5
-  alerting:
-    enabled: true
-    webhook_url: "${ALERT_WEBHOOK_URL}"
+  host: "0.0.0.0"
+  port: 8080
+  debug: false
 ```
 
-## Troubleshooting
+`enabled`, `host`, `port`, and `debug` control the Flask monitoring server started by
+`main.py`. The checked-in YAML also contains `metrics_enabled` and
+`health_check_interval`, but the current sample does not expose an instrumented production
+metrics endpoint or schedule health checks from those values.
 
-### Common Issues
+See [Monitoring Interface](../src/monitoring/README.md).
 
-1. **Missing Connector Class**: Ensure the Python class exists and is importable
-2. **Invalid Configuration**: Check YAML syntax and required fields
-3. **Missing Audio Files**: Verify audio files exist for local connector
-4. **Network Issues**: Check API endpoints for remote connectors
-5. **Permission Errors**: Verify file permissions for logs and certificates
-6. **Environment Variables**: Ensure environment variables are properly set
+## Monitoring Dashboard Authentication
 
-### Debug Mode
+```yaml
+authentication:
+  enabled: true
+  environment: "dev"
+  session:
+    timeout_hours: 24
+    secret_key_env: "FLASK_SECRET_KEY"
+  webex_oauth:
+    scopes: "openid email profile"
+    state: "byova_gateway_auth"
+```
 
-Enable debug logging to see detailed configuration loading:
+When enabled, the monitoring application reads:
+
+- `FLASK_SECRET_KEY`, or the environment variable named by `secret_key_env`
+- `WEBEX_CLIENT_ID`
+- `WEBEX_CLIENT_SECRET`
+- `WEBEX_REDIRECT_URI`
+- `AUTHORIZED_WEBEX_ORG_IDS`
+
+See [Authentication Quick Start](../AUTHENTICATION_QUICKSTART.md). This authentication is
+separate from JWT validation on the gRPC data plane.
+
+## gRPC JWT Validation
+
+```yaml
+jwt_validation:
+  enabled: true
+  enforce_validation: true
+  datasource_url: "https://your-gateway.example.com:443"
+  datasource_schema_uuid: "5397013b-7920-4ffc-807c-e8a3e0a18f43"
+  cache_duration_minutes: 60
+```
+
+When enabled, `datasource_url` is required and must exactly match the registered data-source
+URL. The gateway will not start with an empty value.
+
+See [gRPC JWT Authentication](../docs/JWT_AUTHENTICATION.md) for claims, issuers, deployment
+modes, and troubleshooting.
+
+## Logging
 
 ```yaml
 logging:
-  level: "DEBUG"
-  handlers:
-    - type: "console"
-      level: "DEBUG"
-    - type: "file"
-      filename: "logs/config_debug.log"
-      level: "DEBUG"
+  gateway:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/gateway.log"
+  web:
+    level: "WARNING"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/web.log"
 ```
 
-### Configuration Validation
+The current logging setup uses the configured level, format, and file. Although the sample
+YAML contains `max_size` and `backup_count`, `main.py` currently uses a plain `FileHandler`,
+so those values do not rotate files.
 
-```bash
-# Validate configuration syntax
-python -c "
-import yaml
-with open('config/config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
-print('Configuration is valid')
-"
+Production services should use structured, centralized logging as described in
+[Production Readiness](../docs/PRODUCTION_READINESS.md).
 
-# Check for missing environment variables
-python -c "
-import os
-import yaml
-with open('config/config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
-# Check for ${VARIABLE} patterns
-"
+## Sample Placeholder Sections
+
+The checked-in YAML includes top-level `sessions` and `audio.supported_formats` sections.
+They describe intended sample settings, but `main.py` and `WxCCGatewayServer` do not currently
+enforce those values as session, concurrency, cleanup, or codec limits. Do not use them for
+capacity planning or production safety controls.
+
+Connector-level audio settings, such as AWS Lex `audio_logging` and `audio_buffering`, are
+read by the relevant connector implementation.
+
+## Local Development Settings
+
+For a local-only run that is not connected to Webex:
+
+```yaml
+authentication:
+  enabled: false
+
+jwt_validation:
+  enabled: false
 ```
 
-## Best Practices
+Do not use disabled authentication for a public or production endpoint. See
+[Local Development](../docs/LOCAL_DEVELOPMENT.md).
 
-### Configuration Management
+## Validation and Troubleshooting
 
-- **Version Control**: Keep configuration in version control
-- **Environment Separation**: Use different configs for dev/staging/prod
-- **Sensitive Data**: Use environment variables for secrets
-- **Documentation**: Document all configuration options
-- **Validation**: Implement configuration validation
+At startup, the application validates YAML parsing, connector `class` and `module` fields,
+and the required datasource URL when JWT validation is enabled. Individual connectors may
+perform additional validation.
 
-### Security
+Common checks:
 
-- **Secret Management**: Use proper secret management systems
-- **Access Control**: Limit access to configuration files
-- **Encryption**: Encrypt sensitive configuration data
-- **Audit Logging**: Log configuration changes
+- Confirm YAML indentation and mapping structure.
+- Confirm connector module paths are relative to `src/`.
+- Confirm configured audio files exist under `audio/`.
+- Confirm AWS credentials and region through the standard AWS SDK chain.
+- Confirm the datasource URL exactly matches the registered value.
+- Review `logs/gateway.log` and standard output for startup failures.
 
-### Performance
+## Related Documentation
 
-- **Caching**: Cache configuration data appropriately
-- **Lazy Loading**: Load configuration sections on demand
-- **Validation**: Validate configuration early in startup
-- **Monitoring**: Monitor configuration-related metrics
-
-## License
-
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.
+- [Local development](../docs/LOCAL_DEVELOPMENT.md)
+- [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
+- [JWT authentication](../docs/JWT_AUTHENTICATION.md)
+- [Testing](../docs/TESTING.md)
+- [Return to the project README](../README.md)
