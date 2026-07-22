@@ -39,7 +39,10 @@ The sample includes:
 > [BYOVA with AWS Lex guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex).
 > It covers Webex organization enablement, the voice agent, public hosting, Service App
 > authorization, data-source registration, gateway configuration, and the Contact Center
-> call flow. The abbreviated steps below only install and run the gateway code.
+> call flow. If you have not selected a provider, use the
+> [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md) guide for a
+> vendor-neutral end-to-end validation. The abbreviated steps below only install and run
+> the gateway code.
 
 ### Webex Prerequisites for End-to-End Testing
 
@@ -58,8 +61,9 @@ Before WxCC can connect to this gateway, you need:
 
 If any of these items are missing, stop here and use the
 [full setup guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
-before attempting an end-to-end call. The registered data-source URL must also exactly match
-`jwt_validation.datasource_url` in `config/config.yaml`.
+or the [local audio guide](docs/LOCAL_AUDIO_CONFIGURATION.md), depending on the connector you
+are evaluating, before attempting an end-to-end call. The registered data-source URL must
+also exactly match `jwt_validation.datasource_url` in `config/config.yaml`.
 
 ### Local Software Prerequisites
 

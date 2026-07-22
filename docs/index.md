@@ -31,7 +31,7 @@ A fully functional voice AI system where customers can:
 - **gRPC Integration**: Seamless communication with Webex Contact Center
 - **Modular Architecture**: Easy to extend with new virtual agent providers
 - **Real-time Monitoring**: Web dashboard for debugging and monitoring
-- **Multiple Connectors**: Support for local audio testing and AWS Lex production
+- **Multiple Connectors**: Support for local audio testing and AWS Lex integration
 - **Comprehensive Logging**: Detailed logs for troubleshooting and analysis
 
 ## 📚 Documentation

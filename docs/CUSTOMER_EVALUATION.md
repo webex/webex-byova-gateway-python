@@ -83,7 +83,8 @@ follow the
 
 ## Recommended Proof of Concept
 
-1. Run this gateway with the local audio connector to validate the Webex-facing setup.
+1. Follow the [Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md) guide to
+   validate the Webex-facing setup without a voice-agent provider.
 2. Implement a connector for the existing voice-agent API or streaming interface.
 3. Verify agent discovery and complete a live end-to-end test call.
 4. Validate caller speech, response audio, DTMF, cancellation, normal termination, and
@@ -100,6 +101,7 @@ engineering and operational work required for production.
 ## Next Steps
 
 - [Set up the gateway locally](LOCAL_DEVELOPMENT.md)
+- [Validate with the local audio connector](LOCAL_AUDIO_CONFIGURATION.md)
 - [Configure gRPC JWT authentication](JWT_AUTHENTICATION.md)
 - [Review the AWS Lex example](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
 - [Return to the project README](../README.md)

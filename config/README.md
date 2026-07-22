@@ -23,6 +23,21 @@ place it behind an approved TLS boundary or add an appropriate secure listener. 
 The gRPC worker count, maximum message sizes, and concurrent-stream option are currently set
 in `main.py`; values elsewhere in YAML are not production capacity controls.
 
+## Voice Activity Detection
+
+```yaml
+voice_activity_detection:
+  threshold: 0.5
+  start_debounce_ms: 96
+  end_silence_ms: 1000
+  fallback_sample_rate_hertz: 8000
+```
+
+These values configure the gateway's speech-boundary observer for each conversation.
+`fallback_sample_rate_hertz` is used only when WxCC omits the input sample rate. Changes to
+the threshold or timing values affect turn boundaries and caller experience, so validate
+them with representative audio and latency tests before deployment.
+
 ## Connectors
 
 Connectors are keyed dictionaries:
@@ -34,8 +49,8 @@ connectors:
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
     config:
-      agents:
-        - "Local Playback"
+      agent_id: "Local Playback"
+      audio_base_path: "audio"
 ```
 
 The loader requires each connector to provide `class` and `module`; an omitted `config`
@@ -46,6 +61,7 @@ connector.
 Available connector documentation:
 
 - [Connector interface and development](../src/connectors/README.md)
+- [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
 - [AWS Lex configuration](../docs/AWS_LEX_CONFIGURATION.md)
 - `config/aws_lex_example.yaml`
 
@@ -60,15 +76,19 @@ connectors:
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
     config:
+      agent_id: "Local Playback"
+      audio_base_path: "audio"
       audio_files:
         welcome: "welcome.wav"
         transfer: "transferring.wav"
         goodbye: "goodbye.wav"
         error: "error.wav"
         default: "default_response.wav"
-      agents:
-        - "Local Playback"
 ```
+
+Use `agent_id`, not an `agents` list, to change the advertised local agent name. See
+[Local Audio Connector Configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md) for the local
+and end-to-end sandbox test paths.
 
 ### AWS Credentials
 
@@ -201,6 +221,7 @@ Common checks:
 ## Related Documentation
 
 - [Local development](../docs/LOCAL_DEVELOPMENT.md)
+- [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
 - [JWT authentication](../docs/JWT_AUTHENTICATION.md)
 - [Testing](../docs/TESTING.md)
 - [Return to the project README](../README.md)

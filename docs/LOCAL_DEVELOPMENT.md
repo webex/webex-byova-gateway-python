@@ -13,10 +13,11 @@ Always use a virtual environment for this project.
 These local prerequisites are sufficient only for running the code and its local connector.
 An end-to-end WxCC test also requires a BYOVA-enabled organization, an authorized Service
 App, a public TLS-enabled gateway URL, an `ACTIVE` data-source registration for that exact
-URL, a configured external voice agent, and a Contact Center flow using Virtual Agent V2.
-Follow the complete
+URL, a configured gateway connector, and a Contact Center flow using Virtual Agent V2.
+Use the [Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md) guide for a
+vendor-neutral sandbox validation. For a complete AWS Lex integration, follow the
 [BYOVA with AWS Lex guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
-for the recommended onboarding sequence before attempting an end-to-end call.
+before attempting an end-to-end call.
 
 ## Install
 
@@ -79,7 +80,9 @@ testing, configure the registered datasource URL and keep JWT enforcement enable
 described in [JWT Authentication](JWT_AUTHENTICATION.md).
 
 The default local audio files are included in `audio/`, so no additional media setup is
-required for the local connector.
+required for the local connector. See
+[Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md) for its `agent_id`,
+audio path, DTMF behavior, and end-to-end sandbox flow.
 
 ## Run the Gateway
 
@@ -199,6 +202,7 @@ unsafe payload or audio logging with customer traffic.
 ## Related Documentation
 
 - [Configuration](../config/README.md)
+- [Local audio connector configuration](LOCAL_AUDIO_CONFIGURATION.md)
 - [Testing](TESTING.md)
 - [Connector development](../src/connectors/README.md)
 - [Return to the project README](../README.md)

@@ -138,6 +138,11 @@ disabling enforcement:
 
 ## End-to-End Validation
 
+A first vendor-neutral sandbox call can use the
+[Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md) guide. It validates
+agent discovery, prompt playback, DTMF transfer, and conversation termination without an
+external voice-agent account.
+
 A production-candidate connector needs more than unit and health tests. Validate:
 
 - Agent discovery and conversation start
@@ -155,5 +160,6 @@ operational launch criteria.
 
 - [Detailed test-suite notes](../tests/README.md)
 - [Local development](LOCAL_DEVELOPMENT.md)
+- [Local audio connector configuration](LOCAL_AUDIO_CONFIGURATION.md)
 - [JWT authentication](JWT_AUTHENTICATION.md)
 - [Return to the project README](../README.md)
