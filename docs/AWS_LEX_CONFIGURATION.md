@@ -2,6 +2,10 @@
 
 The AWS Lex connector integrates with AWS Lex v2 bots to provide virtual agent capabilities.
 
+If you have a Webex Contact Center sandbox but have not selected a voice-agent
+provider, start with the [Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md)
+guide instead. It validates the vendor-neutral BYOVA path without an AWS account.
+
 ## Configuration Options
 
 ### Required

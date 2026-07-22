@@ -23,14 +23,14 @@ connectors:
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
     config:
+      agent_id: "Local Playback"
+      audio_base_path: "audio"
       audio_files:
         welcome: "welcome.wav"
         transfer: "transferring.wav"
         goodbye: "goodbye.wav"
         error: "error.wav"
         default: "default_response.wav"
-      agents:
-        - "Local Playback"
 
   # AWS Lex Connector
   aws_lex_connector:
