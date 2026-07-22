@@ -1332,6 +1332,15 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 # Track message event
                 self.add_connection_event("message", conversation_id, agent_id)
 
+                if processor.can_be_deleted:
+                    stream_end_reason = "server_terminal"
+                    self.logger.info(
+                        "Completing WxCC response stream after terminal response "
+                        "for conversation %s",
+                        conversation_id,
+                    )
+                    break
+
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.CANCELLED:
                 stream_end_reason = "client_cancelled"
@@ -1359,7 +1368,8 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 processor = self.conversations[conversation_id]
                 agent_id = processor.virtual_agent_id
                 cleanup_on_stream_end = (
-                    stream_end_reason != "client_half_close"
+                    not processor.can_be_deleted
+                    and stream_end_reason != "client_half_close"
                     and self.router.should_cleanup_on_client_stream_end(agent_id)
                     is True
                 )
