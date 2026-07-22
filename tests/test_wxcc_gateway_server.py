@@ -403,6 +403,25 @@ class TestConversationProcessor:
         event = response.output_events[0]
         assert event.event_type == 1  # SESSION_END
         assert event.name == "session_ended"
+        assert response.input_mode == 0  # INPUT_VOICE_MODE_UNSPECIFIED
+        assert not response.HasField("input_handling_config")
+
+    def test_empty_session_end_is_terminal_only_response(self, processor):
+        """SESSION_END must not request another caller input turn."""
+        response = processor._convert_connector_response_to_grpc(
+            {
+                "message_type": "session_end",
+                "text": "",
+                "audio_content": b"",
+                "response_type": "final",
+            }
+        )
+
+        assert response is not None
+        assert [field.name for field, _ in response.ListFields()] == ["output_events"]
+        assert response.output_events[0].event_type == 1  # SESSION_END
+        assert response.output_events[0].name == "session_ended"
+        assert processor.can_be_deleted is True
 
     def test_process_audio_input_with_transfer_to_agent_event(self, processor, mock_router, mock_audio_input):
         """Test processing audio input with TRANSFER_TO_AGENT event from connector."""
