@@ -6,7 +6,9 @@ A Python-based gateway for Webex Contact Center (WxCC) that provides virtual age
 
 ## 📚 Documentation
 
-**Complete Setup Guide**: [BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
+**Start without a voice-agent vendor**: [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md)
+
+**Complete AWS Lex Setup Guide**: [BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
 
 This comprehensive guide walks you through:
 - Setting up a Webex Contact Center sandbox
@@ -137,14 +139,14 @@ connectors:
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
     config:
+      agent_id: "Local Playback"
+      audio_base_path: "audio"
       audio_files:
         welcome: "welcome.wav"
         transfer: "transferring.wav"
         goodbye: "goodbye.wav"
         error: "error.wav"
         default: "default_response.wav"
-      agents:
-        - "Local Playback"
 
   # AWS Lex Connector - integrates with Amazon Lex bots
   aws_lex_connector:
@@ -671,7 +673,7 @@ byova.VoiceVirtualAgentService: SERVING (1)
 This gateway supports multiple virtual agent connectors. Each connector has its own documentation:
 
 - **[Connectors Overview](src/connectors/README.md)**: Complete guide to all available connectors and how to create new ones
-- **[Local Audio Connector](src/connectors/README.md#local-audio-connector-local_audio_connectorpy)**: Testing and development with local audio files
+- **[Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md)**: Validate BYOVA with a Contact Center sandbox before choosing a voice-agent vendor
 - **[AWS Lex Connector](src/connectors/README.md#aws-lex-connector-aws_lex_connectorpy)**: Production integration with Amazon Lex v2
 - **[Audio Files Guide](audio/README.md)**: Audio file formats, organization, and configuration
 

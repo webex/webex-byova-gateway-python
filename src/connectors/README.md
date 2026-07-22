@@ -53,6 +53,9 @@ class IVendorConnector(ABC):
 
 **Purpose**: Testing and development with local audio files
 
+For a step-by-step local smoke test and Webex Contact Center sandbox setup, see
+the [Local Audio Connector Configuration Guide](../../docs/LOCAL_AUDIO_CONFIGURATION.md).
+
 **Features**:
 - Plays predefined audio files for different scenarios
 - Simulates virtual agent responses
@@ -243,4 +246,4 @@ logging:
 
 ## License
 
-This code is licensed under the [Cisco Sample Code License v1.1](LICENSE). See the main project README for details. 
+This code is licensed under the [Cisco Sample Code License v1.1](LICENSE). See the main project README for details.

@@ -4,6 +4,9 @@ Welcome to the comprehensive documentation for the Webex Contact Center BYOVA (B
 
 ## 📚 Setup Guides
 
+### Start Without a Voice-Agent Vendor
+- **[Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md)** - Validate the gateway and a Webex Contact Center sandbox with bundled audio before choosing a provider
+
 ### Complete Integration Guide
 - **[BYOVA with AWS Lex Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Step-by-step guide for setting up voice AI with Webex Contact Center and AWS Lex
 
