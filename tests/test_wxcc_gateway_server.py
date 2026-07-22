@@ -1178,6 +1178,80 @@ class TestClientStreamEndCleanup:
             ),
         )
 
+    @pytest.mark.parametrize(
+        ("message_type", "expected_event_type"),
+        [("session_end", 1), ("transfer", 2)],
+    )
+    def test_server_terminal_response_completes_stream(
+        self, message_type, expected_event_type
+    ):
+        router = MagicMock(spec=VirtualAgentRouter)
+
+        def route_request(agent_id, operation, conversation_id, message_data):
+            if operation == "start_conversation":
+                return {
+                    "message_type": message_type,
+                    "text": "",
+                    "audio_content": b"",
+                    "response_type": "final",
+                }
+            if operation == "end_conversation":
+                return None
+            raise AssertionError(f"Unexpected operation: {operation}")
+
+        router.route_request.side_effect = route_request
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+        consumed_second_request = False
+
+        def requests():
+            nonlocal consumed_second_request
+            yield self._session_start_request()
+            consumed_second_request = True
+            yield self._custom_event_request()
+
+        responses = list(server.ProcessCallerInput(requests(), context))
+
+        assert len(responses) == 1
+        assert responses[0].output_events[0].event_type == expected_event_type
+        assert consumed_second_request is False
+        assert "stream-end-conv" not in server.conversations
+        router.route_request.assert_any_call(
+            "GECX Agent",
+            "end_conversation",
+            "stream-end-conv",
+            {
+                "conversation_id": "stream-end-conv",
+                "virtual_agent_id": "GECX Agent",
+                "input_type": "conversation_end",
+                "termination_reason": "completed",
+            },
+        )
+        router.should_cleanup_on_client_stream_end.assert_not_called()
+
+    def test_nonterminal_response_keeps_request_stream_open(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        router.route_request.side_effect = [self._session_start_response(), None]
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+        consumed_second_request = False
+
+        def requests():
+            nonlocal consumed_second_request
+            yield self._session_start_request()
+            consumed_second_request = True
+            yield self._custom_event_request()
+
+        responses = list(server.ProcessCallerInput(requests(), context))
+
+        assert len(responses) == 1
+        assert consumed_second_request is True
+        assert "stream-end-conv" in server.conversations
+
     def test_opted_in_connector_survives_half_close_and_reconnection(self):
         router = MagicMock(spec=VirtualAgentRouter)
         router.route_request.side_effect = [self._session_start_response(), None]
