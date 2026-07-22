@@ -923,20 +923,29 @@ class ConversationProcessor:
             else:
                 va_response.response_type = VoiceVAResponse.ResponseType.FINAL
 
-            # Set input mode
-            va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-
-            # Set input handling configuration
-            va_response.input_handling_config.CopyFrom(
-                InputHandlingConfig(
-                    dtmf_config=DTMFInputConfig(
-                        dtmf_input_length=1,
-                        inter_digit_timeout_msec=300,
-                        termchar=DTMFDigits.DTMF_DIGIT_POUND,
-                    ),
-                    speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
-                )
+            has_session_end_event = any(
+                event.event_type == OutputEvent.EventType.SESSION_END
+                for event in va_response.output_events
             )
+            if has_session_end_event:
+                # A server-originated SESSION_END is a terminal-only response.
+                # Do not also tell WxCC to collect another voice/DTMF turn.
+                # This matches Cisco's BYOVA reference response shape.
+                self.can_be_deleted = True
+            else:
+                # Set the next input mode and handling configuration only while
+                # the virtual-agent session is still active.
+                va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
+                va_response.input_handling_config.CopyFrom(
+                    InputHandlingConfig(
+                        dtmf_config=DTMFInputConfig(
+                            dtmf_input_length=1,
+                            inter_digit_timeout_msec=300,
+                            termchar=DTMFDigits.DTMF_DIGIT_POUND,
+                        ),
+                        speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
+                    )
+                )
 
             self.logger.debug(
                 f"Final gRPC response created with {len(va_response.prompts)} prompts"
