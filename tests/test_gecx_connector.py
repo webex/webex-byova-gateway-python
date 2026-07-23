@@ -17,6 +17,7 @@ from src.connectors.gecx_connector import (
     GECXStreamingSession,
     GECXTerminalOutcome,
     GECXTerminalReason,
+    _AUDIO_END,
     _STREAM_STOP,
     _make_ces_session_id,
     _ces_audio_encoding,
@@ -127,6 +128,27 @@ class TestRequestGenerator:
         next(generator)  # Session config is always the first CES message.
         with pytest.raises(StopIteration):
             next(generator)
+
+    def test_audio_end_yields_codec_silence_for_ces_endpointing(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+        session.inbound_queue.put(_AUDIO_END)
+        session.inbound_queue.put(_STREAM_STOP)
+
+        generator = session._request_generator()
+        next(generator)  # config
+        endpointing_messages = list(generator)
+
+        assert len(endpointing_messages) == 10
+        assert all(
+            message.realtime_input.audio == b"\xff" * 800
+            for message in endpointing_messages
+        )
 
 
 class TestServerMessageMapping:
@@ -543,6 +565,26 @@ class TestTerminalLifecycle:
 
 
 class TestAudioFormat:
+    @pytest.mark.parametrize(
+        ("encoding", "expected_byte", "expected_chunk_size"),
+        [
+            ("MULAW", b"\xff", 800),
+            ("ALAW", b"\xd5", 800),
+            ("LINEAR16", b"\x00", 1600),
+        ],
+    )
+    def test_endpointing_silence_matches_input_codec(
+        self, connector, encoding, expected_byte, expected_chunk_size
+    ):
+        connector.input_audio_encoding = encoding
+
+        chunks = connector.endpointing_silence_chunks()
+
+        assert len(chunks) == 10
+        assert all(
+            chunk == expected_byte * expected_chunk_size for chunk in chunks
+        )
+
     def test_resolve_input_format_from_nested_gateway_metadata(self, connector):
         rate, encoding = connector._resolve_input_format(
             b"\x00" * 640,
@@ -642,4 +684,5 @@ class TestSpeechBoundaries:
             )
 
         assert responses == [expected]
+        stream_session.end_audio_turn.assert_called_once_with()
         stream_session.wait_for_turn_responses.assert_called_once_with(timeout=30.0)
