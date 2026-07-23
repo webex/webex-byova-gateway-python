@@ -17,6 +17,8 @@ voice_activity_detection:
   # One second balances natural pauses with responsive turn-taking for
   # utterance-buffered connectors such as AWS Lex.
   end_silence_ms: 1000
+  # GECX can merge speech that resumes shortly after an apparent turn end.
+  speech_end_grace_ms: 500
   # Used only when WxCC omits the mandatory audio_input.sample_rate_hertz field.
   fallback_sample_rate_hertz: 8000
 
@@ -89,8 +91,10 @@ connectors:
   #     turn_response_timeout_seconds: 30
   #     # Trailing codec silence lets CES reliably endpoint short voice turns.
   #     endpointing_silence_ms: 1000
-  #     # Preserve speech before VAD start and catch delayed EndSession after TTS.
+  #     # Preserve speech before VAD start, merge bounded resumed-speech onset,
+  #     # and catch delayed EndSession after TTS.
   #     input_preroll_ms: 500
+  #     input_pause_preroll_ms: 250
   #     terminal_response_grace_seconds: 3
   #     # Omit auth settings to use Application Default Credentials.
   #     # service_account_key: "/path/to/service-account.json"

@@ -61,6 +61,24 @@ class IVendorConnector(ABC):
         """
         return False
 
+    def should_merge_speech_pauses(self) -> bool:
+        """Return whether gateway VAD pauses may resume the active input turn."""
+        return False
+
+    def pause_speech_turn(
+        self, conversation_id: str, silence_ms: int
+    ) -> None:
+        """Pause an active caller turn before its final boundary is committed."""
+        del conversation_id, silence_ms
+
+    def resume_speech_turn(self, conversation_id: str) -> None:
+        """Resume a caller turn whose pending end boundary was cancelled."""
+        del conversation_id
+
+    def commit_speech_turn(self, conversation_id: str) -> None:
+        """Commit a held caller turn before its response wait begins."""
+        del conversation_id
+
     def handle_speech_boundary(
         self, conversation_id: str, message_data: Dict[str, Any]
     ) -> Optional[Iterator[Optional[Dict[str, Any]]]]:
