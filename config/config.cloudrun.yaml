@@ -37,6 +37,8 @@ connectors:
       initial_message: "Hello"
       enable_partial_responses: true
       force_input_format: "wxcc"
+      turn_response_timeout_seconds: 30
+      endpointing_silence_ms: 1000
       agents:
         - "My GECX Agent"
 
