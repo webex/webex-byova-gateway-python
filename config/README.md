@@ -117,6 +117,8 @@ connectors:
       turn_response_timeout_seconds: 30
       # Trailing codec silence for reliable CES audio endpoint detection.
       endpointing_silence_ms: 1000
+      input_preroll_ms: 500
+      terminal_response_grace_seconds: 3
       # Omit auth settings to use Application Default Credentials.
       # service_account_key: "/path/to/service-account.json"
       agents:
