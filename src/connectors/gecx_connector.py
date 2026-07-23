@@ -134,6 +134,7 @@ class GECXStreamingSession:
         self._stop_event = threading.Event()
         self._stream_started = threading.Event()
         self._turn_completed = threading.Event()
+        self._terminal_event = threading.Event()
         self._stream_error: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -147,6 +148,9 @@ class GECXStreamingSession:
         # prompt makes WxCC synthesize it and blocks the later CES audio/event.
         self._text_buffer: list[str] = []
         self._audio_buffer = bytearray()
+        self._input_lock = threading.Lock()
+        self._input_audio_buffer = bytearray()
+        self._input_turn_active = False
 
     def start(self) -> None:
         """Start the background bidi stream thread."""
@@ -202,14 +206,24 @@ class GECXStreamingSession:
                 )
 
     def enqueue_audio(self, audio_chunk: bytes) -> bool:
-        """Queue an audio chunk for the CES stream."""
+        """Buffer caller audio until gateway VAD closes the complete turn."""
         if not audio_chunk:
             return False
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 self._log_late_input("audio")
                 return False
-            self.inbound_queue.put(audio_chunk)
+            with self._input_lock:
+                self._input_audio_buffer.extend(audio_chunk)
+                if not self._input_turn_active:
+                    pre_roll_bytes = self.connector.input_audio_bytes_for_ms(
+                        self.connector.input_preroll_ms
+                    )
+                    if len(self._input_audio_buffer) > pre_roll_bytes:
+                        if pre_roll_bytes:
+                            del self._input_audio_buffer[:-pre_roll_bytes]
+                        else:
+                            self._input_audio_buffer.clear()
         return True
 
     def enqueue_text(self, text: str) -> bool:
@@ -235,11 +249,21 @@ class GECXStreamingSession:
         return True
 
     def end_audio_turn(self) -> bool:
-        """Queue codec-correct trailing silence so CES can endpoint caller audio."""
+        """Flush one gateway-delimited caller turn and endpointing silence."""
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 self._log_late_input("audio_end")
                 return False
+            with self._input_lock:
+                turn_audio = bytes(self._input_audio_buffer)
+                self._input_audio_buffer.clear()
+                self._input_turn_active = False
+
+            chunk_bytes = self.connector.input_audio_bytes_for_ms(100)
+            if chunk_bytes <= 0:
+                chunk_bytes = len(turn_audio) or 1
+            for offset in range(0, len(turn_audio), chunk_bytes):
+                self.inbound_queue.put(turn_audio[offset : offset + chunk_bytes])
             self.inbound_queue.put(_AUDIO_END)
         return True
 
@@ -271,6 +295,8 @@ class GECXStreamingSession:
             if self._terminal_decision is not None:
                 self._log_late_input("speech_boundary")
                 return False
+            with self._input_lock:
+                self._input_turn_active = True
             self._turn_completed.clear()
         return True
 
@@ -293,6 +319,11 @@ class GECXStreamingSession:
                     metadata={"timeout_seconds": timeout},
                 )
         return completed, self.drain_responses()
+
+    def wait_for_terminal_responses(self, timeout: float) -> list[Dict[str, Any]]:
+        """Wait briefly for an EndSession that CES emits after TTS completion."""
+        self._terminal_event.wait(timeout=timeout)
+        return self.drain_responses()
 
     def terminate(
         self,
@@ -343,6 +374,9 @@ class GECXStreamingSession:
             self._terminal_decision = decision
             self._stop_event.set()
 
+            with self._input_lock:
+                self._input_audio_buffer.clear()
+                self._input_turn_active = False
             with self._lock:
                 buffered_text = "".join(self._text_buffer)
                 raw_audio = bytes(self._audio_buffer)
@@ -386,6 +420,7 @@ class GECXStreamingSession:
             # Set completion only after the terminal response is visible so a
             # waiter cannot wake and drain the queue too early.
             self._turn_completed.set()
+            self._terminal_event.set()
 
         self.logger.info(
             "gecx_terminal_decision conversation_id=%s session=%s reason=%s "
@@ -917,6 +952,13 @@ class GECXConnector(IVendorConnector):
         self.endpointing_silence_ms = min(
             5000, max(0, int(config.get("endpointing_silence_ms", 1000)))
         )
+        self.input_preroll_ms = min(
+            2000, max(0, int(config.get("input_preroll_ms", 500)))
+        )
+        self.terminal_response_grace_seconds = min(
+            10.0,
+            max(0.0, float(config.get("terminal_response_grace_seconds", 3.0))),
+        )
         self.log_raw_terminal_metadata_debug = bool(
             config.get("log_raw_terminal_metadata_debug", False)
         )
@@ -1184,10 +1226,34 @@ class GECXConnector(IVendorConnector):
                 conversation_id,
                 self.endpointing_silence_ms,
             )
-        _, responses = stream_session.wait_for_turn_responses(
+        completed, responses = stream_session.wait_for_turn_responses(
             timeout=self.turn_response_timeout_seconds
         )
         yield from responses
+        if completed and self._may_have_delayed_terminal(responses):
+            yield from stream_session.wait_for_terminal_responses(
+                timeout=self.terminal_response_grace_seconds
+            )
+
+    @staticmethod
+    def _may_have_delayed_terminal(responses: list[Dict[str, Any]]) -> bool:
+        """Return whether a completed prompt likely precedes CES EndSession."""
+        response_text = " ".join(
+            str(response.get("text", "")).lower()
+            for response in responses
+            if isinstance(response, dict)
+        )
+        terminal_cues = (
+            "goodbye",
+            "great day",
+            "good day",
+            "take care",
+            "connect you",
+            "transfer",
+            "human agent",
+            "live agent",
+        )
+        return any(cue in response_text for cue in terminal_cues)
 
     def get_available_agents(self) -> list:
         return self.agents
@@ -1443,6 +1509,21 @@ class GECXConnector(IVendorConnector):
         return vendor_data
 
     # --- Audio helpers (adapted from Dialogflow CX connector) ---
+
+    def input_audio_bytes_for_ms(self, duration_ms: int) -> int:
+        """Return encoded input bytes representing the requested duration."""
+        bytes_per_sample = (
+            2
+            if self._normalize_encoding_name(self.input_audio_encoding)
+            == "LINEAR_16"
+            else 1
+        )
+        return (
+            self.input_sample_rate_hertz
+            * max(0, duration_ms)
+            * bytes_per_sample
+            // 1000
+        )
 
     def endpointing_silence_chunks(self) -> list[bytes]:
         """Build 100 ms silence chunks in the configured CES input codec."""

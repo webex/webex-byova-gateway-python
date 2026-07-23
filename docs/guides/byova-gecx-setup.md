@@ -322,6 +322,12 @@ For GECX, the gateway also places `END_OF_INPUT` on that completed response
 instead of sending it as a preceding standalone response; `START_OF_INPUT`
 remains immediate.
 
+Caller audio is buffered from a bounded pre-roll through the gateway's Silero
+speech-end boundary, then sent to CES as one contiguous turn. This prevents a
+natural pause inside an utterance from becoming an unintended CES barge-in.
+After a terminal-sounding response, the connector also allows a short grace
+window for an `EndSession` that follows the final TTS frames.
+
 ## Configuration reference
 
 | Key | Required | Description |
@@ -338,6 +344,9 @@ remains immediate.
 | `enable_partial_responses` | No | Map CES partial outputs to WxCC `PARTIAL` responses |
 | `force_input_format` | No | `wxcc` forces 8 kHz MULAW when input metadata is unavailable |
 | `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
+| `endpointing_silence_ms` | No | Codec-correct silence appended to each buffered caller turn for CES endpoint detection (default: `1000`) |
+| `input_preroll_ms` | No | Bounded caller audio retained before gateway speech start to avoid clipping (default: `500`) |
+| `terminal_response_grace_seconds` | No | Wait for delayed `EndSession` after a terminal-sounding TTS turn (default: `3`) |
 | `transfer_metadata_keys` | No | EndSession metadata keys that, when truthy, trigger a human transfer (see [Escalation](#escalation-to-a-human-agent)) |
 | `transfer_reason_keywords` | No | Substrings that, if found in a reason/type metadata value, trigger a transfer |
 | `transfer_reason_metadata_keys` | No | Which metadata keys are scanned for `transfer_reason_keywords` |
