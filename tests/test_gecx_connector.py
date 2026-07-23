@@ -175,6 +175,75 @@ class TestRequestGenerator:
 
         assert audio_messages == [b"23456789ABCD", b"\xff" * 800]
 
+    def test_gateway_vad_compacts_pause_and_merges_resume_preroll(
+        self, connector
+    ):
+        connector.input_preroll_ms = 1
+        connector.input_pause_preroll_ms = 1
+        connector.endpointing_silence_ms = 100
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+
+        session.enqueue_audio(b"0123456789")
+        session.begin_input_turn()
+        session.enqueue_audio(b"abcdefgh")
+        assert session.pause_input_turn(silence_ms=1) is True
+        session.enqueue_audio(b"ABCDEFGHIJKL")
+        assert session.resume_input_turn() is True
+        session.end_audio_turn()
+        session.inbound_queue.put(_STREAM_STOP)
+
+        generator = session._request_generator()
+        next(generator)  # config
+        audio_messages = [
+            message.realtime_input.audio for message in generator
+        ]
+
+        assert audio_messages == [b"23456789EFGHIJKL", b"\xff" * 800]
+
+    def test_committed_pause_preserves_resumed_onset_for_next_turn(
+        self, connector
+    ):
+        connector.input_preroll_ms = 1
+        connector.input_pause_preroll_ms = 1
+        connector.endpointing_silence_ms = 1
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+
+        session.enqueue_audio(b"0123456789")
+        session.begin_input_turn()
+        session.enqueue_audio(b"abcdefgh")
+        assert session.pause_input_turn(silence_ms=1) is True
+        session.enqueue_audio(b"ABCDEFGHIJKL")
+        assert session.end_audio_turn() is True
+        session.begin_input_turn()
+        session.enqueue_audio(b"mnopqrst")
+        assert session.end_audio_turn() is True
+        session.inbound_queue.put(_STREAM_STOP)
+
+        generator = session._request_generator()
+        next(generator)  # config
+        audio_messages = [
+            message.realtime_input.audio for message in generator
+        ]
+
+        assert audio_messages == [
+            b"23456789",
+            b"\xff" * 8,
+            b"EFGHIJKLmnopqrst",
+            b"\xff" * 8,
+        ]
+
 
 class TestServerMessageMapping:
     def test_session_output_maps_to_connector_responses(self, connector):
@@ -713,6 +782,26 @@ class TestSpeechBoundaries:
         stream_session.end_audio_turn.assert_called_once_with()
         stream_session.wait_for_turn_responses.assert_called_once_with(timeout=30.0)
         stream_session.wait_for_terminal_responses.assert_not_called()
+
+    def test_precommitted_speech_end_only_waits_for_response(self, connector):
+        stream_session = MagicMock()
+        stream_session.is_terminal = False
+        stream_session.wait_for_turn_responses.return_value = (True, [])
+
+        with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
+            responses = list(
+                connector.handle_speech_boundary(
+                    "conv-1",
+                    {
+                        "speech_boundary": {"kind": "speech_ended"},
+                        "speech_turn_committed": True,
+                    },
+                )
+            )
+
+        assert responses == []
+        stream_session.end_audio_turn.assert_not_called()
+        stream_session.wait_for_turn_responses.assert_called_once_with(timeout=30.0)
 
     def test_speech_ended_yields_delayed_terminal_after_agent_audio(
         self, connector

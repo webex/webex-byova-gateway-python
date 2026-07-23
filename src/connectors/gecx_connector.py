@@ -150,7 +150,9 @@ class GECXStreamingSession:
         self._audio_buffer = bytearray()
         self._input_lock = threading.Lock()
         self._input_audio_buffer = bytearray()
+        self._input_resume_buffer = bytearray()
         self._input_turn_active = False
+        self._input_turn_paused = False
 
     def start(self) -> None:
         """Start the background bidi stream thread."""
@@ -214,8 +216,19 @@ class GECXStreamingSession:
                 self._log_late_input("audio")
                 return False
             with self._input_lock:
-                self._input_audio_buffer.extend(audio_chunk)
-                if not self._input_turn_active:
+                if self._input_turn_paused:
+                    self._input_resume_buffer.extend(audio_chunk)
+                    resume_preroll_bytes = self.connector.input_audio_bytes_for_ms(
+                        self.connector.input_pause_preroll_ms
+                    )
+                    if len(self._input_resume_buffer) > resume_preroll_bytes:
+                        if resume_preroll_bytes:
+                            del self._input_resume_buffer[:-resume_preroll_bytes]
+                        else:
+                            self._input_resume_buffer.clear()
+                else:
+                    self._input_audio_buffer.extend(audio_chunk)
+                if not self._input_turn_active and not self._input_turn_paused:
                     pre_roll_bytes = self.connector.input_audio_bytes_for_ms(
                         self.connector.input_preroll_ms
                     )
@@ -224,6 +237,39 @@ class GECXStreamingSession:
                             del self._input_audio_buffer[:-pre_roll_bytes]
                         else:
                             self._input_audio_buffer.clear()
+        return True
+
+    def pause_input_turn(self, silence_ms: int) -> bool:
+        """Hold a possible turn end and remove its endpoint-triggering silence."""
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                self._log_late_input("speech_pause")
+                return False
+            with self._input_lock:
+                if not self._input_turn_active:
+                    return False
+                silence_bytes = self.connector.input_audio_bytes_for_ms(silence_ms)
+                if silence_bytes:
+                    del self._input_audio_buffer[
+                        -min(silence_bytes, len(self._input_audio_buffer)) :
+                    ]
+                self._input_resume_buffer.clear()
+                self._input_turn_paused = True
+        return True
+
+    def resume_input_turn(self) -> bool:
+        """Merge bounded pre-roll from a resumed speech segment into this turn."""
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                self._log_late_input("speech_resume")
+                return False
+            with self._input_lock:
+                if not self._input_turn_paused:
+                    return False
+                self._input_audio_buffer.extend(self._input_resume_buffer)
+                self._input_resume_buffer.clear()
+                self._input_turn_paused = False
+                self._input_turn_active = True
         return True
 
     def enqueue_text(self, text: str) -> bool:
@@ -256,8 +302,12 @@ class GECXStreamingSession:
                 return False
             with self._input_lock:
                 turn_audio = bytes(self._input_audio_buffer)
+                resume_audio = bytes(self._input_resume_buffer)
                 self._input_audio_buffer.clear()
+                self._input_audio_buffer.extend(resume_audio)
+                self._input_resume_buffer.clear()
                 self._input_turn_active = False
+                self._input_turn_paused = False
 
             chunk_bytes = self.connector.input_audio_bytes_for_ms(100)
             if chunk_bytes <= 0:
@@ -297,6 +347,8 @@ class GECXStreamingSession:
                 return False
             with self._input_lock:
                 self._input_turn_active = True
+                self._input_turn_paused = False
+                self._input_resume_buffer.clear()
             self._turn_completed.clear()
         return True
 
@@ -376,7 +428,9 @@ class GECXStreamingSession:
 
             with self._input_lock:
                 self._input_audio_buffer.clear()
+                self._input_resume_buffer.clear()
                 self._input_turn_active = False
+                self._input_turn_paused = False
             with self._lock:
                 buffered_text = "".join(self._text_buffer)
                 raw_audio = bytes(self._audio_buffer)
@@ -955,6 +1009,9 @@ class GECXConnector(IVendorConnector):
         self.input_preroll_ms = min(
             2000, max(0, int(config.get("input_preroll_ms", 500)))
         )
+        self.input_pause_preroll_ms = min(
+            1000, max(0, int(config.get("input_pause_preroll_ms", 250)))
+        )
         self.terminal_response_grace_seconds = min(
             10.0,
             max(0.0, float(config.get("terminal_response_grace_seconds", 3.0))),
@@ -1195,6 +1252,42 @@ class GECXConnector(IVendorConnector):
         """Send END_OF_INPUT with the completed CES prompt and terminal event."""
         return True
 
+    def should_merge_speech_pauses(self) -> bool:
+        """Keep a caller turn open briefly after gateway VAD reports silence."""
+        return True
+
+    def pause_speech_turn(self, conversation_id: str, silence_ms: int) -> None:
+        """Hold a possible end and strip the silence that triggered gateway VAD."""
+        with self.sessions_lock:
+            stream_session = self.streaming_sessions.get(conversation_id)
+        if stream_session and stream_session.pause_input_turn(silence_ms):
+            self.logger.info(
+                "[%s] [GECX] Holding speech end; removed %dms trailing silence",
+                conversation_id,
+                silence_ms,
+            )
+
+    def resume_speech_turn(self, conversation_id: str) -> None:
+        """Resume the held caller turn with bounded speech-onset pre-roll."""
+        with self.sessions_lock:
+            stream_session = self.streaming_sessions.get(conversation_id)
+        if stream_session and stream_session.resume_input_turn():
+            self.logger.info(
+                "[%s] [GECX] Merged resumed speech into the active caller turn",
+                conversation_id,
+            )
+
+    def commit_speech_turn(self, conversation_id: str) -> None:
+        """Flush a held caller turn before waiting for its CES response."""
+        with self.sessions_lock:
+            stream_session = self.streaming_sessions.get(conversation_id)
+        if stream_session and stream_session.end_audio_turn():
+            self.logger.info(
+                "[%s] [GECX] Queued %dms endpointing silence after speech end",
+                conversation_id,
+                self.endpointing_silence_ms,
+            )
+
     def handle_speech_boundary(
         self, conversation_id: str, message_data: Dict[str, Any]
     ) -> Generator[Dict[str, Any], None, None]:
@@ -1220,12 +1313,8 @@ class GECXConnector(IVendorConnector):
         if boundary_kind != "speech_ended":
             return
 
-        if stream_session.end_audio_turn():
-            self.logger.info(
-                "[%s] [GECX] Queued %dms endpointing silence after speech end",
-                conversation_id,
-                self.endpointing_silence_ms,
-            )
+        if not message_data.get("speech_turn_committed"):
+            self.commit_speech_turn(conversation_id)
         completed, responses = stream_session.wait_for_turn_responses(
             timeout=self.turn_response_timeout_seconds
         )

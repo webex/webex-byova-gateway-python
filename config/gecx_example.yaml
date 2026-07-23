@@ -43,6 +43,8 @@ gecx_connector:
     endpointing_silence_ms: 1000
     # Buffer through gateway VAD end so CES receives one intact caller turn.
     input_preroll_ms: 500
+    # Retain only bounded onset audio when speech resumes during end grace.
+    input_pause_preroll_ms: 250
     # Some EndSession signals follow the final TTS frames.
     terminal_response_grace_seconds: 3
 

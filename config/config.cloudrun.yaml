@@ -23,6 +23,7 @@ voice_activity_detection:
   threshold: 0.5
   start_debounce_ms: 96
   end_silence_ms: 1000
+  speech_end_grace_ms: 500
   fallback_sample_rate_hertz: 8000
 
 connectors:
@@ -48,6 +49,7 @@ connectors:
       turn_response_timeout_seconds: 30
       endpointing_silence_ms: 1000
       input_preroll_ms: 500
+      input_pause_preroll_ms: 250
       terminal_response_grace_seconds: 3
       agents:
         - "My GECX Agent"
