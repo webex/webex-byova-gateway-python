@@ -400,6 +400,109 @@ class TestConversationProcessor:
         assert operations.count("commit_speech_turn") == 1
         assert operations.count("handle_speech_boundary") == 2
 
+    def test_gateway_suppresses_overlapping_boundaries_while_response_pending(
+        self, processor, mock_router, mock_audio_input
+    ):
+        class FakeTimer:
+            instances = []
+
+            def __init__(self, interval, callback):
+                self.interval = interval
+                self.callback = callback
+                self.daemon = False
+                self.__class__.instances.append(self)
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                return None
+
+        signals = iter(
+            [
+                [SpeechBoundarySignal("speech_started", "test_conv_123", 8000)],
+                [SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)],
+                [SpeechBoundarySignal("speech_started", "test_conv_123", 8000)],
+                [SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)],
+            ]
+        )
+        processor.speech_boundary_observer = MagicMock(end_silence_ms=1000)
+        processor.speech_boundary_observer.observe.side_effect = (
+            lambda _frame: next(signals)
+        )
+        mock_router.should_observe_speech_boundaries.return_value = True
+        mock_router.should_merge_speech_pauses.return_value = True
+        mock_router.should_coalesce_speech_end_with_response.return_value = True
+        response_waiting = threading.Event()
+        release_response = threading.Event()
+        audio_response = {
+            "message_type": "audio",
+            "text": "Complete request received",
+            "audio_content": b"RIFFaudio",
+            "output_events": [],
+        }
+
+        def delayed_response():
+            response_waiting.set()
+            assert release_response.wait(1.0)
+            yield audio_response
+
+        def route_request(_agent_id, operation, _conversation_id, *args):
+            if operation in {
+                "send_message",
+                "pause_speech_turn",
+                "resume_speech_turn",
+                "commit_speech_turn",
+            }:
+                return None
+            if operation == "handle_speech_boundary":
+                boundary_kind = args[0]["speech_boundary"]["kind"]
+                return (
+                    delayed_response()
+                    if boundary_kind == "speech_ended"
+                    else None
+                )
+            raise AssertionError(f"unexpected operation: {operation}")
+
+        mock_router.route_request.side_effect = route_request
+        async_responses = []
+        processor.set_async_response_sink(
+            lambda response: not async_responses.append(response)
+        )
+
+        with patch(
+            "src.core.wxcc_gateway_server.threading.Timer", FakeTimer
+        ):
+            first = list(processor._process_audio_input(mock_audio_input))
+            assert list(processor._process_audio_input(mock_audio_input)) == []
+
+            first_waiter = threading.Thread(
+                target=FakeTimer.instances[0].callback
+            )
+            first_waiter.start()
+            assert response_waiting.wait(1.0)
+
+            resumed = list(processor._process_audio_input(mock_audio_input))
+            assert list(processor._process_audio_input(mock_audio_input)) == []
+            FakeTimer.instances[1].callback()
+            release_response.set()
+            first_waiter.join(timeout=1.0)
+
+        assert not first_waiter.is_alive()
+        assert len(first) == 1
+        assert first[0].output_events[0].event_type == 4
+        assert resumed == []
+        assert len(async_responses) == 2
+        assert async_responses[0].output_events[0].event_type == 5
+        assert async_responses[1].prompts[0].text == "Complete request received"
+        operations = [
+            call.args[1] for call in mock_router.route_request.call_args_list
+        ]
+        assert operations.count("pause_speech_turn") == 2
+        assert operations.count("commit_speech_turn") == 2
+        assert operations.count("handle_speech_boundary") == 3
+        assert processor.has_async_work() is False
+
     def test_gateway_suppresses_delayed_terminal_after_stream_cancellation(
         self, processor
     ):
