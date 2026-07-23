@@ -82,6 +82,7 @@ class ConversationProcessor:
         ] = None
         self._speech_end_lock = threading.Lock()
         self._pending_speech_end_timer: Optional[threading.Timer] = None
+        self._speech_response_pending = False
         self._async_task_count = 0
         vad_settings = dict(vad_config or {})
         self.vad_fallback_sample_rate_hertz = vad_settings.get(
@@ -153,8 +154,8 @@ class ConversationProcessor:
         timer: threading.Timer
 
         def finalize() -> None:
+            owns_response_wait = False
             try:
-                speech_turn_committed = False
                 with self._speech_end_lock:
                     if self._pending_speech_end_timer is not timer:
                         return
@@ -163,8 +164,18 @@ class ConversationProcessor:
                         "commit_speech_turn",
                         self.conversation_id,
                     )
-                    speech_turn_committed = True
                     self._pending_speech_end_timer = None
+                    if not self._speech_response_pending:
+                        self._speech_response_pending = True
+                        owns_response_wait = True
+
+                if not owns_response_wait:
+                    self.logger.info(
+                        "Extended the pending CES caller turn without another "
+                        "WxCC END_OF_INPUT for conversation %s",
+                        self.conversation_id,
+                    )
+                    return
 
                 signal = SpeechBoundarySignal(
                     "speech_ended",
@@ -173,13 +184,15 @@ class ConversationProcessor:
                 )
                 for response in self._process_speech_boundary(
                     signal,
-                    speech_turn_committed=speech_turn_committed,
+                    speech_turn_committed=True,
                 ):
                     sink = self._async_response_sink
                     if sink is None or not sink(response):
                         break
             finally:
                 with self._speech_end_lock:
+                    if owns_response_wait:
+                        self._speech_response_pending = False
                     self._async_task_count = max(0, self._async_task_count - 1)
 
         timer = threading.Timer(self.speech_end_grace_ms / 1000.0, finalize)
@@ -197,6 +210,29 @@ class ConversationProcessor:
             self.conversation_id,
         )
         timer.start()
+
+    def _continue_pending_speech_turn(self) -> bool:
+        """Start another input segment without duplicating the WxCC boundary."""
+        with self._speech_end_lock:
+            if not self._speech_response_pending:
+                return False
+            self.router.route_request(
+                self.virtual_agent_id,
+                "handle_speech_boundary",
+                self.conversation_id,
+                {
+                    "conversation_id": self.conversation_id,
+                    "virtual_agent_id": self.virtual_agent_id,
+                    "input_type": "speech_boundary",
+                    "speech_boundary": {"kind": "speech_started"},
+                },
+            )
+        self.logger.info(
+            "Continued caller speech while the CES response was pending; "
+            "suppressed duplicate WxCC START_OF_INPUT for conversation %s",
+            self.conversation_id,
+        )
+        return True
 
     def process_request(self, request: VoiceVARequest) -> Iterator[VoiceVAResponse]:
         """
@@ -363,6 +399,12 @@ class ConversationProcessor:
                     merges_speech_pauses
                     and signal.kind == "speech_started"
                     and self._resume_pending_speech_end()
+                ):
+                    continue
+                if (
+                    merges_speech_pauses
+                    and signal.kind == "speech_started"
+                    and self._continue_pending_speech_turn()
                 ):
                     continue
                 if merges_speech_pauses and signal.kind == "speech_ended":
@@ -1135,6 +1177,7 @@ class ConversationProcessor:
         with self._speech_end_lock:
             timer = self._pending_speech_end_timer
             self._pending_speech_end_timer = None
+            self._speech_response_pending = False
             self._async_task_count = 0
         if timer is not None:
             timer.cancel()
