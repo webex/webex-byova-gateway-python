@@ -252,7 +252,7 @@ class TestConversationProcessor:
         assert responses[1].prompts[0].text == "What dates would you like to book?"
         assert responses[1].output_events == []
 
-    def test_gateway_coalesces_gecx_speech_end_with_transfer_response(
+    def test_gateway_sends_gecx_speech_end_before_transfer_announcement(
         self, processor, mock_router, mock_audio_input
     ):
         processor.speech_boundary_observer = MagicMock()
@@ -292,11 +292,14 @@ class TestConversationProcessor:
         processor.set_stream_cancel_event(cancel_event)
         responses = list(processor._process_audio_input(mock_audio_input))
 
-        assert len(responses) == 2
-        assert responses[0].prompts[0].audio_content == wav_audio
+        assert len(responses) == 3
+        assert responses[0].prompts == []
         assert [event.event_type for event in responses[0].output_events] == [5]
-        assert responses[1].prompts == []
-        assert [event.event_type for event in responses[1].output_events] == [2]
+        assert responses[1].prompts[0].audio_content == wav_audio
+        assert responses[1].prompts[0].text == "Let me connect you now."
+        assert responses[1].output_events == []
+        assert responses[2].prompts == []
+        assert [event.event_type for event in responses[2].output_events] == [2]
         cancel_event.wait.assert_called_once_with(1.0)
 
     def test_gateway_suppresses_delayed_terminal_after_stream_cancellation(

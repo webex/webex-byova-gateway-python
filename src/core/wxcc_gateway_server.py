@@ -301,13 +301,18 @@ class ConversationProcessor:
 
                     if has_terminal_response:
                         self.logger.info(
-                            "Coalescing END_OF_INPUT with terminal connector "
-                            "response for conversation %s",
+                            "Emitting END_OF_INPUT before %d terminal connector "
+                            "response(s) for conversation %s",
+                            len(boundary_responses),
                             self.conversation_id,
                         )
+                        response = self._convert_connector_response_to_grpc(
+                            boundary_connector_response
+                        )
+                        if response is not None:
+                            yield response
                         yield from self._iter_grpc_connector_responses(
                             boundary_responses,
-                            additional_output_event=boundary_event,
                             delay_terminal_after_audio=True,
                         )
                     else:
