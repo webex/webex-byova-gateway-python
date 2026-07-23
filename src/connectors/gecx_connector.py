@@ -234,6 +234,15 @@ class GECXStreamingSession:
             self.inbound_queue.put(("event", event_name))
         return True
 
+    def end_audio_turn(self) -> bool:
+        """Queue codec-correct trailing silence so CES can endpoint caller audio."""
+        with self._lifecycle_lock:
+            if self._terminal_decision is not None:
+                self._log_late_input("audio_end")
+                return False
+            self.inbound_queue.put(_AUDIO_END)
+        return True
+
     def _log_late_input(self, input_type: str) -> None:
         decision = self._terminal_decision
         self.logger.warning(
@@ -469,6 +478,12 @@ class GECXStreamingSession:
             if self.is_terminal:
                 break
             if item is _AUDIO_END:
+                for audio_chunk in self.connector.endpointing_silence_chunks():
+                    if self.is_terminal:
+                        break
+                    yield ces_v1.BidiSessionClientMessage(
+                        realtime_input=ces_v1.SessionInput(audio=audio_chunk)
+                    )
                 continue
             if isinstance(item, tuple):
                 kind, payload = item
@@ -899,6 +914,9 @@ class GECXConnector(IVendorConnector):
         self.turn_response_timeout_seconds = float(
             config.get("turn_response_timeout_seconds", 30.0)
         )
+        self.endpointing_silence_ms = min(
+            5000, max(0, int(config.get("endpointing_silence_ms", 1000)))
+        )
         self.log_raw_terminal_metadata_debug = bool(
             config.get("log_raw_terminal_metadata_debug", False)
         )
@@ -1160,6 +1178,12 @@ class GECXConnector(IVendorConnector):
         if boundary_kind != "speech_ended":
             return
 
+        if stream_session.end_audio_turn():
+            self.logger.info(
+                "[%s] [GECX] Queued %dms endpointing silence after speech end",
+                conversation_id,
+                self.endpointing_silence_ms,
+            )
         _, responses = stream_session.wait_for_turn_responses(
             timeout=self.turn_response_timeout_seconds
         )
@@ -1419,6 +1443,31 @@ class GECXConnector(IVendorConnector):
         return vendor_data
 
     # --- Audio helpers (adapted from Dialogflow CX connector) ---
+
+    def endpointing_silence_chunks(self) -> list[bytes]:
+        """Build 100 ms silence chunks in the configured CES input codec."""
+        remaining_ms = self.endpointing_silence_ms
+        if remaining_ms <= 0:
+            return []
+
+        encoding = self._normalize_encoding_name(self.input_audio_encoding)
+        if encoding == "LINEAR_16":
+            silence_byte = b"\x00"
+            bytes_per_sample = 2
+        elif encoding == "ALAW":
+            silence_byte = b"\xd5"
+            bytes_per_sample = 1
+        else:
+            silence_byte = b"\xff"
+            bytes_per_sample = 1
+
+        chunks: list[bytes] = []
+        while remaining_ms > 0:
+            chunk_ms = min(100, remaining_ms)
+            sample_count = self.input_sample_rate_hertz * chunk_ms // 1000
+            chunks.append(silence_byte * sample_count * bytes_per_sample)
+            remaining_ms -= chunk_ms
+        return chunks
 
     @staticmethod
     def _normalize_encoding_name(encoding: str) -> str:

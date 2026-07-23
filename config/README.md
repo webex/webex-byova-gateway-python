@@ -184,6 +184,8 @@ connectors:
       output_audio_encoding: "MULAW"
       force_input_format: "wxcc"
       turn_response_timeout_seconds: 30
+      # Trailing codec silence for reliable CES audio endpoint detection.
+      endpointing_silence_ms: 1000
       # Omit auth settings to use Application Default Credentials.
       # service_account_key: "/path/to/service-account.json"
       agents:
