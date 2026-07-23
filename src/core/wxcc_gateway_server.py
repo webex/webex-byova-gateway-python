@@ -6,9 +6,10 @@ Webex Contact Center and the virtual agent connectors.
 """
 
 import logging
+import queue
 import threading
 import time
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 import grpc
 
@@ -34,7 +35,10 @@ from src.generated.voicevirtualagent_pb2_grpc import VoiceVirtualAgentServicer
 from .virtual_agent_router import VirtualAgentRouter
 from .health_service import HealthCheckService
 from src.utils.audio_normalizer import normalize_wxcc_audio
-from src.utils.silero_speech_boundary import SileroSpeechBoundaryObserver
+from src.utils.silero_speech_boundary import (
+    SileroSpeechBoundaryObserver,
+    SpeechBoundarySignal,
+)
 
 
 class ConversationProcessor:
@@ -73,16 +77,26 @@ class ConversationProcessor:
             0.0, float(max_terminal_playback_seconds)
         )
         self._stream_cancel_event = threading.Event()
-        vad_settings = vad_config or {}
+        self._async_response_sink: Optional[
+            Callable[[VoiceVAResponse], bool]
+        ] = None
+        self._speech_end_lock = threading.Lock()
+        self._pending_speech_end_timer: Optional[threading.Timer] = None
+        self._async_task_count = 0
+        vad_settings = dict(vad_config or {})
         self.vad_fallback_sample_rate_hertz = vad_settings.get(
             "fallback_sample_rate_hertz", 8000
+        )
+        self.speech_end_grace_ms = max(
+            0, int(vad_settings.get("speech_end_grace_ms", 500))
         )
         self.speech_boundary_observer = SileroSpeechBoundaryObserver(
             conversation_id,
             **{
                 key: value
                 for key, value in vad_settings.items()
-                if key != "fallback_sample_rate_hertz"
+                if key
+                not in {"fallback_sample_rate_hertz", "speech_end_grace_ms"}
             },
         )
 
@@ -93,6 +107,96 @@ class ConversationProcessor:
     def set_stream_cancel_event(self, cancel_event: threading.Event) -> None:
         """Attach the cancellation signal for the active WxCC request stream."""
         self._stream_cancel_event = cancel_event
+
+    def set_async_response_sink(
+        self, response_sink: Callable[[VoiceVAResponse], bool]
+    ) -> None:
+        """Attach the bounded stream queue used by asynchronous boundary work."""
+        self._async_response_sink = response_sink
+
+    def has_async_work(self) -> bool:
+        """Return whether a delayed speech boundary is still being processed."""
+        with self._speech_end_lock:
+            return self._async_task_count > 0
+
+    def _resume_pending_speech_end(self) -> bool:
+        """Cancel a held end boundary and merge resumed speech into the turn."""
+        with self._speech_end_lock:
+            timer = self._pending_speech_end_timer
+            if timer is None:
+                return False
+            self._pending_speech_end_timer = None
+            self._async_task_count = max(0, self._async_task_count - 1)
+            timer.cancel()
+
+        self.router.route_request(
+            self.virtual_agent_id,
+            "resume_speech_turn",
+            self.conversation_id,
+        )
+        self.logger.info(
+            "Merged speech resumed during %dms end grace for conversation %s",
+            self.speech_end_grace_ms,
+            self.conversation_id,
+        )
+        return True
+
+    def _schedule_speech_end(self, sample_rate_hertz: int) -> None:
+        """Hold a speech end so a natural pause can resume the same turn."""
+        self.router.route_request(
+            self.virtual_agent_id,
+            "pause_speech_turn",
+            self.conversation_id,
+            self.speech_boundary_observer.end_silence_ms,
+        )
+
+        timer: threading.Timer
+
+        def finalize() -> None:
+            try:
+                speech_turn_committed = False
+                with self._speech_end_lock:
+                    if self._pending_speech_end_timer is not timer:
+                        return
+                    self.router.route_request(
+                        self.virtual_agent_id,
+                        "commit_speech_turn",
+                        self.conversation_id,
+                    )
+                    speech_turn_committed = True
+                    self._pending_speech_end_timer = None
+
+                signal = SpeechBoundarySignal(
+                    "speech_ended",
+                    self.conversation_id,
+                    sample_rate_hertz,
+                )
+                for response in self._process_speech_boundary(
+                    signal,
+                    speech_turn_committed=speech_turn_committed,
+                ):
+                    sink = self._async_response_sink
+                    if sink is None or not sink(response):
+                        break
+            finally:
+                with self._speech_end_lock:
+                    self._async_task_count = max(0, self._async_task_count - 1)
+
+        timer = threading.Timer(self.speech_end_grace_ms / 1000.0, finalize)
+        timer.daemon = True
+        with self._speech_end_lock:
+            previous = self._pending_speech_end_timer
+            if previous is not None:
+                previous.cancel()
+                self._async_task_count = max(0, self._async_task_count - 1)
+            self._pending_speech_end_timer = timer
+            self._async_task_count += 1
+        self.logger.info(
+            "Holding END_OF_INPUT for %dms speech-resume grace in conversation %s",
+            self.speech_end_grace_ms,
+            self.conversation_id,
+        )
+        timer.start()
 
     def process_request(self, request: VoiceVARequest) -> Iterator[VoiceVAResponse]:
         """
@@ -248,98 +352,118 @@ class ConversationProcessor:
                     event_type,
                     self.conversation_id,
                 )
-                boundary_event = {
-                    "event_type": event_type,
-                    "name": "" if event_type == "START_OF_INPUT" else "end_of_input",
-                }
-                boundary_connector_response = {
-                    "message_type": "silence",
-                    "output_events": [boundary_event],
-                }
-                coalesce_speech_end = (
-                    signal.kind == "speech_ended"
-                    and self.router.should_coalesce_speech_end_with_response(
+                merges_speech_pauses = (
+                    self._async_response_sink is not None
+                    and self.speech_end_grace_ms > 0
+                    and self.router.should_merge_speech_pauses(
                         self.virtual_agent_id
                     )
                 )
-
-                if not coalesce_speech_end:
-                    response = self._convert_connector_response_to_grpc(
-                        boundary_connector_response
-                    )
-                    if response is not None:
-                        yield response
-
-                boundary_response = self.router.route_request(
-                    self.virtual_agent_id,
-                    "handle_speech_boundary",
-                    self.conversation_id,
-                    {
-                        "conversation_id": self.conversation_id,
-                        "virtual_agent_id": self.virtual_agent_id,
-                        "input_type": "speech_boundary",
-                        "speech_boundary": {"kind": signal.kind},
-                    },
-                )
-                if coalesce_speech_end:
-                    is_iterator = (
-                        hasattr(boundary_response, "__iter__")
-                        and not isinstance(boundary_response, (dict, str, bytes))
-                    )
-                    if is_iterator:
-                        boundary_responses = list(boundary_response)
-                    elif boundary_response is None:
-                        boundary_responses = []
-                    else:
-                        boundary_responses = [boundary_response]
-
-                    has_terminal_response = any(
-                        isinstance(response, dict)
-                        and response.get("message_type") in {"transfer", "session_end"}
-                        for response in boundary_responses
-                    )
-
-                    if has_terminal_response:
-                        self.logger.info(
-                            "Emitting END_OF_INPUT before %d terminal connector "
-                            "response(s) for conversation %s",
-                            len(boundary_responses),
-                            self.conversation_id,
-                        )
-                        response = self._convert_connector_response_to_grpc(
-                            boundary_connector_response
-                        )
-                        if response is not None:
-                            yield response
-                        yield from self._iter_grpc_connector_responses(
-                            boundary_responses,
-                            delay_terminal_after_audio=True,
-                        )
-                    else:
-                        self.logger.info(
-                            "Emitting END_OF_INPUT before %d normal connector "
-                            "response(s) for conversation %s",
-                            len(boundary_responses),
-                            self.conversation_id,
-                        )
-                        response = self._convert_connector_response_to_grpc(
-                            boundary_connector_response
-                        )
-                        if response is not None:
-                            yield response
-                        yield from self._iter_grpc_connector_responses(
-                            boundary_responses
-                        )
-                else:
-                    yield from self._iter_grpc_connector_responses(
-                        boundary_response, include_single_response=False
-                    )
+                if (
+                    merges_speech_pauses
+                    and signal.kind == "speech_started"
+                    and self._resume_pending_speech_end()
+                ):
+                    continue
+                if merges_speech_pauses and signal.kind == "speech_ended":
+                    self._schedule_speech_end(signal.sample_rate_hertz)
+                    continue
+                yield from self._process_speech_boundary(signal)
 
         except Exception as e:
             self.logger.error(
                 f"Error processing audio input for conversation {self.conversation_id}: {e}"
             )
             yield self._create_error_response(f"Audio processing error: {str(e)}")
+
+    def _process_speech_boundary(
+        self,
+        signal: SpeechBoundarySignal,
+        *,
+        speech_turn_committed: bool = False,
+    ) -> Iterator[VoiceVAResponse]:
+        """Commit one gateway speech boundary and convert connector responses."""
+        event_type = (
+            "START_OF_INPUT"
+            if signal.kind == "speech_started"
+            else "END_OF_INPUT"
+        )
+        boundary_event = {
+            "event_type": event_type,
+            "name": "" if event_type == "START_OF_INPUT" else "end_of_input",
+        }
+        boundary_connector_response = {
+            "message_type": "silence",
+            "output_events": [boundary_event],
+        }
+        coalesce_speech_end = (
+            signal.kind == "speech_ended"
+            and self.router.should_coalesce_speech_end_with_response(
+                self.virtual_agent_id
+            )
+        )
+
+        if not coalesce_speech_end:
+            response = self._convert_connector_response_to_grpc(
+                boundary_connector_response
+            )
+            if response is not None:
+                yield response
+
+        boundary_message_data = {
+            "conversation_id": self.conversation_id,
+            "virtual_agent_id": self.virtual_agent_id,
+            "input_type": "speech_boundary",
+            "speech_boundary": {"kind": signal.kind},
+        }
+        if speech_turn_committed:
+            boundary_message_data["speech_turn_committed"] = True
+
+        boundary_response = self.router.route_request(
+            self.virtual_agent_id,
+            "handle_speech_boundary",
+            self.conversation_id,
+            boundary_message_data,
+        )
+        if not coalesce_speech_end:
+            yield from self._iter_grpc_connector_responses(
+                boundary_response, include_single_response=False
+            )
+            return
+
+        is_iterator = (
+            hasattr(boundary_response, "__iter__")
+            and not isinstance(boundary_response, (dict, str, bytes))
+        )
+        if is_iterator:
+            boundary_responses = list(boundary_response)
+        elif boundary_response is None:
+            boundary_responses = []
+        else:
+            boundary_responses = [boundary_response]
+
+        has_terminal_response = any(
+            isinstance(response, dict)
+            and response.get("message_type") in {"transfer", "session_end"}
+            for response in boundary_responses
+        )
+        response_kind = "terminal" if has_terminal_response else "normal"
+        self.logger.info(
+            "Emitting END_OF_INPUT before %d %s connector response(s) for "
+            "conversation %s",
+            len(boundary_responses),
+            response_kind,
+            self.conversation_id,
+        )
+        response = self._convert_connector_response_to_grpc(
+            boundary_connector_response
+        )
+        if response is not None:
+            yield response
+        yield from self._iter_grpc_connector_responses(
+            boundary_responses,
+            delay_terminal_after_audio=has_terminal_response,
+        )
 
     def _iter_grpc_connector_responses(
         self,
@@ -1008,6 +1132,12 @@ class ConversationProcessor:
 
     def cleanup(self, termination_reason: str = "gateway_cleanup"):
         """Clean up conversation resources with a lifecycle reason."""
+        with self._speech_end_lock:
+            timer = self._pending_speech_end_timer
+            self._pending_speech_end_timer = None
+            self._async_task_count = 0
+        if timer is not None:
+            timer.cancel()
         try:
             # End the conversation with the connector
             message_data = {
@@ -1231,138 +1361,205 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         conversation_id = None
         agent_id = None
         processor = None
-        stream_end_reason = "client_half_close"
         stream_cancel_event = threading.Event()
+        input_done = threading.Event()
+        response_queue: queue.Queue[VoiceVAResponse] = queue.Queue(maxsize=100)
+        state = {"stream_end_reason": "client_half_close"}
+
+        def wake_stream() -> None:
+            stream_cancel_event.set()
+
         if context:
-            context.add_callback(stream_cancel_event.set)
+            context.add_callback(wake_stream)
 
-        try:
-            for request in request_iterator:
-                # Extract conversation and agent information from the first request
-                if conversation_id is None:
-                    conversation_id = request.conversation_id
-                    agent_id = request.virtual_agent_id
+        def enqueue_response(response: VoiceVAResponse) -> bool:
+            while not stream_cancel_event.is_set():
+                try:
+                    response_queue.put(response, timeout=0.25)
+                    return True
+                except queue.Full:
+                    continue
+            return False
 
-                    # Use default agent if none specified
-                    if not agent_id:
-                        available_agents = self.router.get_all_available_agents()
-                        if available_agents:
-                            agent_id = available_agents[
-                                0
-                            ]  # Use first available agent as default
-                            self.logger.debug(
-                                f"No agent_id specified, using default: {agent_id}"
-                            )
-                        else:
-                            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-                            context.set_details("No virtual agents available")
+        def consume_requests() -> None:
+            nonlocal conversation_id, agent_id, processor
+            try:
+                for request in request_iterator:
+                    if stream_cancel_event.is_set():
+                        break
+
+                    # Extract conversation and agent information from the first request
+                    if conversation_id is None:
+                        conversation_id = request.conversation_id
+                        agent_id = request.virtual_agent_id
+
+                        # Use default agent if none specified
+                        if not agent_id:
+                            available_agents = self.router.get_all_available_agents()
+                            if available_agents:
+                                agent_id = available_agents[0]
+                                self.logger.debug(
+                                    "No agent_id specified, using default: %s",
+                                    agent_id,
+                                )
+                            else:
+                                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                                context.set_details("No virtual agents available")
+                                return
+
+                        try:
+                            self.router.get_connector_for_agent(agent_id)
+                        except ValueError:
+                            self.logger.error("Agent not found: %s", agent_id)
+                            context.set_code(grpc.StatusCode.NOT_FOUND)
+                            context.set_details(f"Agent not found: {agent_id}")
                             return
 
-                    # Verify agent exists
-                    try:
-                        self.router.get_connector_for_agent(agent_id)
-                    except ValueError:
-                        self.logger.error(f"Agent not found: {agent_id}")
-                        context.set_code(grpc.StatusCode.NOT_FOUND)
-                        context.set_details(f"Agent not found: {agent_id}")
-                        return
-
-                    # Create or get conversation processor
-                    if conversation_id not in self.conversations:
-                        processor = ConversationProcessor(
-                            conversation_id,
-                            agent_id,
-                            self.router,
-                            self.vad_config,
-                            self.max_terminal_playback_seconds,
-                        )
-                        self.conversations[conversation_id] = processor
-                        self.add_connection_event("start", conversation_id, agent_id)
-                        self.logger.debug(
-                            f"Created new conversation processor for {conversation_id}"
-                        )
-                    else:
-                        processor = self.conversations[conversation_id]
-                        if processor.virtual_agent_id != agent_id:
-                            self.logger.error(
-                                "Rejected conversation %s reconnection with agent %s; "
-                                "existing agent is %s",
+                        if conversation_id not in self.conversations:
+                            processor = ConversationProcessor(
                                 conversation_id,
                                 agent_id,
-                                processor.virtual_agent_id,
+                                self.router,
+                                self.vad_config,
+                                self.max_terminal_playback_seconds,
                             )
-                            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-                            context.set_details(
-                                "virtual_agent_id does not match the existing "
-                                "conversation"
+                            self.conversations[conversation_id] = processor
+                            self.add_connection_event(
+                                "start", conversation_id, agent_id
                             )
-                            return
-                        agent_id = processor.virtual_agent_id
+                            self.logger.debug(
+                                "Created new conversation processor for %s",
+                                conversation_id,
+                            )
+                        else:
+                            processor = self.conversations[conversation_id]
+                            if processor.virtual_agent_id != agent_id:
+                                self.logger.error(
+                                    "Rejected conversation %s reconnection with "
+                                    "agent %s; existing agent is %s",
+                                    conversation_id,
+                                    agent_id,
+                                    processor.virtual_agent_id,
+                                )
+                                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                                context.set_details(
+                                    "virtual_agent_id does not match the existing "
+                                    "conversation"
+                                )
+                                return
+                            agent_id = processor.virtual_agent_id
+                            self.logger.debug(
+                                "Using existing conversation processor for %s",
+                                conversation_id,
+                            )
+
+                        processor.set_stream_cancel_event(stream_cancel_event)
+                        processor.set_async_response_sink(enqueue_response)
+
+                    if request.HasField("audio_input"):
                         self.logger.debug(
-                            f"Using existing conversation processor for {conversation_id}"
+                            "Processing audio input for conversation %s",
+                            conversation_id,
+                        )
+                    elif request.HasField("dtmf_input"):
+                        self.logger.debug(
+                            "Processing DTMF input for conversation %s",
+                            conversation_id,
+                        )
+                    elif request.HasField("event_input"):
+                        event_type_name = (
+                            ConversationProcessor.EVENT_TYPE_NAMES.get(
+                                request.event_input.event_type,
+                                f"UNKNOWN({request.event_input.event_type})",
+                            )
+                        )
+                        self.logger.debug(
+                            "Processing event input for conversation %s: %s",
+                            conversation_id,
+                            event_type_name,
+                        )
+                    else:
+                        self.logger.warning(
+                            "Unknown input type for conversation %s",
+                            conversation_id,
                         )
 
-                    processor.set_stream_cancel_event(stream_cancel_event)
+                    for response in processor.process_request(request):
+                        if not enqueue_response(response):
+                            return
 
-                # Log the input type being processed
-                if request.HasField("audio_input"):
-                    self.logger.debug(
-                        f"Processing audio input for conversation {conversation_id}"
+                    self.add_connection_event(
+                        "message", conversation_id, agent_id
                     )
-                elif request.HasField("dtmf_input"):
-                    self.logger.debug(
-                        f"Processing DTMF input for conversation {conversation_id}"
-                    )
-                elif request.HasField("event_input"):
-                    event_type_name = ConversationProcessor.EVENT_TYPE_NAMES.get(
-                        request.event_input.event_type,
-                        f"UNKNOWN({request.event_input.event_type})",
-                    )
-                    self.logger.debug(
-                        f"Processing event input for conversation {conversation_id}: {event_type_name}"
-                    )
+                    if processor.can_be_deleted:
+                        state["stream_end_reason"] = "server_terminal"
+                        return
+
+            except grpc.RpcError as error:
+                if error.code() == grpc.StatusCode.CANCELLED:
+                    state["stream_end_reason"] = "client_cancelled"
                 else:
-                    self.logger.warning(
-                        f"Unknown input type for conversation {conversation_id}"
+                    state["stream_end_reason"] = "stream_error"
+                    self.logger.error(
+                        "Error in ProcessCallerInput stream: %s", error
                     )
-
-                # Process the request through the conversation processor
-                self.logger.debug(
-                    f"Processing request for conversation {conversation_id}"
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details(f"Stream error: {str(error)}")
+            except Exception as error:
+                state["stream_end_reason"] = "stream_error"
+                self.logger.error(
+                    "Error in ProcessCallerInput stream: %s", error
                 )
-                self.logger.debug(f"Request: {request}")
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Stream error: {str(error)}")
+            finally:
+                input_done.set()
 
-                yield from processor.process_request(request)
+        input_thread = threading.Thread(
+            target=consume_requests,
+            name="wxcc-ingress",
+            daemon=True,
+        )
+        input_thread.start()
 
-                # Track message event
-                self.add_connection_event("message", conversation_id, agent_id)
+        try:
+            while True:
+                try:
+                    response = response_queue.get(timeout=0.25)
+                except queue.Empty:
+                    if stream_cancel_event.is_set():
+                        break
+                    if (
+                        input_done.is_set()
+                        and response_queue.empty()
+                        and (processor is None or not processor.has_async_work())
+                    ):
+                        break
+                    continue
 
-                if processor.can_be_deleted:
-                    stream_end_reason = "server_terminal"
+                yield response
+                terminal_event = any(
+                    event.event_type
+                    in {
+                        OutputEvent.EventType.SESSION_END,
+                        OutputEvent.EventType.TRANSFER_TO_AGENT,
+                    }
+                    for event in response.output_events
+                )
+                if terminal_event:
+                    state["stream_end_reason"] = "server_terminal"
                     self.logger.info(
                         "Completing WxCC response stream after terminal response "
                         "for conversation %s",
                         conversation_id,
                     )
+                    stream_cancel_event.set()
                     break
-
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.CANCELLED:
-                stream_end_reason = "client_cancelled"
-            else:
-                stream_end_reason = "stream_error"
-                self.logger.error(f"Error in ProcessCallerInput stream: {e}")
-                context.set_code(grpc.StatusCode.INTERNAL)
-                context.set_details(f"Stream error: {str(e)}")
-        except Exception as e:
-            stream_end_reason = "stream_error"
-            self.logger.error(f"Error in ProcessCallerInput stream: {e}")
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(f"Stream error: {str(e)}")
         finally:
             stream_cancel_event.set()
+            input_thread.join(timeout=2.0)
             if context and not context.is_active():
-                stream_end_reason = "client_cancelled"
+                state["stream_end_reason"] = "client_cancelled"
 
             # WxCC normally half-closes one request RPC and reconnects with the
             # same conversation ID for subsequent caller input. Preserve the
@@ -1374,13 +1571,15 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 agent_id = processor.virtual_agent_id
                 cleanup_on_stream_end = (
                     not processor.can_be_deleted
-                    and stream_end_reason != "client_half_close"
+                    and state["stream_end_reason"] != "client_half_close"
                     and self.router.should_cleanup_on_client_stream_end(agent_id)
                     is True
                 )
                 if processor.can_be_deleted or cleanup_on_stream_end:
                     termination_reason = (
-                        "completed" if processor.can_be_deleted else stream_end_reason
+                        "completed"
+                        if processor.can_be_deleted
+                        else state["stream_end_reason"]
                     )
                     self.logger.debug(
                         "Cleaning up conversation %s (reason=%s)",

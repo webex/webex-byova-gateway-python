@@ -204,9 +204,12 @@ implemented here.
 
 The gateway's central Silero observer owns Webex `START_OF_INPUT` and
 `END_OF_INPUT` events. GECX does not run a second local speech detector: every
-caller-audio frame is forwarded to CES immediately, and speech-boundary
-notifications are used only to coordinate turn completion and response
-delivery. Configure the observer under the top-level
+caller-audio frame is ingested while CES responses are being produced.
+At an apparent speech end, the gateway holds `END_OF_INPUT` for
+`speech_end_grace_ms` (default: `500`). If speech resumes in that window, GECX
+removes the endpoint-triggering pause, merges up to `input_pause_preroll_ms` of
+the resumed onset, and keeps one CES input turn. Otherwise it commits the
+boundary normally. Configure the observer under the top-level
 `voice_activity_detection` block in `config/config.yaml`.
 
 ### Audio format: WxCC expects a self-describing WAV clip
@@ -346,6 +349,7 @@ window for an `EndSession` that follows the final TTS frames.
 | `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
 | `endpointing_silence_ms` | No | Codec-correct silence appended to each buffered caller turn for CES endpoint detection (default: `1000`) |
 | `input_preroll_ms` | No | Bounded caller audio retained before gateway speech start to avoid clipping (default: `500`) |
+| `input_pause_preroll_ms` | No | Maximum onset audio retained while a possible speech end is held, then merged if the caller resumes (default: `250`) |
 | `terminal_response_grace_seconds` | No | Wait for delayed `EndSession` after a terminal-sounding TTS turn (default: `3`) |
 | `transfer_metadata_keys` | No | EndSession metadata keys that, when truthy, trigger a human transfer (see [Escalation](#escalation-to-a-human-agent)) |
 | `transfer_reason_keywords` | No | Substrings that, if found in a reason/type metadata value, trigger a transfer |

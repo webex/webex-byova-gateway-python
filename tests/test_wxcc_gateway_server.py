@@ -5,6 +5,8 @@ This module tests the gateway server's ability to handle both single responses
 and generator responses from connectors, as well as proper audio input processing.
 """
 
+import threading
+
 import grpc
 import pytest
 from unittest.mock import MagicMock, patch, Mock
@@ -301,6 +303,102 @@ class TestConversationProcessor:
         assert responses[2].prompts == []
         assert [event.event_type for event in responses[2].output_events] == [2]
         cancel_event.wait.assert_called_once_with(1.0)
+
+    def test_gateway_merges_speech_resumed_during_end_grace(
+        self, processor, mock_router, mock_audio_input
+    ):
+        class FakeTimer:
+            instances = []
+
+            def __init__(self, interval, callback):
+                self.interval = interval
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                self.__class__.instances.append(self)
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        signals = iter(
+            [
+                [SpeechBoundarySignal("speech_started", "test_conv_123", 8000)],
+                [SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)],
+                [SpeechBoundarySignal("speech_started", "test_conv_123", 8000)],
+                [SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)],
+            ]
+        )
+        processor.speech_boundary_observer = MagicMock(
+            end_silence_ms=1000
+        )
+        processor.speech_boundary_observer.observe.side_effect = (
+            lambda _frame: next(signals)
+        )
+        mock_router.should_observe_speech_boundaries.return_value = True
+        mock_router.should_merge_speech_pauses.return_value = True
+        mock_router.should_coalesce_speech_end_with_response.return_value = True
+        audio_response = {
+            "message_type": "audio",
+            "text": "Which dates would you like?",
+            "audio_content": b"RIFFaudio",
+            "output_events": [],
+        }
+
+        def route_request(_agent_id, operation, _conversation_id, *args):
+            if operation in {
+                "send_message",
+                "pause_speech_turn",
+                "resume_speech_turn",
+                "commit_speech_turn",
+            }:
+                return None
+            if operation == "handle_speech_boundary":
+                boundary_kind = args[0]["speech_boundary"]["kind"]
+                return (
+                    iter([audio_response])
+                    if boundary_kind == "speech_ended"
+                    else None
+                )
+            raise AssertionError(f"unexpected operation: {operation}")
+
+        mock_router.route_request.side_effect = route_request
+        async_responses = []
+        processor.set_async_response_sink(
+            lambda response: not async_responses.append(response)
+        )
+
+        with patch(
+            "src.core.wxcc_gateway_server.threading.Timer", FakeTimer
+        ):
+            first = list(processor._process_audio_input(mock_audio_input))
+            held_end = list(processor._process_audio_input(mock_audio_input))
+            resumed = list(processor._process_audio_input(mock_audio_input))
+            final_end = list(processor._process_audio_input(mock_audio_input))
+
+            assert len(first) == 1
+            assert first[0].output_events[0].event_type == 4
+            assert held_end == []
+            assert resumed == []
+            assert final_end == []
+            assert len(FakeTimer.instances) == 2
+            assert FakeTimer.instances[0].cancelled is True
+
+            FakeTimer.instances[1].callback()
+
+        assert len(async_responses) == 2
+        assert async_responses[0].output_events[0].event_type == 5
+        assert async_responses[1].prompts[0].text == "Which dates would you like?"
+        assert processor.has_async_work() is False
+        operations = [
+            call.args[1] for call in mock_router.route_request.call_args_list
+        ]
+        assert operations.count("pause_speech_turn") == 2
+        assert operations.count("resume_speech_turn") == 1
+        assert operations.count("commit_speech_turn") == 1
+        assert operations.count("handle_speech_boundary") == 2
 
     def test_gateway_suppresses_delayed_terminal_after_stream_cancellation(
         self, processor
@@ -1258,6 +1356,32 @@ class TestClientStreamEndCleanup:
         assert len(responses) == 1
         assert consumed_second_request is True
         assert "stream-end-conv" in server.conversations
+
+    def test_ingress_continues_while_caller_has_not_requested_next_response(
+        self
+    ):
+        router = MagicMock(spec=VirtualAgentRouter)
+        router.route_request.side_effect = [self._session_start_response(), None]
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+        allow_second_request = threading.Event()
+        consumed_second_request = threading.Event()
+
+        def requests():
+            yield self._session_start_request()
+            assert allow_second_request.wait(1.0)
+            consumed_second_request.set()
+            yield self._custom_event_request()
+
+        responses = server.ProcessCallerInput(requests(), context)
+        first_response = next(responses)
+        allow_second_request.set()
+
+        assert first_response.prompts[0].text == "Connected"
+        assert consumed_second_request.wait(1.0)
+        assert list(responses) == []
 
     def test_opted_in_connector_survives_half_close_and_reconnection(self):
         router = MagicMock(spec=VirtualAgentRouter)
