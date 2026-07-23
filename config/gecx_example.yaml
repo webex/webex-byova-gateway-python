@@ -41,6 +41,10 @@ gecx_connector:
     turn_response_timeout_seconds: 30
     # Queued after gateway VAD speech end so CES can endpoint short utterances.
     endpointing_silence_ms: 1000
+    # Buffer through gateway VAD end so CES receives one intact caller turn.
+    input_preroll_ms: 500
+    # Some EndSession signals follow the final TTS frames.
+    terminal_response_grace_seconds: 3
 
     # --- Escalation / human handoff -------------------------------------
     # CES signals escalation as an EndSession carrying a metadata Struct. The
