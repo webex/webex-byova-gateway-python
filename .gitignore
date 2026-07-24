@@ -258,5 +258,16 @@ docs/.jekyll-metadata
 ._*
 .Spotlight-V100
 .Trashes
+
+# BYOVA E2E caller local runtime state
+tools/byova_e2e/.env
+tools/byova_e2e/.venv/
+tools/byova_e2e/.artifacts/
+tools/byova_e2e/.state/
+tools/byova_e2e/.pytest_cache/
+tools/byova_e2e/src/*.egg-info/
+tools/byova_e2e/**/__pycache__/
+tools/byova_e2e/web/node_modules/
+tools/byova_e2e/web/dist/
 ehthumbs.db
 Thumbs.db
