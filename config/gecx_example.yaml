@@ -40,7 +40,9 @@ gecx_connector:
     force_input_format: "wxcc"
     turn_response_timeout_seconds: 30
     # Queued after gateway VAD speech end so CES can endpoint short utterances.
-    endpointing_silence_ms: 1000
+    # Keep margin above one second; an exact one-second tail can leave a CES
+    # audio turn open until the caller speaks again.
+    endpointing_silence_ms: 2000
     # Buffer through gateway VAD end so CES receives one intact caller turn.
     input_preroll_ms: 500
     # Retain only bounded onset audio when speech resumes during end grace.
