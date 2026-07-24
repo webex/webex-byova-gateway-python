@@ -347,7 +347,7 @@ window for an `EndSession` that follows the final TTS frames.
 | `enable_partial_responses` | No | Map CES partial outputs to WxCC `PARTIAL` responses |
 | `force_input_format` | No | `wxcc` forces 8 kHz MULAW when input metadata is unavailable |
 | `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
-| `endpointing_silence_ms` | No | Codec-correct silence appended to each buffered caller turn for CES endpoint detection (default: `1000`) |
+| `endpointing_silence_ms` | No | Codec-correct silence appended to each buffered caller turn for CES endpoint detection (default: `2000`; one second may leave a turn open until more audio arrives) |
 | `input_preroll_ms` | No | Bounded caller audio retained before gateway speech start to avoid clipping (default: `500`) |
 | `input_pause_preroll_ms` | No | Maximum onset audio retained while a possible speech end is held, then merged if the caller resumes (default: `250`) |
 | `terminal_response_grace_seconds` | No | Wait for delayed `EndSession` after a terminal-sounding TTS turn (default: `3`) |

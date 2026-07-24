@@ -90,7 +90,7 @@ connectors:
   #     force_input_format: "wxcc"
   #     turn_response_timeout_seconds: 30
   #     # Trailing codec silence lets CES reliably endpoint short voice turns.
-  #     endpointing_silence_ms: 1000
+  #     endpointing_silence_ms: 2000
   #     # Preserve speech before VAD start, merge bounded resumed-speech onset,
   #     # and catch delayed EndSession after TTS.
   #     input_preroll_ms: 500
