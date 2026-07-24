@@ -1004,7 +1004,7 @@ class GECXConnector(IVendorConnector):
             config.get("turn_response_timeout_seconds", 30.0)
         )
         self.endpointing_silence_ms = min(
-            5000, max(0, int(config.get("endpointing_silence_ms", 1000)))
+            5000, max(0, int(config.get("endpointing_silence_ms", 2000)))
         )
         self.input_preroll_ms = min(
             2000, max(0, int(config.get("input_preroll_ms", 500)))

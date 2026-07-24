@@ -116,7 +116,7 @@ connectors:
       force_input_format: "wxcc"
       turn_response_timeout_seconds: 30
       # Trailing codec silence for reliable CES audio endpoint detection.
-      endpointing_silence_ms: 1000
+      endpointing_silence_ms: 2000
       input_preroll_ms: 500
       input_pause_preroll_ms: 250
       terminal_response_grace_seconds: 3

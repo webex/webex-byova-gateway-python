@@ -76,6 +76,14 @@ class TestGECXConnectorInit:
         assert connector.deployment_path.endswith("/deployments/d")
         assert connector.application_id == "a"
 
+    def test_default_endpointing_silence_has_margin_above_one_second(
+        self, gecx_config
+    ):
+        with patch("src.connectors.gecx_connector.ces_v1.SessionServiceClient"):
+            connector = GECXConnector(gecx_config)
+
+        assert connector.endpointing_silence_ms == 2000
+
 
 class TestRequestGenerator:
     def test_first_message_is_session_config(self, connector):
@@ -144,7 +152,7 @@ class TestRequestGenerator:
         next(generator)  # config
         endpointing_messages = list(generator)
 
-        assert len(endpointing_messages) == 10
+        assert len(endpointing_messages) == 20
         assert all(
             message.realtime_input.audio == b"\xff" * 800
             for message in endpointing_messages
@@ -674,7 +682,7 @@ class TestAudioFormat:
 
         chunks = connector.endpointing_silence_chunks()
 
-        assert len(chunks) == 10
+        assert len(chunks) == connector.endpointing_silence_ms // 100
         assert all(
             chunk == expected_byte * expected_chunk_size for chunk in chunks
         )
