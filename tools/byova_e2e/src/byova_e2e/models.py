@@ -21,6 +21,9 @@ class RunConfig:
     prompt_timeout_seconds: float
     call_timeout_seconds: float
     post_audio_grace_seconds: float
+    remote_prompt_occurrence: int = 1
+    require_remote_response: bool = False
+    response_timeout_seconds: float = 30.0
     headless: bool = False
 
 
@@ -31,3 +34,4 @@ class RunEvent:
     name: str
     timestamp: float
     details: dict[str, Any] = field(default_factory=dict)
+    received_at_utc: str | None = None

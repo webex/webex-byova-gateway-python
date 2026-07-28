@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
 import subprocess
 import time
+from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -35,6 +36,7 @@ class BrowserRunner:
         self.browser_diagnostics: list[str] = []
 
     def run(self) -> dict[str, Any]:
+        started_at_utc = datetime.now(timezone.utc).isoformat()
         static_root = self._build_frontend()
         server = LocalRunServer(static_root, self.config)
         server.start()
@@ -46,25 +48,50 @@ class BrowserRunner:
                 try:
                     browser = playwright.chromium.launch(
                         headless=self.config.headless,
-                        args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
+                        args=[
+                            "--use-fake-ui-for-media-stream",
+                            "--use-fake-device-for-media-stream",
+                        ],
                     )
                     context = browser.new_context(permissions=["microphone"])
                     page = context.new_page()
-                    page.on("console", lambda message: self._record_console(message.type, message.text))
-                    page.on("pageerror", lambda error: self._record_console("pageerror", str(error)))
+                    page.on(
+                        "console",
+                        lambda message: self._record_console(
+                            message.type, message.text
+                        ),
+                    )
+                    page.on(
+                        "pageerror",
+                        lambda error: self._record_console("pageerror", str(error)),
+                    )
                     page.on("response", self._record_failed_response)
                     page.goto(server.url, wait_until="networkidle")
                     page.click("#start-calling-test")
-                    self._wait_for(server, lambda event: event.name == "frontend_ready", 20)
+                    self._wait_for(
+                        server, lambda event: event.name == "frontend_ready", 20
+                    )
                     self._command(page, "dial")
                     deadline = time.monotonic() + self.config.call_timeout_seconds
                     self._wait_for_established(
                         server,
-                        self._bounded_timeout(self.config.prompt_timeout_seconds, deadline),
+                        self._bounded_timeout(
+                            self.config.prompt_timeout_seconds, deadline
+                        ),
                     )
                     self._wait_for_prompt_end(server, page, deadline)
-                    self._wait_for(server, lambda event: event.name == "injection_finished", self._bounded_timeout(30, deadline))
-                    final_reason = self._finish_call(server, page, deadline)
+                    injection_finished = self._wait_for(
+                        server,
+                        lambda event: event.name == "injection_finished",
+                        self._bounded_timeout(30, deadline),
+                    )
+                    finish_result = self._finish_call(
+                        server,
+                        page,
+                        deadline,
+                        injection_finished,
+                    )
+                    final_reason = str(finish_result["completion_reason"])
                 finally:
                     # A crashed browser can make close() fail. Preserve the original
                     # RunFailure so the CLI can write its diagnostic artifact.
@@ -83,14 +110,27 @@ class BrowserRunner:
                 ) from error
             raise RunFailure(str(error), event_history) from error
         except PlaywrightError as error:
-            raise RunFailure(f"Browser automation failed: {error}", list(self.events)) from error
+            raise RunFailure(
+                f"Browser automation failed: {error}", list(self.events)
+            ) from error
         finally:
             server.close()
 
         return {
+            "started_at_utc": started_at_utc,
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
             "completion_reason": final_reason,
+            "remote_response_observed": finish_result["remote_response_observed"],
+            "remote_response_latency_seconds": finish_result[
+                "remote_response_latency_seconds"
+            ],
             "events": [
-                {"name": event.name, "timestamp": event.timestamp, "details": event.details}
+                {
+                    "name": event.name,
+                    "timestamp": event.timestamp,
+                    "received_at_utc": event.received_at_utc,
+                    "details": event.details,
+                }
                 for event in self.events
             ],
         }
@@ -111,9 +151,16 @@ class BrowserRunner:
             raise RunFailure("Frontend build did not create web/dist/index.html")
         return static_root
 
-    def _wait_for_prompt_end(self, server: LocalRunServer, page: Any, call_deadline: float) -> None:
-        gate = PromptGate(self.config.remote_silence_seconds)
-        deadline = min(time.monotonic() + self.config.prompt_timeout_seconds, call_deadline)
+    def _wait_for_prompt_end(
+        self, server: LocalRunServer, page: Any, call_deadline: float
+    ) -> None:
+        gate = PromptGate(
+            self.config.remote_silence_seconds,
+            self.config.remote_prompt_occurrence,
+        )
+        deadline = min(
+            time.monotonic() + self.config.prompt_timeout_seconds, call_deadline
+        )
         fallback_deadline = (
             time.monotonic() + self.config.initial_silence_fallback_seconds
             if self.config.initial_silence_fallback_seconds > 0
@@ -138,7 +185,9 @@ class BrowserRunner:
                 self._command(page, "injectAudio", "initial_silence_fallback")
                 gate.mark_injected()
                 return
-        raise RunFailure("No completed remote prompt was detected before the prompt or call timeout")
+        raise RunFailure(
+            "No completed remote prompt was detected before the prompt or call timeout"
+        )
 
     def _wait_for_established(self, server: LocalRunServer, timeout: float) -> RunEvent:
         deadline = time.monotonic() + timeout
@@ -150,14 +199,40 @@ class BrowserRunner:
                 return event
             if event.name == "disconnect":
                 raise RunFailure("Call disconnected before media was established")
-        raise RunFailure(f"Timed out after {timeout:.1f}s waiting for the call to establish")
+        raise RunFailure(
+            f"Timed out after {timeout:.1f}s waiting for the call to establish"
+        )
 
-    def _finish_call(self, server: LocalRunServer, page: Any, call_deadline: float) -> str:
-        grace_deadline = min(time.monotonic() + self.config.post_audio_grace_seconds, call_deadline)
-        while time.monotonic() < grace_deadline:
-            event = self._next_event(server, min(0.2, grace_deadline - time.monotonic()))
-            if event and event.name == "disconnect":
-                return "remote_disconnect"
+    def _finish_call(
+        self,
+        server: LocalRunServer,
+        page: Any,
+        call_deadline: float,
+        injection_finished: RunEvent,
+    ) -> dict[str, Any]:
+        response_latency: float | None = None
+        if self.config.require_remote_response:
+            response_latency = self._wait_for_remote_response(
+                server,
+                call_deadline,
+                injection_finished,
+            )
+        else:
+            grace_deadline = min(
+                time.monotonic() + self.config.post_audio_grace_seconds,
+                call_deadline,
+            )
+            while time.monotonic() < grace_deadline:
+                event = self._next_event(
+                    server,
+                    min(0.2, grace_deadline - time.monotonic()),
+                )
+                if event and event.name == "disconnect":
+                    return {
+                        "completion_reason": "remote_disconnect",
+                        "remote_response_observed": False,
+                        "remote_response_latency_seconds": None,
+                    }
         self._command(page, "endCall")
         try:
             self._wait_for(
@@ -165,11 +240,62 @@ class BrowserRunner:
                 lambda event: event.name == "disconnect",
                 self._bounded_timeout(15, call_deadline),
             )
-            return "caller_disconnect"
+            completion_reason = "caller_disconnect"
         except RunFailure as error:
             if "Timed out" not in str(error):
                 raise
-            return "caller_end_requested"
+            completion_reason = "caller_end_requested"
+        return {
+            "completion_reason": completion_reason,
+            "remote_response_observed": response_latency is not None,
+            "remote_response_latency_seconds": response_latency,
+        }
+
+    def _wait_for_remote_response(
+        self,
+        server: LocalRunServer,
+        call_deadline: float,
+        injection_finished: RunEvent,
+    ) -> float:
+        deadline = min(
+            time.monotonic() + self.config.response_timeout_seconds,
+            call_deadline,
+        )
+        first_active: RunEvent | None = None
+        quiet_since: float | None = None
+        while time.monotonic() < deadline:
+            event = self._next_event(
+                server,
+                min(0.2, deadline - time.monotonic()),
+            )
+            now = time.monotonic()
+            if event is not None:
+                if event.name == "disconnect":
+                    raise RunFailure(
+                        "Call disconnected before the required remote response"
+                    )
+                if event.name == "remote_audio_active":
+                    if first_active is None:
+                        first_active = event
+                    quiet_since = None
+                elif event.name == "remote_audio_inactive" and first_active:
+                    quiet_since = now
+            if (
+                first_active is not None
+                and quiet_since is not None
+                and now - quiet_since >= self.config.remote_silence_seconds
+            ):
+                return max(
+                    0.0,
+                    first_active.timestamp - injection_finished.timestamp,
+                )
+        if first_active is None:
+            raise RunFailure(
+                "No remote response was observed after caller audio finished"
+            )
+        raise RunFailure(
+            "Remote response did not become quiet before the response timeout"
+        )
 
     @staticmethod
     def _bounded_timeout(requested: float, deadline: float) -> float:
@@ -187,7 +313,9 @@ class BrowserRunner:
         except PlaywrightError as error:
             raise RunFailure(f"Browser command {command!r} failed: {error}") from error
 
-    def _wait_for(self, server: LocalRunServer, predicate: Any, timeout: float) -> RunEvent:
+    def _wait_for(
+        self, server: LocalRunServer, predicate: Any, timeout: float
+    ) -> RunEvent:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             event = self._next_event(server, min(0.2, deadline - time.monotonic()))

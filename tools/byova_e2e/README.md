@@ -121,6 +121,9 @@ byova-e2e login
 Chrome profile, sign in as the `BYOVA_E2E_TEST_USER_EMAIL` configured in
 `.env`, and approve consent. The local callback must remain
 `http://localhost:8765/oauth/callback`, matching the integration configuration.
+When `BYOVA_E2E_TEST_USER_EMAIL` is set, the authorization request explicitly
+selects an account and supplies that email as the login hint so an existing
+administrator session cannot be accepted accidentally.
 The returned access and refresh tokens are written only to ignored
 `.state/oauth-token.json` with owner-only permissions and refreshed on later
 runs. A temporary `BYOVA_E2E_WEBEX_ACCESS_TOKEN` environment value can instead
@@ -137,6 +140,41 @@ remote speech is observed, the caller injects after 10 seconds by default; set
 artifact records which gate sent the utterance. Run artifacts are written to
 `.artifacts/`; use them with the gateway logs and recordings for post-call
 diagnosis.
+
+### Run a bounded natural-pause scenario
+
+Use repeated `--text-segment` values to render one deterministic caller WAV
+with exact sample-level silence between phrases. The following command inserts
+1.8 seconds of silence: one second for the gateway VAD end-silence threshold
+and 800 ms inside the default one-second GECX resume grace.
+
+```bash
+byova-e2e run \
+  --destination 9999 \
+  --text-segment "I'd like to book" \
+  --text-segment "a room in San Jose" \
+  --segment-pause-ms 1800 \
+  --remote-prompt-occurrence 2 \
+  --require-remote-response \
+  --response-timeout-seconds 30
+```
+
+With `--require-remote-response`, the run fails unless remote audio begins
+after caller injection and subsequently becomes quiet. The artifact records
+the segment count, inserted pause, response observation, and measured response
+latency. It also records UTC receipt time for every browser event plus the
+overall UTC run window, providing an exact interval for gateway and CES log
+correlation. Confirm that both segments formed one CES transcript and one WxCC
+START/END boundary pair.
+
+For Webex Contact Center entry points that play ringback before the virtual
+agent greeting, `--remote-prompt-occurrence 2` waits for the second completed
+remote-audio epoch. This prevents the caller fixture from being injected
+between ringback and creation of the BYOVA conversation.
+
+Live runs use headless Chromium by default, so automated calls do not open a
+browser window over other work. Add `--headed` only when interactive browser
+media debugging is required.
 
 ## Safety boundaries
 
