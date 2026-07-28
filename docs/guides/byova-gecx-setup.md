@@ -206,11 +206,12 @@ The gateway's central Silero observer owns Webex `START_OF_INPUT` and
 `END_OF_INPUT` events. GECX does not run a second local speech detector: every
 caller-audio frame is ingested while CES responses are being produced.
 At an apparent speech end, the gateway holds `END_OF_INPUT` for
-`speech_end_grace_ms` (default: `500`). If speech resumes in that window, GECX
-removes the endpoint-triggering pause, merges up to `input_pause_preroll_ms` of
-the resumed onset, and keeps one CES input turn. Otherwise it commits the
-boundary normally. Configure the observer under the top-level
-`voice_activity_detection` block in `config/config.yaml`.
+`speech_end_grace_ms` (default: `1000`, maximum: `2000`). With the default
+`end_silence_ms` value, this creates a bounded two-second natural-pause window.
+If speech resumes in that window, GECX removes the endpoint-triggering pause,
+merges up to `input_pause_preroll_ms` of the resumed onset, and keeps one CES
+input turn. Otherwise it commits the boundary normally. Configure the observer
+under the top-level `voice_activity_detection` block in `config/config.yaml`.
 
 ### Audio format: WxCC expects a self-describing WAV clip
 
