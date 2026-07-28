@@ -17,8 +17,10 @@ voice_activity_detection:
   # One second balances natural pauses with responsive turn-taking for
   # utterance-buffered connectors such as AWS Lex.
   end_silence_ms: 1000
-  # GECX can merge speech that resumes shortly after an apparent turn end.
-  speech_end_grace_ms: 500
+  # GECX can merge speech that resumes within one second after an apparent
+  # turn end. Combined with end_silence_ms, this creates a two-second bounded
+  # natural-pause window without holding every completed turn indefinitely.
+  speech_end_grace_ms: 1000
   # Used only when WxCC omits the mandatory audio_input.sample_rate_hertz field.
   fallback_sample_rate_hertz: 8000
 

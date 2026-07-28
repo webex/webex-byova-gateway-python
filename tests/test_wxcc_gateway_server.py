@@ -384,6 +384,7 @@ class TestConversationProcessor:
             assert resumed == []
             assert final_end == []
             assert len(FakeTimer.instances) == 2
+            assert [timer.interval for timer in FakeTimer.instances] == [1.0, 1.0]
             assert FakeTimer.instances[0].cancelled is True
 
             FakeTimer.instances[1].callback()
@@ -399,6 +400,33 @@ class TestConversationProcessor:
         assert operations.count("resume_speech_turn") == 1
         assert operations.count("commit_speech_turn") == 1
         assert operations.count("handle_speech_boundary") == 2
+
+    @pytest.mark.parametrize(
+        ("configured_grace_ms", "expected_grace_ms"),
+        [
+            (None, 1000),
+            (-1, 0),
+            (2500, 2000),
+        ],
+    )
+    def test_gateway_bounds_speech_end_grace(
+        self,
+        mock_router,
+        configured_grace_ms,
+        expected_grace_ms,
+    ):
+        vad_config = {}
+        if configured_grace_ms is not None:
+            vad_config["speech_end_grace_ms"] = configured_grace_ms
+
+        processor = ConversationProcessor(
+            conversation_id="test_conv_123",
+            virtual_agent_id="test_agent_456",
+            router=mock_router,
+            vad_config=vad_config,
+        )
+
+        assert processor.speech_end_grace_ms == expected_grace_ms
 
     def test_gateway_suppresses_overlapping_boundaries_while_response_pending(
         self, processor, mock_router, mock_audio_input
