@@ -22,8 +22,9 @@ from .auth import (
     complete_login,
     load_local_environment,
 )
-from .models import RunConfig
+from .models import ExpectedOutcome, RunConfig
 from .runner import BrowserRunner, RunFailure
+from .scenarios import SCENARIOS, get_scenario
 
 DESTINATION_PATTERN = re.compile(r"^(?:tel:)?\+?[0-9]{2,20}$")
 TOOL_ROOT = Path(__file__).resolve().parents[2]
@@ -39,9 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     login.add_argument("--timeout-seconds", type=float, default=300)
 
-    run = commands.add_parser(
-        "run", help="Place one test call and inject one utterance"
-    )
+    run = commands.add_parser("run", help="Place one headless regression call")
     run.add_argument(
         "--destination", required=True, help="Extension or E.164 number to dial"
     )
@@ -54,11 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="text_segments",
         help="Repeat for each locally rendered speech segment",
     )
+    source.add_argument(
+        "--scenario",
+        choices=sorted(SCENARIOS),
+        help="Run one named GECX regression scenario and its outcome assertions",
+    )
     run.add_argument("--voice", default="Samantha", help="macOS say voice for --text")
     run.add_argument(
         "--segment-pause-ms",
         type=int,
-        default=1000,
+        default=None,
         help="Exact silence inserted between repeated --text-segment values",
     )
     run.add_argument("--remote-silence-ms", type=int, default=750)
@@ -86,6 +90,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fail unless remote audio responds after caller audio finishes",
     )
     run.add_argument("--response-timeout-seconds", type=float, default=30)
+    run.add_argument(
+        "--expect-outcome",
+        choices=[outcome.value for outcome in ExpectedOutcome],
+        help=(
+            "Assert a normal response, successful session-end disconnect, or "
+            "configured transfer announcement sequence"
+        ),
+    )
+    run.add_argument(
+        "--expected-response-prompts",
+        type=int,
+        default=None,
+        help="Completed post-injection remote prompt epochs required",
+    )
+    run.add_argument(
+        "--connected-observation-seconds",
+        type=float,
+        default=0,
+        help=(
+            "Optional transfer-specific interval during which the call must remain "
+            "connected after all required announcements"
+        ),
+    )
     run.add_argument("--artifact-dir", type=Path, default=TOOL_ROOT / ".artifacts")
     browser_mode = run.add_mutually_exclusive_group()
     browser_mode.add_argument(
@@ -148,6 +175,27 @@ class CLIError(ValueError):
 
 
 def _run(args: argparse.Namespace) -> None:
+    scenario = get_scenario(args.scenario) if args.scenario else None
+    text = args.text if scenario is None else scenario.text
+    text_segments = (
+        args.text_segments if scenario is None else list(scenario.text_segments) or None
+    )
+    segment_pause_ms = (
+        args.segment_pause_ms
+        if args.segment_pause_ms is not None
+        else (scenario.segment_pause_ms if scenario else 1000)
+    )
+    expected_outcome = (
+        ExpectedOutcome(args.expect_outcome)
+        if args.expect_outcome
+        else (scenario.expected_outcome if scenario else None)
+    )
+    expected_response_prompts = (
+        args.expected_response_prompts
+        if args.expected_response_prompts is not None
+        else (scenario.expected_response_prompts if scenario else 1)
+    )
+
     if not DESTINATION_PATTERN.fullmatch(args.destination):
         raise CLIError(
             "--destination must be an extension or E.164 number, optionally prefixed with tel:"
@@ -168,29 +216,33 @@ def _run(args: argparse.Namespace) -> None:
         raise CLIError("All timeout values must be greater than zero")
     if args.initial_silence_fallback_seconds < 0:
         raise CLIError("--initial-silence-fallback-seconds cannot be negative")
-    if args.text_segments is not None:
-        if len(args.text_segments) < 2:
+    if args.connected_observation_seconds < 0:
+        raise CLIError("--connected-observation-seconds cannot be negative")
+    if expected_response_prompts <= 0:
+        raise CLIError("--expected-response-prompts must be greater than zero")
+    if text_segments is not None:
+        if len(text_segments) < 2:
             raise CLIError("Repeat --text-segment at least twice")
-        if args.segment_pause_ms <= 0:
+        if segment_pause_ms <= 0:
             raise CLIError("--segment-pause-ms must be greater than zero")
 
     token = access_token_for_run(OAuthTokenStore(TOKEN_PATH))
     with tempfile.TemporaryDirectory(prefix="byova-e2e-") as temp_dir:
         audio_path = Path(temp_dir) / "caller.wav"
-        if args.text is not None:
-            prepared = render_text(args.text, args.voice, audio_path)
+        if text is not None:
+            prepared = render_text(text, args.voice, audio_path)
             audio_profile = {"kind": "text"}
-        elif args.text_segments is not None:
+        elif text_segments is not None:
             prepared = render_text_sequence(
-                args.text_segments,
-                args.segment_pause_ms,
+                text_segments,
+                segment_pause_ms,
                 args.voice,
                 audio_path,
             )
             audio_profile = {
                 "kind": "segmented_text",
-                "segment_count": len(args.text_segments),
-                "segment_pause_ms": args.segment_pause_ms,
+                "segment_count": len(text_segments),
+                "segment_pause_ms": segment_pause_ms,
             }
         else:
             prepared = prepare_wav(args.wav, audio_path)
@@ -209,6 +261,9 @@ def _run(args: argparse.Namespace) -> None:
             remote_prompt_occurrence=args.remote_prompt_occurrence,
             require_remote_response=args.require_remote_response,
             response_timeout_seconds=args.response_timeout_seconds,
+            expected_outcome=expected_outcome,
+            expected_response_prompts=expected_response_prompts,
+            connected_observation_seconds=args.connected_observation_seconds,
             headless=args.headless,
         )
         result = BrowserRunner(TOOL_ROOT, config).run()
@@ -226,6 +281,11 @@ def _run(args: argparse.Namespace) -> None:
                 "remote_silence_ms": round(config.remote_silence_seconds * 1000),
             },
             "browser_profile": {"headless": config.headless},
+            "scenario": scenario.name if scenario else None,
+            "expected_outcome": (
+                config.expected_outcome.value if config.expected_outcome else None
+            ),
+            "expected_response_prompts": config.expected_response_prompts,
             **result,
         },
     )

@@ -42,6 +42,7 @@ type CallingCall = {
   on: (name: string, callback: (...args: unknown[]) => void) => void;
   dial: (stream: LocalMicrophoneStream) => Promise<void> | void;
   end: () => void;
+  getDisconnectReason: () => { code: number; cause: string };
 };
 
 declare global {
@@ -147,6 +148,7 @@ class CallingMediaClient {
   private call?: CallingCall;
   private observer?: RemoteAudioActivity;
   private injected = false;
+  private callerEndRequested = false;
 
   async initialise(): Promise<void> {
     // This method is called from the Start button's trusted click event. Chrome
@@ -224,12 +226,18 @@ class CallingMediaClient {
       void report("established");
     });
     this.call.on("remote_media", (track) => void this.attachRemoteMedia(track));
-    this.call.on("disconnect", () => {
+    this.call.on("disconnect", (correlationId) => {
+      const reason = this.call?.getDisconnectReason();
       this.observer?.stop();
       remoteAudio.pause();
       remoteAudio.srcObject = null;
       updateStatus("Call disconnected.");
-      void report("disconnect");
+      void report("disconnect", {
+        correlationId: String(correlationId ?? ""),
+        code: reason?.code,
+        cause: reason?.cause,
+        initiatedByCaller: this.callerEndRequested,
+      });
     });
     this.call.on("call_error", (error) => void this.reportError(error));
     await this.call.dial(this.localMicrophone);
@@ -259,6 +267,7 @@ class CallingMediaClient {
   }
 
   async endCall(): Promise<void> {
+    this.callerEndRequested = true;
     this.call?.end();
   }
 

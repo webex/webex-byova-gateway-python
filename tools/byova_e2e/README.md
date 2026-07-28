@@ -176,6 +176,54 @@ Live runs use headless Chromium by default, so automated calls do not open a
 browser window over other work. Add `--headed` only when interactive browser
 media debugging is required.
 
+## Run the GECX regression scenarios
+
+Named scenarios keep the caller fixture and caller-observable outcome together:
+
+```bash
+# Short request: one complete virtual-agent response.
+byova-e2e run --destination 9999 --scenario normal-response \
+  --remote-prompt-occurrence 2
+
+# One caller turn with a bounded 1.8-second natural pause.
+byova-e2e run --destination 9999 --scenario natural-pause \
+  --remote-prompt-occurrence 2
+
+# Successful task completion: hear the completion response, then require
+# WxCC to disconnect the call without a caller-issued hangup.
+byova-e2e run --destination 9999 --scenario task-complete \
+  --remote-prompt-occurrence 2
+
+# Human escalation: require the CES and WxCC announcement epochs.
+byova-e2e run --destination 9999 --scenario transfer \
+  --remote-prompt-occurrence 2
+```
+
+The completed artifact records the scenario, expected outcome, completed
+remote-prompt count, Calling SDK disconnect cause/code, whether the caller
+requested that disconnect, and the exact UTC event window.
+
+These assertions intentionally use only behavior available to a real caller.
+For release evidence, correlate the artifact window with gateway logs:
+
+- `normal-response`: one caller turn and no terminal output event.
+- `natural-pause`: one outward `START_OF_INPUT`, one merged resume, one outward
+  `END_OF_INPUT`, and one complete CES transcript.
+- `task-complete`: one `SESSION_END` output event before the remote disconnect.
+- `transfer`: one `TRANSFER_TO_AGENT` output event corresponding to the second
+  configured announcement epoch.
+
+The `transfer` scenario defaults to two completed post-injection announcement
+epochs because the current dev flow is configured to play both the CES and WxCC
+transfer announcements. Override `--expected-response-prompts` only when the
+target flow intentionally has different announcement behavior.
+
+For custom fixtures, `--expect-outcome response|session-end|transfer` enables
+the same assertions without using a named scenario. Flows that guarantee a
+minimum connected interval after transfer can add
+`--connected-observation-seconds`; it is disabled by default because queue and
+agent-availability behavior differs after WxCC accepts the transfer event.
+
 ## Safety boundaries
 
 - The local server listens only on loopback and suppresses HTTP request logs so
