@@ -183,6 +183,7 @@ gecx_connector:
     output_sample_rate_hertz: 8000
     output_audio_encoding: "MULAW"
     force_input_format: "wxcc"
+    turn_response_timeout_seconds: 30
     # service_account_key: "/path/to/ces-key.json"
     agents:
       - "My GECX Agent"
