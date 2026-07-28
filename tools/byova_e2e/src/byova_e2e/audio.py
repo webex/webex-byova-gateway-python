@@ -10,7 +10,6 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-
 TARGET_SAMPLE_RATE = 16_000
 
 
@@ -27,11 +26,13 @@ class PreparedAudio:
     duration_seconds: float
 
 
-def _write_mono_pcm(source: Path, destination: Path) -> PreparedAudio:
+def _read_mono(source: Path) -> np.ndarray:
     try:
         samples, sample_rate = sf.read(source, dtype="float32", always_2d=True)
     except Exception as error:  # soundfile exposes backend-specific errors
-        raise AudioPreparationError(f"Cannot read WAV input {source}: {error}") from error
+        raise AudioPreparationError(
+            f"Cannot read WAV input {source}: {error}"
+        ) from error
 
     if sample_rate <= 0 or samples.size == 0:
         raise AudioPreparationError(f"WAV input {source} contains no audio")
@@ -40,9 +41,14 @@ def _write_mono_pcm(source: Path, destination: Path) -> PreparedAudio:
     if sample_rate != TARGET_SAMPLE_RATE:
         source_positions = np.arange(len(mono), dtype=np.float64) / sample_rate
         target_length = round(len(mono) * TARGET_SAMPLE_RATE / sample_rate)
-        target_positions = np.arange(target_length, dtype=np.float64) / TARGET_SAMPLE_RATE
+        target_positions = (
+            np.arange(target_length, dtype=np.float64) / TARGET_SAMPLE_RATE
+        )
         mono = np.interp(target_positions, source_positions, mono).astype(np.float32)
+    return mono
 
+
+def _write_samples(mono: np.ndarray, destination: Path) -> PreparedAudio:
     sf.write(destination, mono, TARGET_SAMPLE_RATE, subtype="PCM_16")
     digest = hashlib.sha256(destination.read_bytes()).hexdigest()
     return PreparedAudio(
@@ -50,6 +56,10 @@ def _write_mono_pcm(source: Path, destination: Path) -> PreparedAudio:
         sha256=digest,
         duration_seconds=len(mono) / TARGET_SAMPLE_RATE,
     )
+
+
+def _write_mono_pcm(source: Path, destination: Path) -> PreparedAudio:
+    return _write_samples(_read_mono(source), destination)
 
 
 def prepare_wav(source: Path, destination: Path) -> PreparedAudio:
@@ -60,16 +70,16 @@ def prepare_wav(source: Path, destination: Path) -> PreparedAudio:
     return _write_mono_pcm(source, destination)
 
 
-def render_text(text: str, voice: str, destination: Path) -> PreparedAudio:
-    """Render text with macOS `say` and normalise it for WebRTC playback."""
+def _render_raw_text(text: str, voice: str, raw_path: Path) -> None:
     if not text.strip():
         raise AudioPreparationError("Text input must not be empty")
 
-    raw_path = destination.with_suffix(".say.aiff")
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(
-            ["say", "-v", voice, "-o", str(raw_path), text], text=True, capture_output=True
+            ["say", "-v", voice, "-o", str(raw_path), text],
+            text=True,
+            capture_output=True,
         )
     except FileNotFoundError as error:
         raise AudioPreparationError(
@@ -78,5 +88,43 @@ def render_text(text: str, voice: str, destination: Path) -> PreparedAudio:
     if result.returncode or not raw_path.is_file() or raw_path.stat().st_size == 0:
         raw_path.unlink(missing_ok=True)
         detail = result.stderr.strip() or f"say exited with status {result.returncode}"
-        raise AudioPreparationError(f"macOS `say` could not render the requested voice: {detail}")
+        raise AudioPreparationError(
+            f"macOS `say` could not render the requested voice: {detail}"
+        )
+
+
+def render_text(text: str, voice: str, destination: Path) -> PreparedAudio:
+    """Render text with macOS `say` and normalise it for WebRTC playback."""
+    raw_path = destination.with_suffix(".say.aiff")
+    _render_raw_text(text, voice, raw_path)
     return _write_mono_pcm(raw_path, destination)
+
+
+def render_text_sequence(
+    segments: list[str],
+    pause_ms: int,
+    voice: str,
+    destination: Path,
+) -> PreparedAudio:
+    """Render speech segments separated by an exact sample-level pause."""
+    if len(segments) < 2:
+        raise AudioPreparationError("A text sequence requires at least two segments")
+    if pause_ms <= 0:
+        raise AudioPreparationError("Sequence pause must be greater than zero")
+
+    rendered: list[np.ndarray] = []
+    for index, segment in enumerate(segments):
+        raw_path = destination.with_name(f"{destination.stem}.segment-{index}.say.aiff")
+        _render_raw_text(segment, voice, raw_path)
+        rendered.append(_read_mono(raw_path))
+
+    silence = np.zeros(
+        round(TARGET_SAMPLE_RATE * pause_ms / 1000),
+        dtype=np.float32,
+    )
+    combined_parts: list[np.ndarray] = []
+    for index, samples in enumerate(rendered):
+        if index:
+            combined_parts.append(silence)
+        combined_parts.append(samples)
+    return _write_samples(np.concatenate(combined_parts), destination)

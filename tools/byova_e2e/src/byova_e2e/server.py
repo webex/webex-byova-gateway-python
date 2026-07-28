@@ -6,6 +6,7 @@ import json
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -80,6 +81,7 @@ class LocalRunServer:
                         name=str(payload["name"]),
                         timestamp=float(payload.get("timestamp", time.monotonic())),
                         details=dict(payload.get("details", {})),
+                        received_at_utc=datetime.now(timezone.utc).isoformat(),
                     )
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                     self.send_error(HTTPStatus.BAD_REQUEST, str(error))

@@ -3,9 +3,9 @@ import stat
 from urllib.parse import parse_qs, urlparse
 
 from byova_e2e.auth import (
+    SCOPES,
     OAuthCredentials,
     OAuthTokenStore,
-    SCOPES,
     access_token_for_run,
     authorization_url,
     load_local_environment,
@@ -13,7 +13,9 @@ from byova_e2e.auth import (
 
 
 def test_authorization_url_has_required_scopes_and_callback() -> None:
-    credentials = OAuthCredentials("client", "secret", "http://localhost:8765/oauth/callback")
+    credentials = OAuthCredentials(
+        "client", "secret", "http://localhost:8765/oauth/callback"
+    )
 
     query = parse_qs(urlparse(authorization_url(credentials, "state-value")).query)
 
@@ -21,6 +23,25 @@ def test_authorization_url_has_required_scopes_and_callback() -> None:
     assert query["redirect_uri"] == ["http://localhost:8765/oauth/callback"]
     assert query["scope"] == [" ".join(SCOPES)]
     assert query["state"] == ["state-value"]
+
+
+def test_authorization_url_selects_configured_test_user() -> None:
+    credentials = OAuthCredentials(
+        "client", "secret", "http://localhost:8765/oauth/callback"
+    )
+
+    query = parse_qs(
+        urlparse(
+            authorization_url(
+                credentials,
+                "state-value",
+                "testcaller@example.com",
+            )
+        ).query
+    )
+
+    assert query["prompt"] == ["select_account"]
+    assert query["login_hint"] == ["testcaller@example.com"]
 
 
 def test_token_store_uses_owner_only_permissions(tmp_path) -> None:
@@ -31,7 +52,9 @@ def test_token_store_uses_owner_only_permissions(tmp_path) -> None:
     assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
 
 
-def test_access_token_environment_override_does_not_touch_store(tmp_path, monkeypatch) -> None:
+def test_access_token_environment_override_does_not_touch_store(
+    tmp_path, monkeypatch
+) -> None:
     store = OAuthTokenStore(tmp_path / "missing.json")
     monkeypatch.setenv("BYOVA_E2E_WEBEX_ACCESS_TOKEN", "override-token")
 
@@ -39,7 +62,9 @@ def test_access_token_environment_override_does_not_touch_store(tmp_path, monkey
     assert not store.path.exists()
 
 
-def test_local_environment_loads_byova_values_without_overriding_shell(tmp_path, monkeypatch) -> None:
+def test_local_environment_loads_byova_values_without_overriding_shell(
+    tmp_path, monkeypatch
+) -> None:
     environment = tmp_path / ".env"
     environment.write_text(
         "BYOVA_E2E_WEBEX_CLIENT_ID=file-client\n"
@@ -63,4 +88,6 @@ def test_local_environment_rejects_unrelated_variables(tmp_path) -> None:
     except Exception as error:
         assert "Only BYOVA_E2E" in str(error)
     else:
-        raise AssertionError("Expected local environment loader to reject unrelated variables")
+        raise AssertionError(
+            "Expected local environment loader to reject unrelated variables"
+        )

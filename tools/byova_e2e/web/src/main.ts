@@ -1,6 +1,7 @@
 import CallingPackage from "webex/calling";
 import { LocalMicrophoneStream } from "@webex/calling";
 
+import { calculateRms } from "./audio-level";
 import { unwrapDefaultExport } from "./module-interop";
 
 type RunConfig = {
@@ -55,6 +56,7 @@ declare global {
 
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
 const startButton = document.querySelector<HTMLButtonElement>("#start-calling-test")!;
+const remoteAudio = document.querySelector<HTMLAudioElement>("#remote-audio")!;
 
 function updateStatus(message: string): void {
   status.textContent = message;
@@ -90,6 +92,8 @@ class RemoteAudioActivity {
   private readonly values: Uint8Array<ArrayBuffer>;
   private remoteActive = false;
   private animationFrame?: number;
+  private levelWindowStartedAt = performance.now();
+  private maximumRms = 0;
 
   constructor(context: AudioContext, track: MediaStreamTrack) {
     const stream = new MediaStream([track]);
@@ -109,16 +113,18 @@ class RemoteAudioActivity {
   start(): void {
     const observe = () => {
       this.analyser.getByteTimeDomainData(this.values);
-      let squaredTotal = 0;
-      for (const value of this.values) {
-        const sample = (value - 128) / 128;
-        squaredTotal += sample * sample;
-      }
-      const rms = Math.sqrt(squaredTotal / this.values.length);
+      const rms = calculateRms(this.values);
+      this.maximumRms = Math.max(this.maximumRms, rms);
       const active = rms >= 0.012;
       if (active !== this.remoteActive) {
         this.remoteActive = active;
         void report(active ? "remote_audio_active" : "remote_audio_inactive", { rms });
+      }
+      const now = performance.now();
+      if (now - this.levelWindowStartedAt >= 1000) {
+        void report("remote_audio_level", { maximumRms: this.maximumRms });
+        this.levelWindowStartedAt = now;
+        this.maximumRms = 0;
       }
       this.animationFrame = requestAnimationFrame(observe);
     };
@@ -217,9 +223,11 @@ class CallingMediaClient {
       updateStatus("Call established; listening for the remote prompt.");
       void report("established");
     });
-    this.call.on("remote_media", (track) => this.attachRemoteMedia(track));
+    this.call.on("remote_media", (track) => void this.attachRemoteMedia(track));
     this.call.on("disconnect", () => {
       this.observer?.stop();
+      remoteAudio.pause();
+      remoteAudio.srcObject = null;
       updateStatus("Call disconnected.");
       void report("disconnect");
     });
@@ -254,15 +262,23 @@ class CallingMediaClient {
     this.call?.end();
   }
 
-  private attachRemoteMedia(value: unknown): void {
+  private async attachRemoteMedia(value: unknown): Promise<void> {
     if (!(value instanceof MediaStreamTrack)) {
-      void this.reportError(new Error("Calling SDK remote_media event contained no audio track"));
+      await this.reportError(new Error("Calling SDK remote_media event contained no audio track"));
       return;
     }
+    const stream = new MediaStream([value]);
+    remoteAudio.srcObject = stream;
+    await remoteAudio.play();
     this.observer?.stop();
     this.observer = new RemoteAudioActivity(this.audioContext, value);
     this.observer.start();
-    void report("remote_media");
+    await report("remote_media", {
+      audioContextState: this.audioContext.state,
+      enabled: value.enabled,
+      muted: value.muted,
+      readyState: value.readyState,
+    });
   }
 
   private assertReady(): void {
