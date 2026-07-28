@@ -197,7 +197,6 @@ class TestConversationProcessor:
         }
         mock_router.route_request.side_effect = [None, iter([lex_response])]
         mock_router.should_observe_speech_boundaries.return_value = True
-        mock_router.get_audio_delivery_mode.return_value = "utterance_buffered"
 
         responses = list(processor._process_audio_input(mock_audio_input))
 
@@ -205,6 +204,9 @@ class TestConversationProcessor:
         assert responses[0].output_events[0].event_type == 5
         assert responses[1].prompts[0].text == "Lex reply"
         assert mock_router.route_request.call_count == 2
+        assert mock_router.route_request.call_args_list[1].args[1] == (
+            "handle_speech_boundary"
+        )
         assert mock_router.route_request.call_args_list[1].args[3] == {
             "conversation_id": "test_conv_123",
             "virtual_agent_id": "test_agent_456",
@@ -868,9 +870,11 @@ class TestConversationProcessor:
         call_args = mock_router.route_request.call_args
         message_data = call_args[0][3]  # Fourth argument is message_data
         assert message_data["audio_data"] == b"test_audio_bytes"
-        assert message_data["encoding"] == 2
-        assert message_data["sample_rate_hertz"] == 8000
-        assert message_data["language_code"] == "en-US"
+        assert message_data["audio_metadata"] == {
+            "encoding": 2,
+            "sample_rate_hertz": 8000,
+            "language_code": "en-US",
+        }
 
     def test_backward_compatibility_single_responses(self, processor, mock_router, mock_audio_input):
         """Test that single responses still work for backward compatibility."""
