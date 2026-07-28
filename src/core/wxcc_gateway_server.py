@@ -88,8 +88,9 @@ class ConversationProcessor:
         self.vad_fallback_sample_rate_hertz = vad_settings.get(
             "fallback_sample_rate_hertz", 8000
         )
-        self.speech_end_grace_ms = max(
-            0, int(vad_settings.get("speech_end_grace_ms", 500))
+        self.speech_end_grace_ms = min(
+            2000,
+            max(0, int(vad_settings.get("speech_end_grace_ms", 1000))),
         )
         self.speech_boundary_observer = SileroSpeechBoundaryObserver(
             conversation_id,
