@@ -56,6 +56,67 @@
       ]
     },
     {
+      "id": "multi-turn-response",
+      "title": "continues a hotel request across two caller turns",
+      "description": "The gateway continues ingesting caller audio after delivering a complete GECX response.",
+      "steps": [
+        {
+          "name": "Start a hotel request",
+          "action": "speak",
+          "text": "I'd like to book a hotel."
+        },
+        {
+          "name": "Expect the first complete virtual-agent response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        },
+        {
+          "name": "Continue with a room preference",
+          "action": "speak",
+          "text": "I need a queen room."
+        },
+        {
+          "name": "Expect the second complete virtual-agent response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "speak-during-playback",
+      "title": "accepts a caller turn while GECX audio is playing",
+      "description": "Caller ingress remains active during a GECX response and produces a later complete response.",
+      "steps": [
+        {
+          "name": "Request a detailed hotel description",
+          "action": "speak",
+          "text": "Please describe all of the available hotel room types and amenities."
+        },
+        {
+          "name": "Wait only for the virtual-agent response to start",
+          "expect": {
+            "outcome": "response-start"
+          }
+        },
+        {
+          "name": "Speak a new preference during playback",
+          "action": "speak",
+          "text": "Actually, I only need a queen room."
+        },
+        {
+          "name": "Expect a later complete virtual-agent response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
       "id": "task-complete",
       "title": "ends a successfully completed task",
       "description": "The virtual agent closes a completed interaction and WxCC disconnects the caller.",
