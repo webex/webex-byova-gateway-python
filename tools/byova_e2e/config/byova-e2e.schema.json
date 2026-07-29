@@ -1,0 +1,230 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/webex/webex-byova-gateway-python/tools/byova_e2e/config/byova-e2e.schema.json",
+  "title": "BYOVA E2E test plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "tests"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "use": {
+      "$ref": "#/definitions/use"
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/test"
+      }
+    }
+  },
+  "definitions": {
+    "use": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "voice": {
+          "type": "string",
+          "minLength": 1
+        },
+        "headless": {
+          "type": "boolean"
+        },
+        "remoteSilenceMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "remotePromptOccurrence": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "initialSilenceFallbackSeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "promptTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "callTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "postAudioGraceSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "responseTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "steps"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "use": {
+          "$ref": "#/definitions/use"
+        },
+        "steps": {
+          "items": [
+            {
+              "oneOf": [
+                {
+                  "$ref": "#/definitions/speakText"
+                },
+                {
+                  "$ref": "#/definitions/speakSegments"
+                },
+                {
+                  "$ref": "#/definitions/play"
+                }
+              ]
+            },
+            {
+              "$ref": "#/definitions/expectStep"
+            }
+          ],
+          "additionalItems": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "namedStep": {
+      "type": "string",
+      "minLength": 1
+    },
+    "speakText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "text"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/namedStep"
+        },
+        "action": {
+          "const": "speak"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "speakSegments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "segments",
+        "pauseMs"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/namedStep"
+        },
+        "action": {
+          "const": "speak"
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "pauseMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "play": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "path"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/namedStep"
+        },
+        "action": {
+          "const": "play"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "expectStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expect"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/namedStep"
+        },
+        "expect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "enum": [
+                "response",
+                "session-end",
+                "transfer"
+              ]
+            },
+            "responsePrompts": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "connectedObservationSeconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

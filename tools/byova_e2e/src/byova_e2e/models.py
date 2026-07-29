@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+class ExpectedOutcome(str, Enum):
+    """Caller-observable outcome required for a successful E2E run."""
+
+    RESPONSE = "response"
+    SESSION_END = "session-end"
+    TRANSFER = "transfer"
 
 
 @dataclass(frozen=True)
@@ -24,6 +33,9 @@ class RunConfig:
     remote_prompt_occurrence: int = 1
     require_remote_response: bool = False
     response_timeout_seconds: float = 30.0
+    expected_outcome: ExpectedOutcome | None = None
+    expected_response_prompts: int = 1
+    connected_observation_seconds: float = 0.0
     headless: bool = False
 
 

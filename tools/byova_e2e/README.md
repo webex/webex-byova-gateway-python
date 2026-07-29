@@ -176,6 +176,78 @@ Live runs use headless Chromium by default, so automated calls do not open a
 browser window over other work. Add `--headed` only when interactive browser
 media debugging is required.
 
+## Define tests in JSON
+
+Each version 1 test contains one audio action followed by one expectation. A
+`speak` action accepts either `text` or `segments` plus `pauseMs`; a `play`
+action accepts a WAV `path` relative to the config file. Test plans follow
+Playwright conventions: top-level `use` defaults, named `tests`, ordered
+`steps`, and explicit `expect` assertions. Reference
+`config/byova-e2e.schema.json` for editor validation and autocomplete.
+
+```json
+{
+  "$schema": "./byova-e2e.schema.json",
+  "version": 1,
+  "use": {
+    "headless": true,
+    "responseTimeoutSeconds": 30
+  },
+  "tests": [
+    {
+      "id": "request-response",
+      "title": "receives a complete virtual-agent response",
+      "steps": [
+        {
+          "name": "Speak one request",
+          "action": "speak",
+          "text": "Please help me with my request."
+        },
+        {
+          "name": "Expect one complete response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Validate and list the plan without authenticating or placing a call:
+
+```bash
+byova-e2e validate --config path/to/connector.spec.json --list
+```
+
+Then run one selected test with Playwright-style `--config` selection:
+
+```bash
+byova-e2e run \
+  --destination 9999 \
+  --config path/to/connector.spec.json \
+  --test request-response
+```
+
+Top-level `use` values apply to every test. A test may define its own `use`
+object to override those defaults. Explicit CLI options have final precedence,
+which is useful for a one-off timeout or headed debugging run. The loader
+rejects unsupported versions, duplicate test IDs, invalid step order, and
+unknown fields before it obtains a token or places a call.
+
+The completed artifact records the selected test, config path and SHA-256,
+expected outcome, completed remote-prompt count, Calling SDK disconnect
+cause/code, whether the caller requested that disconnect, and the exact UTC
+event window. The config hash ties live evidence to the exact plan contents.
+
+For custom fixtures, `--expect-outcome response|session-end|transfer` enables
+the same assertions without using a named test. Flows that guarantee a
+minimum connected interval after transfer can add
+`--connected-observation-seconds`; it is disabled by default because queue and
+agent-availability behavior differs after WxCC accepts the transfer event.
+
 ## Safety boundaries
 
 - The local server listens only on loopback and suppresses HTTP request logs so

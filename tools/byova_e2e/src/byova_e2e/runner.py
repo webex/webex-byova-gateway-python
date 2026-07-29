@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from .models import RunConfig, RunEvent
+from .models import ExpectedOutcome, RunConfig, RunEvent
 from .server import LocalRunServer
 from .state import PromptGate
 
@@ -24,6 +25,15 @@ class RunFailure(RuntimeError):
     def __init__(self, message: str, events: list[RunEvent] | None = None) -> None:
         super().__init__(message)
         self.events = events or []
+
+
+@dataclass(frozen=True)
+class ResponseObservation:
+    """Remote prompt and disconnect evidence collected after caller injection."""
+
+    prompt_count: int
+    latency_seconds: float
+    disconnect_event: RunEvent | None = None
 
 
 class BrowserRunner:
@@ -124,6 +134,10 @@ class BrowserRunner:
             "remote_response_latency_seconds": finish_result[
                 "remote_response_latency_seconds"
             ],
+            "observed_remote_prompt_count": finish_result[
+                "observed_remote_prompt_count"
+            ],
+            "disconnect": finish_result["disconnect"],
             "events": [
                 {
                     "name": event.name,
@@ -210,13 +224,39 @@ class BrowserRunner:
         call_deadline: float,
         injection_finished: RunEvent,
     ) -> dict[str, Any]:
-        response_latency: float | None = None
-        if self.config.require_remote_response:
-            response_latency = self._wait_for_remote_response(
+        expected_outcome = self.config.expected_outcome
+        require_response = (
+            self.config.require_remote_response or expected_outcome is not None
+        )
+        observation: ResponseObservation | None = None
+        if require_response:
+            observation = self._wait_for_remote_prompts(
                 server,
                 call_deadline,
                 injection_finished,
+                wait_for_disconnect=expected_outcome == ExpectedOutcome.SESSION_END,
             )
+            if expected_outcome == ExpectedOutcome.SESSION_END:
+                disconnect = observation.disconnect_event
+                if disconnect is None:
+                    raise RunFailure(
+                        "WxCC did not disconnect after the successful task-completion "
+                        "response"
+                    )
+                return {
+                    "completion_reason": "remote_disconnect",
+                    "remote_response_observed": True,
+                    "remote_response_latency_seconds": observation.latency_seconds,
+                    "observed_remote_prompt_count": observation.prompt_count,
+                    "disconnect": disconnect.details,
+                }
+            if expected_outcome == ExpectedOutcome.TRANSFER:
+                if self.config.connected_observation_seconds > 0:
+                    self._assert_call_remains_connected(
+                        server,
+                        call_deadline,
+                        self.config.connected_observation_seconds,
+                    )
         else:
             grace_deadline = min(
                 time.monotonic() + self.config.post_audio_grace_seconds,
@@ -232,37 +272,65 @@ class BrowserRunner:
                         "completion_reason": "remote_disconnect",
                         "remote_response_observed": False,
                         "remote_response_latency_seconds": None,
+                        "observed_remote_prompt_count": 0,
+                        "disconnect": event.details,
                     }
+        completion_reason, disconnect = self._end_call_locally(
+            server, page, call_deadline
+        )
+        return {
+            "completion_reason": completion_reason,
+            "remote_response_observed": observation is not None,
+            "remote_response_latency_seconds": (
+                observation.latency_seconds if observation else None
+            ),
+            "observed_remote_prompt_count": (
+                observation.prompt_count if observation else 0
+            ),
+            "disconnect": disconnect.details if disconnect else None,
+        }
+
+    def _end_call_locally(
+        self,
+        server: LocalRunServer,
+        page: Any,
+        call_deadline: float,
+    ) -> tuple[str, RunEvent | None]:
         self._command(page, "endCall")
         try:
-            self._wait_for(
+            disconnect = self._wait_for(
                 server,
                 lambda event: event.name == "disconnect",
                 self._bounded_timeout(15, call_deadline),
             )
-            completion_reason = "caller_disconnect"
+            completion_reason = (
+                "caller_disconnect"
+                if disconnect.details.get("initiatedByCaller", True)
+                else "remote_disconnect"
+            )
         except RunFailure as error:
             if "Timed out" not in str(error):
                 raise
             completion_reason = "caller_end_requested"
-        return {
-            "completion_reason": completion_reason,
-            "remote_response_observed": response_latency is not None,
-            "remote_response_latency_seconds": response_latency,
-        }
+            disconnect = None
+        return completion_reason, disconnect
 
-    def _wait_for_remote_response(
+    def _wait_for_remote_prompts(
         self,
         server: LocalRunServer,
         call_deadline: float,
         injection_finished: RunEvent,
-    ) -> float:
+        *,
+        wait_for_disconnect: bool = False,
+    ) -> ResponseObservation:
         deadline = min(
             time.monotonic() + self.config.response_timeout_seconds,
             call_deadline,
         )
         first_active: RunEvent | None = None
+        remote_active = False
         quiet_since: float | None = None
+        prompt_count = 0
         while time.monotonic() < deadline:
             event = self._next_event(
                 server,
@@ -271,31 +339,85 @@ class BrowserRunner:
             now = time.monotonic()
             if event is not None:
                 if event.name == "disconnect":
+                    if wait_for_disconnect and first_active is not None:
+                        if remote_active or quiet_since is not None:
+                            prompt_count += 1
+                        if prompt_count >= self.config.expected_response_prompts:
+                            return ResponseObservation(
+                                prompt_count=prompt_count,
+                                latency_seconds=max(
+                                    0.0,
+                                    first_active.timestamp
+                                    - injection_finished.timestamp,
+                                ),
+                                disconnect_event=event,
+                            )
                     raise RunFailure(
-                        "Call disconnected before the required remote response"
+                        "Call disconnected before the required remote response "
+                        "outcome was observed"
                     )
                 if event.name == "remote_audio_active":
                     if first_active is None:
                         first_active = event
+                    remote_active = True
                     quiet_since = None
                 elif event.name == "remote_audio_inactive" and first_active:
+                    remote_active = False
                     quiet_since = now
             if (
                 first_active is not None
                 and quiet_since is not None
                 and now - quiet_since >= self.config.remote_silence_seconds
             ):
-                return max(
-                    0.0,
-                    first_active.timestamp - injection_finished.timestamp,
-                )
+                prompt_count += 1
+                quiet_since = None
+                if (
+                    prompt_count >= self.config.expected_response_prompts
+                    and not wait_for_disconnect
+                ):
+                    return ResponseObservation(
+                        prompt_count=prompt_count,
+                        latency_seconds=max(
+                            0.0,
+                            first_active.timestamp - injection_finished.timestamp,
+                        ),
+                    )
         if first_active is None:
             raise RunFailure(
                 "No remote response was observed after caller audio finished"
             )
+        if wait_for_disconnect:
+            raise RunFailure(
+                "Required remote disconnect was not observed after the "
+                "task-completion response"
+            )
         raise RunFailure(
-            "Remote response did not become quiet before the response timeout"
+            f"Observed {prompt_count} of "
+            f"{self.config.expected_response_prompts} required completed remote "
+            "response prompt(s)"
         )
+
+    def _assert_call_remains_connected(
+        self,
+        server: LocalRunServer,
+        call_deadline: float,
+        observation_seconds: float,
+    ) -> None:
+        deadline = min(time.monotonic() + observation_seconds, call_deadline)
+        while time.monotonic() < deadline:
+            event = self._next_event(
+                server,
+                min(0.2, deadline - time.monotonic()),
+            )
+            if event and event.name == "disconnect":
+                raise RunFailure(
+                    "Call disconnected instead of remaining connected for "
+                    "WxCC agent routing"
+                )
+        if time.monotonic() >= call_deadline:
+            raise RunFailure(
+                "Call timeout expired before the transfer observation completed"
+            )
 
     @staticmethod
     def _bounded_timeout(requested: float, deadline: float) -> float:
