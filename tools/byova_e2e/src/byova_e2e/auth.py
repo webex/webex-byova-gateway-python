@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -20,10 +21,26 @@ AUTHORIZE_URL = "https://webexapis.com/v1/authorize"
 TOKEN_URL = "https://webexapis.com/v1/access_token"
 SCOPES = ("spark:xsi", "spark:calls_write", "spark:calls_read", "spark:webrtc_calling")
 TOKEN_EXPIRY_SKEW_SECONDS = 60
+TOKEN_PATH_ENVIRONMENT_VARIABLE = "BYOVA_E2E_WEBEX_TOKEN_PATH"
 
 
 class OAuthError(RuntimeError):
     """An OAuth configuration, callback, or token-exchange failure."""
+
+
+def default_token_path() -> Path:
+    """Return a user-level token path shared by repository worktrees."""
+    if configured_path := os.environ.get(TOKEN_PATH_ENVIRONMENT_VARIABLE):
+        token_path = Path(configured_path).expanduser()
+        if not token_path.is_absolute():
+            raise OAuthError(
+                f"${TOKEN_PATH_ENVIRONMENT_VARIABLE} must be an absolute path"
+            )
+        return token_path
+    state_root = Path(
+        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    ).expanduser()
+    return state_root / "byova-e2e" / "oauth-token.json"
 
 
 def load_local_environment(path: Path) -> None:
@@ -87,33 +104,54 @@ class OAuthCredentials:
 class OAuthTokenStore:
     """Persist refreshable OAuth credentials with owner-only file permissions."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, legacy_path: Path | None = None) -> None:
         self.path = path
+        self.legacy_path = legacy_path
 
     def load(self) -> dict[str, Any] | None:
-        if not self.path.is_file():
+        if self.path.is_file():
+            return self._load_path(self.path)
+        if self.legacy_path is None or not self.legacy_path.is_file():
             return None
+        payload = self._load_path(self.legacy_path)
+        self.save(payload)
+        return payload
+
+    def _load_path(self, path: Path) -> dict[str, Any]:
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise OAuthError(
-                f"Cannot read saved OAuth token at {self.path}: {error}"
+                f"Cannot read saved OAuth token at {path}: {error}"
             ) from error
         if not isinstance(payload, dict) or not isinstance(
             payload.get("access_token"), str
         ):
-            raise OAuthError(f"Saved OAuth token at {self.path} is invalid")
+            raise OAuthError(f"Saved OAuth token at {path} is invalid")
         return payload
 
     def save(self, token: dict[str, Any]) -> None:
+        parent_exists = self.path.parent.exists()
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(token, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        temporary.chmod(0o600)
-        temporary.replace(self.path)
-        self.path.chmod(0o600)
+        if not parent_exists:
+            self.path.parent.chmod(0o700)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(json.dumps(token, indent=2, sort_keys=True) + "\n")
+            temporary_path.chmod(0o600)
+            temporary_path.replace(self.path)
+            self.path.chmod(0o600)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
 
 def authorization_url(
@@ -178,8 +216,9 @@ def access_token_for_run(store: OAuthTokenStore) -> str:
             "Saved OAuth token has expired and has no refresh token; run `byova-e2e login`"
         )
     refreshed = refresh_token(OAuthCredentials.from_environment(), refresh)
-    store.save(refreshed)
-    return str(refreshed["access_token"])
+    saved_token = _merge_refreshed_token(token, refreshed)
+    store.save(saved_token)
+    return str(saved_token["access_token"])
 
 
 def complete_login(store: OAuthTokenStore, timeout_seconds: float) -> str:
@@ -200,7 +239,16 @@ def complete_login(store: OAuthTokenStore, timeout_seconds: float) -> str:
             )
         )
         code = callback.wait_for_code(state, timeout_seconds)
-        store.save(exchange_code(credentials, code))
+        token = exchange_code(credentials, code)
+        if (
+            not isinstance(token.get("refresh_token"), str)
+            or not token["refresh_token"]
+        ):
+            raise OAuthError(
+                "Webex OAuth response did not contain a refresh token; "
+                "the authorization was not saved"
+            )
+        store.save(token)
         return str(store.path)
     finally:
         callback.close()
@@ -215,8 +263,22 @@ def _request_token(payload: dict[str, str]) -> dict[str, Any]:
         raise OAuthError(f"Webex OAuth token request failed: {error}") from error
     if not isinstance(token, dict) or not isinstance(token.get("access_token"), str):
         raise OAuthError("Webex OAuth response did not contain an access token")
-    token["expires_at"] = time.time() + float(token.get("expires_in", 0))
+    received_at = time.time()
+    token["expires_at"] = received_at + float(token.get("expires_in", 0))
     return token
+
+
+def _merge_refreshed_token(
+    previous: dict[str, Any], refreshed: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep a usable refresh token while preferring any rotated token response."""
+    merged = {**previous, **refreshed}
+    if (
+        not isinstance(refreshed.get("refresh_token"), str)
+        or not refreshed["refresh_token"]
+    ):
+        merged["refresh_token"] = previous["refresh_token"]
+    return merged
 
 
 class OAuthCallbackServer:

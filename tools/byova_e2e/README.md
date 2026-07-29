@@ -124,10 +124,23 @@ Chrome profile, sign in as the `BYOVA_E2E_TEST_USER_EMAIL` configured in
 When `BYOVA_E2E_TEST_USER_EMAIL` is set, the authorization request explicitly
 selects an account and supplies that email as the login hint so an existing
 administrator session cannot be accepted accidentally.
-The returned access and refresh tokens are written only to ignored
-`.state/oauth-token.json` with owner-only permissions and refreshed on later
-runs. A temporary `BYOVA_E2E_WEBEX_ACCESS_TOKEN` environment value can instead
-be used for a single run.
+The returned access and refresh tokens are written to the user-level
+`$XDG_STATE_HOME/byova-e2e/oauth-token.json` (or
+`~/.local/state/byova-e2e/oauth-token.json`) with owner-only permissions. This
+location is shared across repository clones and worktrees. An existing
+checkout-local `.state/oauth-token.json` is copied to the shared location on
+its next use.
+
+On later runs, the tool uses the saved access token while it is valid. When it
+expires, the tool exchanges the saved refresh token for a new token pair and
+atomically saves the response, including any rotated refresh token. This keeps
+the dedicated test user authorized without another browser consent. A new
+`byova-e2e login` is required only if the refresh token expires or is revoked,
+or if the OAuth integration credentials change. Set
+`BYOVA_E2E_WEBEX_TOKEN_PATH` to an absolute path to override the shared
+location. A temporary `BYOVA_E2E_WEBEX_ACCESS_TOKEN` environment value can
+instead be used for a single run; because it has no associated refresh token,
+it is not persisted.
 
 ```bash
 byova-e2e run --destination 9999 --text 'Hello, this is a BYOVA test.'
