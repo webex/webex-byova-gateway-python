@@ -285,6 +285,44 @@ minimum connected interval after transfer can add
 `--connected-observation-seconds`; it is disabled by default because queue and
 agent-availability behavior differs after WxCC accepts the transfer event.
 
+## Run the GECX regression plan
+
+The GECX feature branch includes `config/gecx-regression.spec.json`. Validate
+and inspect it without placing a call:
+
+```bash
+byova-e2e validate --config config/gecx-regression.spec.json --list
+```
+
+Run one test at a time against the dedicated non-production entry point:
+
+```bash
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test normal-response
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test natural-pause
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test task-complete
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test transfer
+```
+
+Correlate each artifact window and config SHA-256 with gateway and CES evidence:
+
+- `normal-response`: one caller turn and no terminal output event.
+- `natural-pause`: one outward `START_OF_INPUT`, one merged resume, one outward
+  `END_OF_INPUT`, and one complete CES transcript.
+- `task-complete`: one `SESSION_END` output event before the remote disconnect.
+- `transfer`: one `TRANSFER_TO_AGENT` output event and both configured
+  post-input announcement epochs.
+
 ## Safety boundaries
 
 - The local server listens only on loopback and suppresses HTTP request logs so
