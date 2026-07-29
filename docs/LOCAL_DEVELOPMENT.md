@@ -12,8 +12,9 @@ Always use a virtual environment for this project.
 
 These local prerequisites are sufficient only for running the code and its local connector.
 An end-to-end WxCC test also requires a BYOVA-enabled organization, an authorized Service
-App, a public TLS-enabled gateway URL, an `ACTIVE` data-source registration for that exact
-URL, a configured gateway connector, and a Contact Center flow using Virtual Agent V2.
+App, a public TLS-enabled gateway URL, an `ACTIVE` datasource for that exact URL, a
+configured gateway connector, and a Contact Center flow using Virtual Agent V2. The gateway
+can register and maintain the datasource automatically when lifecycle management is enabled.
 Use the [Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md) guide for a
 vendor-neutral sandbox validation. For a complete AWS Lex integration, follow the
 [BYOVA with AWS Lex guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)
@@ -124,15 +125,47 @@ App. Use company-owned cloud infrastructure for production and whenever company 
 security review, or compliance is required.
 
 For temporary development testing, a tunneling service may be usable if your organization
-permits it. For example, with ngrok:
+permits it. Start the tunnel first so its public URL is known before gateway startup. For
+example, with ngrok:
 
 ```bash
 ngrok config add-authtoken YOUR_AUTHTOKEN
 ngrok http --upstream-protocol=http2 50051
 ```
 
-Use the generated HTTPS URL consistently in both the data-source registration and
-`jwt_validation.datasource_url`. Free tunnel URLs may change between runs.
+Put the generated HTTPS URL in `jwt_validation.datasource_url`. Free tunnel URLs may change
+between runs.
+
+To let the gateway create or reuse the matching datasource, provide the authorized Service
+App OAuth values and enable lifecycle management:
+
+```bash
+export WEBEX_BYODS_CLIENT_ID="your-client-id"
+export WEBEX_BYODS_CLIENT_SECRET="your-client-secret"
+export WEBEX_BYODS_REFRESH_TOKEN="your-refresh-token"
+```
+
+```yaml
+jwt_validation:
+  enabled: true
+  enforce_validation: true
+  datasource_url: "https://your-current-tunnel.example"
+  datasource_schema_uuid: "5397013b-7920-4ffc-807c-e8a3e0a18f43"
+
+data_source:
+  enabled: true
+  fail_startup_on_error: true
+  auth:
+    type: "oauth_refresh"
+    client_id_env: "WEBEX_BYODS_CLIENT_ID"
+    client_secret_env: "WEBEX_BYODS_CLIENT_SECRET"
+    refresh_token_env: "WEBEX_BYODS_REFRESH_TOKEN"
+```
+
+Start the gateway after saving the URL. Startup completes registration before the gRPC
+listener accepts traffic and prints the datasource ID to use in the Contact Center
+virtual-agent feature. If the tunnel URL changes, update `datasource_url` before restarting;
+the old registration is not deleted automatically.
 
 Consumer tunnels are development-only:
 
@@ -151,6 +184,14 @@ load-balancer starting point.
 If JWT validation is enabled, `jwt_validation.datasource_url` is required. For local-only
 testing, disable JWT validation. For Webex-connected testing, configure the exact registered
 URL. See [JWT Authentication](JWT_AUTHENTICATION.md).
+
+### Datasource Registration Fails
+
+Confirm the Service App is authorized with datasource read and write scopes, the three
+`WEBEX_BYODS_*` environment variables are visible to the gateway process, and the public
+domain is allowed by the Service App. If multiple registrations match the URL and schema,
+set `WEBEX_BYODS_DATA_SOURCE_ID` to the intended datasource ID. See
+[Configuration](../config/README.md#byods-datasource-lifecycle) for all lifecycle options.
 
 ### Port 50051 or 8080 Is Already in Use
 

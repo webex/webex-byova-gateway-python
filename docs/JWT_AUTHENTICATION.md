@@ -56,6 +56,39 @@ https://gateway.example.com:443
 Copy the registered value rather than reconstructing it. Use the same URL when a temporary
 development endpoint changes.
 
+### Automatic Registration and JWT Claim Alignment
+
+The optional `data_source` lifecycle can discover or register the datasource before the
+gRPC listener starts and renew its JWS before expiry. Leave its URL and schema empty to
+inherit the JWT values:
+
+```yaml
+jwt_validation:
+  enabled: true
+  enforce_validation: true
+  datasource_url: "https://your-gateway.example.com:443"
+  datasource_schema_uuid: "5397013b-7920-4ffc-807c-e8a3e0a18f43"
+
+data_source:
+  enabled: true
+  fail_startup_on_error: true
+  url: ""
+  schema_id: ""
+  auth:
+    type: "oauth_refresh"
+    client_id_env: "WEBEX_BYODS_CLIENT_ID"
+    client_secret_env: "WEBEX_BYODS_CLIENT_SECRET"
+    refresh_token_env: "WEBEX_BYODS_REFRESH_TOKEN"
+```
+
+Set the named environment variables from an authorized Service App. With empty lifecycle
+URL and schema values, registration and validation share one source of truth. If both
+sections explicitly configure either value, startup rejects a mismatch.
+
+The datasource token managed by this lifecycle is separate from each inbound request JWT:
+the lifecycle creates and renews the registration's JWS, while the interceptor validates
+the signed JWT Webex sends with a gRPC request.
+
 ### Datasource Schema UUID
 
 The standard Voice Virtual Agent schema UUID used by this sample is:
@@ -153,7 +186,8 @@ before making a key request to prevent arbitrary key-fetch URLs.
 
 ### Datasource Claims Validation Failed
 
-- Copy the exact registered datasource URL into the configuration.
+- Copy the exact registered datasource URL into the configuration, or enable automatic
+  lifecycle management so registration inherits the JWT URL and schema.
 - Check whether the registered URL includes `:443` or a trailing path.
 - Confirm the token schema UUID matches the configured Voice Virtual Agent schema.
 
