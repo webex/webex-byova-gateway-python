@@ -36,6 +36,9 @@
       "id": "long-response",
       "title": "streams one detailed hotel response",
       "description": "A detailed answer exercises multiple ordered BYOVA audio chunks before one final response.",
+      "use": {
+        "remoteSilenceMs": 2500
+      },
       "steps": [
         {
           "name": "Request a detailed hotel description",
@@ -78,6 +81,9 @@
       "id": "multi-turn-response",
       "title": "continues a hotel request across two caller turns",
       "description": "The gateway continues ingesting caller audio after delivering a complete GECX response.",
+      "use": {
+        "remoteSilenceMs": 2500
+      },
       "steps": [
         {
           "name": "Start a hotel request",

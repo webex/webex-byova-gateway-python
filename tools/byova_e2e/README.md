@@ -330,11 +330,14 @@ Correlate each artifact window and config SHA-256 with gateway and CES evidence:
 
 - `normal-response`: one caller turn and no terminal output event.
 - `long-response`: multiple ordered raw audio chunks, first audio before CES
-  turn completion, and exactly one normal `FINAL`.
+  turn completion, and exactly one normal `FINAL`. It uses a 2.5-second
+  remote-silence threshold so a natural pause inside streamed playback is not
+  mistaken for the end of the prompt.
 - `natural-pause`: one outward `START_OF_INPUT`, one merged resume, one outward
   `END_OF_INPUT`, and one complete CES transcript.
 - `multi-turn-response`: two caller injections, two complete GECX responses,
-  and no terminal output event.
+  and no terminal output event. It uses the same 2.5-second streamed-prompt
+  completion threshold before injecting turn two.
 - `speak-during-playback`: an audio-plane probe. The second caller
   injection begins after the first GECX response starts and the call remains
   healthy through remote-audio completion. Streamed GECX chunks keep barge-in
