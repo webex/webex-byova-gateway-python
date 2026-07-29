@@ -176,32 +176,85 @@ Live runs use headless Chromium by default, so automated calls do not open a
 browser window over other work. Add `--headed` only when interactive browser
 media debugging is required.
 
-## Run the GECX regression scenarios
+## Run the GECX regression tests
 
-Named scenarios keep the caller fixture and caller-observable outcome together:
+The default test plan is
+`config/gecx-regression.spec.json`. Its structure follows Playwright conventions:
+top-level `use` defaults, named `tests`, ordered `steps`, and explicit `expect`
+assertions. The adjacent `byova-e2e.schema.json` provides editor validation and
+autocomplete.
 
 ```bash
 # Short request: one complete virtual-agent response.
-byova-e2e run --destination 9999 --scenario normal-response \
-  --remote-prompt-occurrence 2
+byova-e2e run --destination 9999 --test normal-response
 
 # One caller turn with a bounded 1.8-second natural pause.
-byova-e2e run --destination 9999 --scenario natural-pause \
-  --remote-prompt-occurrence 2
+byova-e2e run --destination 9999 --test natural-pause
 
 # Successful task completion: hear the completion response, then require
 # WxCC to disconnect the call without a caller-issued hangup.
-byova-e2e run --destination 9999 --scenario task-complete \
-  --remote-prompt-occurrence 2
+byova-e2e run --destination 9999 --test task-complete
 
 # Human escalation: require the CES and WxCC announcement epochs.
-byova-e2e run --destination 9999 --scenario transfer \
-  --remote-prompt-occurrence 2
+byova-e2e run --destination 9999 --test transfer
 ```
 
-The completed artifact records the scenario, expected outcome, completed
+The completed artifact records the test, config file, expected outcome, completed
 remote-prompt count, Calling SDK disconnect cause/code, whether the caller
 requested that disconnect, and the exact UTC event window.
+
+### Define tests in JSON
+
+Each version 1 test contains one audio action followed by one expectation. A
+`speak` action accepts either `text` or `segments` plus `pauseMs`; a `play`
+action accepts a WAV `path` relative to the config file.
+
+```json
+{
+  "$schema": "./byova-e2e.schema.json",
+  "version": 1,
+  "use": {
+    "headless": true,
+    "remotePromptOccurrence": 2,
+    "responseTimeoutSeconds": 30
+  },
+  "tests": [
+    {
+      "id": "transfer",
+      "title": "transfers the caller to a human agent",
+      "steps": [
+        {
+          "name": "Request a human agent",
+          "action": "speak",
+          "text": "Please transfer me to a human agent."
+        },
+        {
+          "name": "Expect both transfer announcements",
+          "expect": {
+            "outcome": "transfer",
+            "responsePrompts": 2
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Run a test from another plan with Playwright-style `--config` selection:
+
+```bash
+byova-e2e run \
+  --destination 9999 \
+  --config path/to/customer-flow.spec.json \
+  --test transfer
+```
+
+Top-level `use` values apply to every test. A test may define its own `use`
+object to override those defaults. Explicit CLI options have final precedence,
+which is useful for a one-off timeout or headed debugging run. The loader
+rejects unsupported versions, duplicate test IDs, invalid step order, and
+unknown fields before it obtains a token or places a call.
 
 These assertions intentionally use only behavior available to a real caller.
 For release evidence, correlate the artifact window with gateway logs:
@@ -213,13 +266,13 @@ For release evidence, correlate the artifact window with gateway logs:
 - `transfer`: one `TRANSFER_TO_AGENT` output event corresponding to the second
   configured announcement epoch.
 
-The `transfer` scenario defaults to two completed post-injection announcement
+The `transfer` test expects two completed post-injection announcement
 epochs because the current dev flow is configured to play both the CES and WxCC
 transfer announcements. Override `--expected-response-prompts` only when the
 target flow intentionally has different announcement behavior.
 
 For custom fixtures, `--expect-outcome response|session-end|transfer` enables
-the same assertions without using a named scenario. Flows that guarantee a
+the same assertions without using a named test. Flows that guarantee a
 minimum connected interval after transfer can add
 `--connected-observation-seconds`; it is disabled by default because queue and
 agent-availability behavior differs after WxCC accepts the transfer event.
