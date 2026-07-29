@@ -97,7 +97,8 @@ webex-byova-gateway-python/
 
 - Implements the `VoiceVirtualAgentServicer` gRPC interface
 - Manages conversation state through `ConversationProcessor` instances
-- Handles bidirectional streaming for voice interactions
+- Handles bidirectional streaming with bounded request and response queues so caller input
+  ingestion remains independent from ordered connector response production
 - Routes requests to the appropriate virtual agent via `VirtualAgentRouter`
 - Tracks connections and manages session lifecycle
 

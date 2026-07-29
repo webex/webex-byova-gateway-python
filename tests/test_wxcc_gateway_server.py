@@ -1414,6 +1414,19 @@ class TestClientStreamEndCleanup:
             ),
         )
 
+    @staticmethod
+    def _audio_request(audio_data: bytes) -> VoiceVARequest:
+        return VoiceVARequest(
+            conversation_id="stream-end-conv",
+            virtual_agent_id="GECX Agent",
+            audio_input=VoiceInput(
+                caller_audio=audio_data,
+                encoding=VoiceInput.VoiceEncoding.MULAW_FORMAT,
+                sample_rate_hertz=8000,
+                language_code="en-US",
+            ),
+        )
+
     @pytest.mark.parametrize(
         ("message_type", "expected_event_type"),
         [("session_end", 1), ("transfer", 2)],
@@ -1440,19 +1453,18 @@ class TestClientStreamEndCleanup:
         context = MagicMock()
         context.is_active.return_value = True
         server = WxCCGatewayServer(router)
-        consumed_second_request = False
 
         def requests():
-            nonlocal consumed_second_request
             yield self._session_start_request()
-            consumed_second_request = True
             yield self._custom_event_request()
 
         responses = list(server.ProcessCallerInput(requests(), context))
 
         assert len(responses) == 1
         assert responses[0].output_events[0].event_type == expected_event_type
-        assert consumed_second_request is False
+        assert [
+            call.args[1] for call in router.route_request.call_args_list
+        ] == ["start_conversation", "end_conversation"]
         assert "stream-end-conv" not in server.conversations
         router.route_request.assert_any_call(
             "GECX Agent",
@@ -1514,6 +1526,180 @@ class TestClientStreamEndCleanup:
         assert consumed_second_request.wait(1.0)
         assert list(responses) == []
 
+    def test_audio_ingress_is_buffered_while_connector_response_is_producing(
+        self
+    ):
+        router = MagicMock(spec=VirtualAgentRouter)
+        allow_response_completion = threading.Event()
+        consumed_audio_requests = threading.Event()
+        processed_audio_requests = threading.Event()
+        processed_audio: list[bytes] = []
+        caller_frames = [b"caller-frame-1", b"caller-frame-2", b"caller-frame-3"]
+
+        def start_responses():
+            yield self._session_start_response()
+            assert allow_response_completion.wait(1.0)
+            yield {
+                **self._session_start_response(),
+                "text": "The first response is complete.",
+            }
+
+        def route_request(agent_id, operation, conversation_id, message_data):
+            if operation == "start_conversation":
+                return start_responses()
+            if operation == "send_message":
+                processed_audio.append(message_data["audio_data"])
+                if len(processed_audio) == len(caller_frames):
+                    processed_audio_requests.set()
+                return None
+            raise AssertionError(f"Unexpected operation: {operation}")
+
+        router.route_request.side_effect = route_request
+        router.should_observe_speech_boundaries.return_value = False
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = True
+        server = WxCCGatewayServer(router)
+
+        def requests():
+            yield self._session_start_request()
+            for caller_frame in caller_frames:
+                yield self._audio_request(caller_frame)
+            consumed_audio_requests.set()
+
+        responses = server.ProcessCallerInput(requests(), context)
+        first_response = next(responses)
+
+        try:
+            assert first_response.prompts[0].text == "Connected"
+            assert consumed_audio_requests.wait(0.5)
+            assert processed_audio == []
+        finally:
+            allow_response_completion.set()
+
+        remaining_responses = list(responses)
+
+        assert [response.prompts[0].text for response in remaining_responses] == [
+            "The first response is complete."
+        ]
+        assert processed_audio_requests.is_set()
+        assert processed_audio == caller_frames
+
+    def test_bounded_ingress_backpressure_stops_on_stream_cancellation(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        allow_response_completion = threading.Event()
+        requested_second_buffered_input = threading.Event()
+        requested_third_buffered_input = threading.Event()
+        existing_thread_ids = {id(thread) for thread in threading.enumerate()}
+
+        def start_responses():
+            yield self._session_start_response()
+            assert allow_response_completion.wait(1.0)
+
+        router.route_request.side_effect = (
+            lambda agent_id, operation, conversation_id, message_data: (
+                start_responses() if operation == "start_conversation" else None
+            )
+        )
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = False
+        server = WxCCGatewayServer(router, request_queue_maxsize=1)
+
+        def requests():
+            yield self._session_start_request()
+            yield self._custom_event_request()
+            requested_second_buffered_input.set()
+            yield self._custom_event_request()
+            requested_third_buffered_input.set()
+            yield self._custom_event_request()
+
+        responses = server.ProcessCallerInput(requests(), context)
+        first_response = next(responses)
+
+        assert first_response.prompts[0].text == "Connected"
+        assert requested_second_buffered_input.wait(0.5)
+        assert requested_third_buffered_input.is_set() is False
+
+        cancel_stream = context.add_callback.call_args.args[0]
+        cancel_stream()
+        allow_response_completion.set()
+
+        assert list(responses) == []
+        assert requested_third_buffered_input.is_set() is False
+        assert [
+            thread
+            for thread in threading.enumerate()
+            if id(thread) not in existing_thread_ids
+            and thread.name
+            in {"wxcc-request-reader", "wxcc-request-processor"}
+        ] == []
+
+    def test_bounded_response_backpressure_stops_on_stream_cancellation(self):
+        router = MagicMock(spec=VirtualAgentRouter)
+        attempted_third_response = threading.Event()
+        completed_response_iterator = threading.Event()
+        existing_thread_ids = {id(thread) for thread in threading.enumerate()}
+
+        def start_responses():
+            yield self._session_start_response()
+            yield {
+                **self._session_start_response(),
+                "text": "Second buffered response",
+            }
+            attempted_third_response.set()
+            yield {
+                **self._session_start_response(),
+                "text": "Third buffered response",
+            }
+            completed_response_iterator.set()
+
+        router.route_request.side_effect = (
+            lambda agent_id, operation, conversation_id, message_data: (
+                start_responses() if operation == "start_conversation" else None
+            )
+        )
+        router.should_cleanup_on_client_stream_end.return_value = True
+        context = MagicMock()
+        context.is_active.return_value = False
+        server = WxCCGatewayServer(router, response_queue_maxsize=1)
+
+        responses = server.ProcessCallerInput(
+            iter([self._session_start_request()]), context
+        )
+        first_response = next(responses)
+
+        assert first_response.prompts[0].text == "Connected"
+        assert attempted_third_response.wait(0.5)
+        assert completed_response_iterator.is_set() is False
+
+        cancel_stream = context.add_callback.call_args.args[0]
+        cancel_stream()
+
+        assert list(responses) == []
+        assert completed_response_iterator.is_set() is False
+        assert [
+            thread
+            for thread in threading.enumerate()
+            if id(thread) not in existing_thread_ids
+            and thread.name
+            in {"wxcc-request-reader", "wxcc-request-processor"}
+        ] == []
+
+    @pytest.mark.parametrize(
+        ("argument", "message"),
+        [
+            ({"request_queue_maxsize": 0}, "request_queue_maxsize"),
+            ({"response_queue_maxsize": 0}, "response_queue_maxsize"),
+        ],
+    )
+    def test_stream_queue_sizes_must_be_positive(self, argument, message):
+        with pytest.raises(ValueError, match=message):
+            WxCCGatewayServer(
+                MagicMock(spec=VirtualAgentRouter),
+                **argument,
+            )
+
     def test_opted_in_connector_survives_half_close_and_reconnection(self):
         router = MagicMock(spec=VirtualAgentRouter)
         router.route_request.side_effect = [self._session_start_response(), None]
@@ -1532,6 +1718,10 @@ class TestClientStreamEndCleanup:
         assert len(first_responses) == 1
         assert second_responses == []
         assert "stream-end-conv" in server.conversations
+        assert (
+            server.conversations["stream-end-conv"]._async_response_sink
+            is None
+        )
         start_calls = [
             call
             for call in router.route_request.call_args_list

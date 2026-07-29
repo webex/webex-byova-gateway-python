@@ -7,6 +7,10 @@ gateway:
   # Long-lived caller streams use a dedicated executor so they cannot starve
   # health and unary RPCs on the shared gRPC worker pool.
   streaming_max_workers: 100
+  # Bound per-stream buffering while request ingestion, connector processing,
+  # and response delivery run independently.
+  request_queue_maxsize: 100
+  response_queue_maxsize: 100
   # Safety ceiling only; the actual terminal gate is derived from each CES WAV.
   max_terminal_playback_seconds: 30
 
