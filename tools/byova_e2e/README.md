@@ -1,8 +1,9 @@
 # BYOVA E2E Test Caller
 
 This local tool uses a Python orchestrator and a browser-only Webex Calling SDK
-client to call the WxCC extension and inject one prepared caller utterance after
-the remote prompt becomes quiet.
+client to call the WxCC extension and inject one or more prepared caller
+utterances. The first action waits for the configured remote prompt; later
+actions follow their preceding expectations in the JSON test plan.
 
 ## One-time setup
 
@@ -178,11 +179,14 @@ media debugging is required.
 
 ## Define tests in JSON
 
-Each version 1 test contains one audio action followed by one expectation. A
+Each version 1 test contains alternating audio actions and expectations. A
 `speak` action accepts either `text` or `segments` plus `pauseMs`; a `play`
-action accepts a WAV `path` relative to the config file. Test plans follow
-Playwright conventions: top-level `use` defaults, named `tests`, ordered
-`steps`, and explicit `expect` assertions. Reference
+action accepts a WAV `path` relative to the config file. `response` waits for a
+complete remote prompt. `response-start` waits only until remote audio becomes
+active, allowing the next action to exercise caller speech during playback.
+`session-end` and `transfer` are terminal expectations and must be the final
+step. Test plans follow Playwright conventions: top-level `use` defaults, named
+`tests`, ordered `steps`, and explicit `expect` assertions. Reference
 `config/byova-e2e.schema.json` for editor validation and autocomplete.
 
 ```json
@@ -215,6 +219,26 @@ Playwright conventions: top-level `use` defaults, named `tests`, ordered
   ]
 }
 ```
+
+A two-turn test uses the same action/expectation rhythm:
+
+```json
+{
+  "id": "two-turn",
+  "title": "continues the conversation for a second caller turn",
+  "steps": [
+    {"action": "speak", "text": "I need a hotel."},
+    {"expect": {"outcome": "response"}},
+    {"action": "speak", "text": "A queen room, please."},
+    {"expect": {"outcome": "response"}}
+  ]
+}
+```
+
+To inject the second utterance while the first response is playing, replace the
+first `response` outcome with `response-start`. The final `response`
+expectation then proves that the second caller utterance reached the virtual
+agent and produced a later complete reply.
 
 Validate and list the plan without authenticating or placing a call:
 

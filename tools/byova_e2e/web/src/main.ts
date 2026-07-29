@@ -8,9 +8,14 @@ type RunConfig = {
   accessToken: string;
   destination: string;
   audioUrl: string;
+  audioUrls?: string[];
 };
 
 type EventDetails = Record<string, string | number | boolean | undefined>;
+type InjectionRequest = {
+  index?: number;
+  trigger?: string;
+};
 
 type CallingLine = {
   on: (name: string, callback: (...args: unknown[]) => void) => void;
@@ -49,7 +54,7 @@ declare global {
   interface Window {
     byovaE2E: {
       dial: () => Promise<void>;
-      injectAudio: (trigger?: string) => Promise<void>;
+      injectAudio: (request?: string | InjectionRequest) => Promise<void>;
       endCall: () => Promise<void>;
     };
   }
@@ -147,7 +152,7 @@ class CallingMediaClient {
   private line!: CallingLine;
   private call?: CallingCall;
   private observer?: RemoteAudioActivity;
-  private injected = false;
+  private readonly injectedAudio = new Set<number>();
   private callerEndRequested = false;
 
   async initialise(): Promise<void> {
@@ -243,15 +248,27 @@ class CallingMediaClient {
     await this.call.dial(this.localMicrophone);
   }
 
-  async injectAudio(trigger = "remote_prompt"): Promise<void> {
+  async injectAudio(request: string | InjectionRequest = {}): Promise<void> {
     if (!this.call) {
       throw new Error("Cannot inject audio before dialing");
     }
-    if (this.injected) {
-      throw new Error("The test caller only supports one injected utterance per call");
+    const injection = typeof request === "string" ? { trigger: request } : request;
+    const index = injection.index ?? 0;
+    const trigger = injection.trigger ?? "scenario_step";
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error(`Invalid caller audio index: ${index}`);
     }
-    this.injected = true;
-    const response = await fetch(this.config.audioUrl);
+    if (this.injectedAudio.has(index)) {
+      throw new Error(`Caller audio ${index} was already injected`);
+    }
+    const audioUrl = this.config.audioUrls?.[index] ?? (
+      index === 0 ? this.config.audioUrl : undefined
+    );
+    if (!audioUrl) {
+      throw new Error(`No prepared caller audio exists at index ${index}`);
+    }
+    this.injectedAudio.add(index);
+    const response = await fetch(audioUrl);
     if (!response.ok) {
       throw new Error(`Cannot load prepared caller audio: ${response.status}`);
     }
@@ -260,9 +277,17 @@ class CallingMediaClient {
     const source = this.audioContext.createBufferSource();
     source.buffer = audio;
     source.connect(this.destinationNode);
-    source.addEventListener("ended", () => void report("injection_finished"), { once: true });
+    source.addEventListener(
+      "ended",
+      () => void report("injection_finished", { injectionIndex: index }),
+      { once: true },
+    );
     updateStatus("Injecting prepared caller audio.");
-    void report("injection_started", { durationSeconds: audio.duration, trigger });
+    void report("injection_started", {
+      durationSeconds: audio.duration,
+      injectionIndex: index,
+      trigger,
+    });
     source.start();
   }
 

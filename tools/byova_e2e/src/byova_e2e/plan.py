@@ -30,6 +30,27 @@ class TestPlanError(ValueError):
 
 
 @dataclass(frozen=True)
+class InputStepDefinition:
+    """One prepared caller-audio action in an ordered test."""
+
+    name: str | None = None
+    text: str | None = None
+    text_segments: tuple[str, ...] = ()
+    wav: Path | None = None
+    segment_pause_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class ExpectStepDefinition:
+    """One caller-observable expectation in an ordered test."""
+
+    outcome: ExpectedOutcome
+    name: str | None = None
+    response_prompts: int = 1
+    connected_observation_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
 class TestDefinition:
     """One selected test after top-level and test-level settings are merged."""
 
@@ -38,6 +59,7 @@ class TestDefinition:
     description: str
     source_file: Path
     config_sha256: str
+    steps: tuple[InputStepDefinition | ExpectStepDefinition, ...] = ()
     text: str | None = None
     text_segments: tuple[str, ...] = ()
     wav: Path | None = None
@@ -143,13 +165,44 @@ def _parse_test(
     test_use = _parse_use(value.get("use", {}), f"{location}.use")
     merged_use = {**shared_use, **test_use}
 
-    steps = value.get("steps")
-    if not isinstance(steps, list) or len(steps) != 2:
+    raw_steps = value.get("steps")
+    if not isinstance(raw_steps, list) or len(raw_steps) < 2:
         raise TestPlanError(
-            f"{location}.steps must contain one audio action followed by one expect step"
+            f"{location}.steps must contain at least one audio action and expectation"
         )
-    input_values = _parse_input_step(steps[0], f"{location}.steps[0]", source_file)
-    expectation_values = _parse_expect_step(steps[1], f"{location}.steps[1]")
+    if len(raw_steps) % 2:
+        raise TestPlanError(
+            f"{location}.steps must alternate audio actions and expectations"
+        )
+
+    parsed_steps: list[InputStepDefinition | ExpectStepDefinition] = []
+    for step_index, raw_step in enumerate(raw_steps):
+        step_location = f"{location}.steps[{step_index}]"
+        if step_index % 2 == 0:
+            parsed_steps.append(
+                _parse_input_step(raw_step, step_location, source_file)
+            )
+        else:
+            parsed_steps.append(_parse_expect_step(raw_step, step_location))
+
+    for step_index, step in enumerate(parsed_steps[:-1]):
+        if isinstance(step, ExpectStepDefinition) and step.outcome in {
+            ExpectedOutcome.SESSION_END,
+            ExpectedOutcome.TRANSFER,
+        }:
+            raise TestPlanError(
+                f"{location}.steps[{step_index}] terminal outcome must be final"
+            )
+    final_expectation = parsed_steps[-1]
+    if not isinstance(final_expectation, ExpectStepDefinition):
+        raise AssertionError("validated test must end with an expectation")
+    if final_expectation.outcome == ExpectedOutcome.RESPONSE_START:
+        raise TestPlanError(
+            f"{location}.steps must not end with a response-start expectation"
+        )
+    first_input = parsed_steps[0]
+    if not isinstance(first_input, InputStepDefinition):
+        raise AssertionError("validated test must start with an input action")
 
     return TestDefinition(
         test_id=test_id,
@@ -157,7 +210,11 @@ def _parse_test(
         description=description or title,
         source_file=source_file,
         config_sha256=config_sha256,
-        **input_values,
+        steps=tuple(parsed_steps),
+        text=first_input.text,
+        text_segments=first_input.text_segments,
+        wav=first_input.wav,
+        segment_pause_ms=first_input.segment_pause_ms,
         voice=merged_use.get("voice"),
         headless=merged_use.get("headless"),
         remote_silence_ms=merged_use.get("remoteSilenceMs"),
@@ -169,18 +226,24 @@ def _parse_test(
         call_timeout_seconds=merged_use.get("callTimeoutSeconds"),
         post_audio_grace_seconds=merged_use.get("postAudioGraceSeconds"),
         response_timeout_seconds=merged_use.get("responseTimeoutSeconds"),
-        **expectation_values,
+        expected_outcome=final_expectation.outcome,
+        expected_response_prompts=final_expectation.response_prompts,
+        connected_observation_seconds=(
+            final_expectation.connected_observation_seconds
+        ),
     )
 
 
-def _parse_input_step(raw: Any, location: str, source_file: Path) -> dict[str, Any]:
+def _parse_input_step(
+    raw: Any, location: str, source_file: Path
+) -> InputStepDefinition:
     step = _object(raw, location)
     _reject_unknown(
         step,
         {"name", "action", "text", "segments", "pauseMs", "path"},
         location,
     )
-    _optional_nonempty_string(step.get("name"), f"{location}.name")
+    name = _optional_nonempty_string(step.get("name"), f"{location}.name")
     action = _nonempty_string(step.get("action"), f"{location}.action")
     if action == "speak":
         has_text = "text" in step
@@ -197,23 +260,25 @@ def _parse_input_step(raw: Any, location: str, source_file: Path) -> dict[str, A
                 raise TestPlanError(
                     f"{location}.pauseMs is only valid with segmented speech"
                 )
-            return {
-                "text": _nonempty_string(step["text"], f"{location}.text"),
-            }
+            return InputStepDefinition(
+                name=name,
+                text=_nonempty_string(step["text"], f"{location}.text"),
+            )
         segments = step["segments"]
         if not isinstance(segments, list) or len(segments) < 2:
             raise TestPlanError(
                 f"{location}.segments must contain at least two strings"
             )
-        return {
-            "text_segments": tuple(
+        return InputStepDefinition(
+            name=name,
+            text_segments=tuple(
                 _nonempty_string(segment, f"{location}.segments[{index}]")
                 for index, segment in enumerate(segments)
             ),
-            "segment_pause_ms": _positive_integer(
+            segment_pause_ms=_positive_integer(
                 step.get("pauseMs"), f"{location}.pauseMs"
             ),
-        }
+        )
     if action == "play":
         if any(field in step for field in ("text", "segments", "pauseMs")):
             raise TestPlanError(
@@ -223,14 +288,14 @@ def _parse_input_step(raw: Any, location: str, source_file: Path) -> dict[str, A
         wav = Path(wav_value).expanduser()
         if not wav.is_absolute():
             wav = source_file.parent / wav
-        return {"wav": wav.resolve()}
+        return InputStepDefinition(name=name, wav=wav.resolve())
     raise TestPlanError(f"{location}.action must be 'speak' or 'play'")
 
 
-def _parse_expect_step(raw: Any, location: str) -> dict[str, Any]:
+def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:
     step = _object(raw, location)
     _reject_unknown(step, {"name", "expect"}, location)
-    _optional_nonempty_string(step.get("name"), f"{location}.name")
+    name = _optional_nonempty_string(step.get("name"), f"{location}.name")
     expect = _object(step.get("expect"), f"{location}.expect")
     _reject_unknown(
         expect,
@@ -264,11 +329,12 @@ def _parse_expect_step(raw: Any, location: str) -> dict[str, Any]:
             f"{location}.expect.connectedObservationSeconds is only valid "
             "for transfer outcomes"
         )
-    return {
-        "expected_outcome": expected_outcome,
-        "expected_response_prompts": expected_response_prompts,
-        "connected_observation_seconds": connected_observation_seconds,
-    }
+    return ExpectStepDefinition(
+        name=name,
+        outcome=expected_outcome,
+        response_prompts=expected_response_prompts,
+        connected_observation_seconds=connected_observation_seconds,
+    )
 
 
 def _parse_use(raw: Any, location: str) -> dict[str, Any]:

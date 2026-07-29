@@ -16,7 +16,7 @@ from .models import RunConfig, RunEvent
 
 
 class LocalRunServer:
-    """Serve the compiled client, one prepared WAV, and an event endpoint."""
+    """Serve the compiled client, prepared WAVs, and an event endpoint."""
 
     def __init__(self, static_root: Path, config: RunConfig) -> None:
         self._static_root = static_root
@@ -47,6 +47,7 @@ class LocalRunServer:
     def _handler_type(self) -> type[SimpleHTTPRequestHandler]:
         static_root = self._static_root
         config = self._config
+        audio_assets = config.prepared_audio()
         events = self._events
 
         class Handler(SimpleHTTPRequestHandler):
@@ -62,11 +63,31 @@ class LocalRunServer:
                         "accessToken": config.access_token,
                         "destination": config.destination,
                         "audioUrl": "/run/caller.wav",
+                        "audioUrls": [
+                            f"/run/caller-{index}.wav"
+                            for index in range(len(audio_assets))
+                        ],
                     }
                     self._write_json(payload)
                     return
                 if self.path == "/run/caller.wav":
-                    self._send_audio(config.audio_path)
+                    self._send_audio(audio_assets[0].path)
+                    return
+                if self.path.startswith("/run/caller-") and self.path.endswith(
+                    ".wav"
+                ):
+                    index_text = self.path.removeprefix(
+                        "/run/caller-"
+                    ).removesuffix(".wav")
+                    try:
+                        index = int(index_text)
+                        if index < 0:
+                            raise IndexError
+                        audio_asset = audio_assets[index]
+                    except (ValueError, IndexError):
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
+                    self._send_audio(audio_asset.path)
                     return
                 super().do_GET()
 

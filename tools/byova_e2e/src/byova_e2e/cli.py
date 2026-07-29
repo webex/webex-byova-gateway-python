@@ -23,8 +23,16 @@ from .auth import (
     complete_login,
     load_local_environment,
 )
-from .models import ExpectedOutcome, RunConfig
+from .models import (
+    AudioAsset,
+    ExpectedOutcome,
+    RunAction,
+    RunConfig,
+    RunExpectation,
+)
 from .plan import (
+    ExpectStepDefinition,
+    InputStepDefinition,
     TestDefinition,
     TestPlanError,
     load_plan,
@@ -121,7 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--response-timeout-seconds", type=float, default=None)
     run.add_argument(
         "--expect-outcome",
-        choices=[outcome.value for outcome in ExpectedOutcome],
+        choices=[
+            ExpectedOutcome.RESPONSE.value,
+            ExpectedOutcome.SESSION_END.value,
+            ExpectedOutcome.TRANSFER.value,
+        ],
         help=(
             "Assert a normal response, successful session-end disconnect, or "
             "configured transfer announcement sequence"
@@ -323,31 +335,86 @@ def _run(args: argparse.Namespace) -> None:
 
     token = access_token_for_run(OAuthTokenStore(TOKEN_PATH))
     with tempfile.TemporaryDirectory(prefix="byova-e2e-") as temp_dir:
-        audio_path = Path(temp_dir) / "caller.wav"
-        if text is not None:
-            prepared = render_text(text, voice, audio_path)
-            audio_profile = {"kind": "text"}
-        elif text_segments is not None:
-            prepared = render_text_sequence(
-                text_segments,
-                segment_pause_ms,
-                voice,
-                audio_path,
-            )
-            audio_profile = {
-                "kind": "segmented_text",
-                "segment_count": len(text_segments),
-                "segment_pause_ms": segment_pause_ms,
-            }
+        temp_path = Path(temp_dir)
+        if selected_test is not None:
+            audio_assets: list[AudioAsset] = []
+            audio_profiles: list[dict[str, object]] = []
+            run_steps: list[RunAction | RunExpectation] = []
+            action_index = 0
+            for step_index, step in enumerate(selected_test.steps):
+                if isinstance(step, InputStepDefinition):
+                    prepared_step, profile = _prepare_input_step(
+                        step,
+                        voice,
+                        temp_path / f"caller-{action_index}.wav",
+                    )
+                    audio_assets.append(
+                        AudioAsset(
+                            path=prepared_step.path,
+                            sha256=prepared_step.sha256,
+                            duration_seconds=prepared_step.duration_seconds,
+                        )
+                    )
+                    audio_profiles.append(profile)
+                    run_steps.append(
+                        RunAction(audio_index=action_index, name=step.name)
+                    )
+                    action_index += 1
+                    continue
+                if not isinstance(step, ExpectStepDefinition):
+                    raise CLIError(f"Unsupported test step at index {step_index}")
+                is_final_step = step_index == len(selected_test.steps) - 1
+                run_steps.append(
+                    RunExpectation(
+                        outcome=(
+                            expected_outcome
+                            if is_final_step and expected_outcome is not None
+                            else step.outcome
+                        ),
+                        response_prompts=(
+                            expected_response_prompts
+                            if is_final_step
+                            else step.response_prompts
+                        ),
+                        connected_observation_seconds=(
+                            connected_observation_seconds
+                            if is_final_step
+                            else step.connected_observation_seconds
+                        ),
+                        name=step.name,
+                    )
+                )
         else:
-            prepared = prepare_wav(wav, audio_path)
-            audio_profile = {"kind": "wav"}
+            direct_step = InputStepDefinition(
+                text=text,
+                text_segments=tuple(text_segments or ()),
+                wav=wav,
+                segment_pause_ms=(
+                    segment_pause_ms if text_segments is not None else None
+                ),
+            )
+            prepared_step, profile = _prepare_input_step(
+                direct_step,
+                voice,
+                temp_path / "caller-0.wav",
+            )
+            audio_assets = [
+                AudioAsset(
+                    path=prepared_step.path,
+                    sha256=prepared_step.sha256,
+                    duration_seconds=prepared_step.duration_seconds,
+                )
+            ]
+            audio_profiles = [profile]
+            run_steps = []
+
+        primary_audio = audio_assets[0]
         config = RunConfig(
             destination=args.destination,
             access_token=token,
-            audio_path=prepared.path,
-            audio_sha256=prepared.sha256,
-            audio_duration_seconds=prepared.duration_seconds,
+            audio_path=primary_audio.path,
+            audio_sha256=primary_audio.sha256,
+            audio_duration_seconds=primary_audio.duration_seconds,
             remote_silence_seconds=remote_silence_ms / 1000,
             initial_silence_fallback_seconds=initial_silence_fallback_seconds,
             prompt_timeout_seconds=prompt_timeout_seconds,
@@ -360,6 +427,8 @@ def _run(args: argparse.Namespace) -> None:
             expected_response_prompts=expected_response_prompts,
             connected_observation_seconds=connected_observation_seconds,
             headless=headless,
+            audio_assets=tuple(audio_assets),
+            steps=tuple(run_steps),
         )
         result = BrowserRunner(TOOL_ROOT, config).run()
 
@@ -370,7 +439,17 @@ def _run(args: argparse.Namespace) -> None:
             "status": "completed",
             "audio_sha256": config.audio_sha256,
             "audio_duration_seconds": config.audio_duration_seconds,
-            "audio_profile": audio_profile,
+            "audio_profile": audio_profiles[0],
+            "audio_profiles": [
+                {
+                    **profile,
+                    "sha256": asset.sha256,
+                    "duration_seconds": asset.duration_seconds,
+                }
+                for profile, asset in zip(
+                    audio_profiles, config.prepared_audio(), strict=True
+                )
+            ],
             "prompt_profile": {
                 "remote_prompt_occurrence": config.remote_prompt_occurrence,
                 "remote_silence_ms": round(config.remote_silence_seconds * 1000),
@@ -388,6 +467,35 @@ def _run(args: argparse.Namespace) -> None:
         },
     )
     print(f"BYOVA E2E caller completed. Artifact: {artifact}")
+
+
+def _prepare_input_step(
+    step: InputStepDefinition,
+    voice: str,
+    output_path: Path,
+):
+    """Render or normalize one configured caller-audio action."""
+    if step.text is not None:
+        return render_text(step.text, voice, output_path), {"kind": "text"}
+    if step.text_segments:
+        if step.segment_pause_ms is None:
+            raise CLIError("Segmented speech is missing pauseMs")
+        return (
+            render_text_sequence(
+                list(step.text_segments),
+                step.segment_pause_ms,
+                voice,
+                output_path,
+            ),
+            {
+                "kind": "segmented_text",
+                "segment_count": len(step.text_segments),
+                "segment_pause_ms": step.segment_pause_ms,
+            },
+        )
+    if step.wav is None:
+        raise CLIError("Audio action has no text, segments, or WAV path")
+    return prepare_wav(step.wav, output_path), {"kind": "wav"}
 
 
 def _configured(
