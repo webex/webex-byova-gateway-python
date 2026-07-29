@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,7 +15,13 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from .models import ExpectedOutcome, RunConfig, RunEvent
+from .models import (
+    ExpectedOutcome,
+    RunAction,
+    RunConfig,
+    RunEvent,
+    RunExpectation,
+)
 from .server import LocalRunServer
 from .state import PromptGate
 
@@ -89,18 +96,23 @@ class BrowserRunner:
                             self.config.prompt_timeout_seconds, deadline
                         ),
                     )
-                    self._wait_for_prompt_end(server, page, deadline)
-                    injection_finished = self._wait_for(
-                        server,
-                        lambda event: event.name == "injection_finished",
-                        self._bounded_timeout(30, deadline),
-                    )
-                    finish_result = self._finish_call(
-                        server,
-                        page,
-                        deadline,
-                        injection_finished,
-                    )
+                    if self.config.steps:
+                        finish_result = self._execute_steps(
+                            server, page, deadline
+                        )
+                    else:
+                        self._wait_for_prompt_end(server, page, deadline)
+                        injection_finished = self._wait_for(
+                            server,
+                            lambda event: event.name == "injection_finished",
+                            self._bounded_timeout(30, deadline),
+                        )
+                        finish_result = self._finish_call(
+                            server,
+                            page,
+                            deadline,
+                            injection_finished,
+                        )
                     final_reason = str(finish_result["completion_reason"])
                 finally:
                     # A crashed browser can make close() fail. Preserve the original
@@ -138,6 +150,7 @@ class BrowserRunner:
                 "observed_remote_prompt_count"
             ],
             "disconnect": finish_result["disconnect"],
+            "steps": finish_result.get("steps", []),
             "events": [
                 {
                     "name": event.name,
@@ -166,7 +179,11 @@ class BrowserRunner:
         return static_root
 
     def _wait_for_prompt_end(
-        self, server: LocalRunServer, page: Any, call_deadline: float
+        self,
+        server: LocalRunServer,
+        page: Any,
+        call_deadline: float,
+        audio_index: int = 0,
     ) -> None:
         gate = PromptGate(
             self.config.remote_silence_seconds,
@@ -188,7 +205,11 @@ class BrowserRunner:
                 elif event.name == "remote_audio_inactive":
                     gate.remote_audio_inactive(time.monotonic())
             if gate.ready_to_inject(time.monotonic()):
-                self._command(page, "injectAudio", "remote_prompt")
+                self._command(
+                    page,
+                    "injectAudio",
+                    {"index": audio_index, "trigger": "remote_prompt"},
+                )
                 gate.mark_injected()
                 return
             if (
@@ -196,12 +217,244 @@ class BrowserRunner:
                 and not gate.remote_activity_observed
                 and time.monotonic() >= fallback_deadline
             ):
-                self._command(page, "injectAudio", "initial_silence_fallback")
+                self._command(
+                    page,
+                    "injectAudio",
+                    {
+                        "index": audio_index,
+                        "trigger": "initial_silence_fallback",
+                    },
+                )
                 gate.mark_injected()
                 return
         raise RunFailure(
             "No completed remote prompt was detected before the prompt or call timeout"
         )
+
+    def _execute_steps(
+        self,
+        server: LocalRunServer,
+        page: Any,
+        call_deadline: float,
+    ) -> dict[str, Any]:
+        """Execute ordered Playwright-shaped action and expectation steps."""
+        step_results: list[dict[str, Any]] = []
+        observations: list[ResponseObservation] = []
+        last_injection: RunEvent | None = None
+        first_action = True
+        prior_response_active = False
+        events_during_injection: tuple[RunEvent, ...] = ()
+
+        for step_index, step in enumerate(self.config.steps):
+            if isinstance(step, RunAction):
+                audio_index = step.audio_index
+                if first_action:
+                    self._wait_for_prompt_end(
+                        server,
+                        page,
+                        call_deadline,
+                        audio_index,
+                    )
+                    first_action = False
+                else:
+                    self._command(
+                        page,
+                        "injectAudio",
+                        {
+                            "index": audio_index,
+                            "trigger": "scenario_step",
+                        },
+                    )
+                last_injection, events_during_injection = (
+                    self._wait_for_injection_finished(
+                        server,
+                        audio_index,
+                        self._bounded_timeout(30, call_deadline),
+                    )
+                )
+                step_results.append(
+                    {
+                        "index": step_index,
+                        "kind": "action",
+                        "name": step.name,
+                        "audio_index": audio_index,
+                        "finished_timestamp": last_injection.timestamp,
+                    }
+                )
+                continue
+
+            if not isinstance(step, RunExpectation):
+                raise RunFailure(f"Unsupported scenario step: {step!r}")
+            if last_injection is None:
+                raise RunFailure("Expectation has no preceding caller injection")
+
+            if step.outcome == ExpectedOutcome.RESPONSE_START:
+                response_start = self._wait_for_response_start(
+                    server,
+                    call_deadline,
+                    prefetched_events=events_during_injection,
+                    ignore_current_prompt=prior_response_active,
+                )
+                prior_response_active = True
+                step_results.append(
+                    {
+                        "index": step_index,
+                        "kind": "expect",
+                        "name": step.name,
+                        "outcome": step.outcome.value,
+                        "observed_timestamp": response_start.timestamp,
+                        "latency_seconds": max(
+                            0.0,
+                            response_start.timestamp - last_injection.timestamp,
+                        ),
+                    }
+                )
+                continue
+
+            observation = self._wait_for_remote_prompts(
+                server,
+                call_deadline,
+                last_injection,
+                wait_for_disconnect=(
+                    step.outcome == ExpectedOutcome.SESSION_END
+                ),
+                expected_response_prompts=step.response_prompts,
+                prefetched_events=events_during_injection,
+                ignore_current_prompt=prior_response_active,
+            )
+            prior_response_active = False
+            observations.append(observation)
+            step_results.append(
+                {
+                    "index": step_index,
+                    "kind": "expect",
+                    "name": step.name,
+                    "outcome": step.outcome.value,
+                    "observed_response_prompts": observation.prompt_count,
+                    "latency_seconds": observation.latency_seconds,
+                }
+            )
+
+            if step.outcome == ExpectedOutcome.SESSION_END:
+                disconnect = observation.disconnect_event
+                if disconnect is None:
+                    raise RunFailure(
+                        "WxCC did not disconnect after the successful "
+                        "task-completion response"
+                    )
+                return self._scenario_result(
+                    "remote_disconnect",
+                    observations,
+                    disconnect,
+                    step_results,
+                )
+            if step.outcome == ExpectedOutcome.TRANSFER:
+                if step.connected_observation_seconds > 0:
+                    self._assert_call_remains_connected(
+                        server,
+                        call_deadline,
+                        step.connected_observation_seconds,
+                    )
+
+        completion_reason, disconnect = self._end_call_locally(
+            server, page, call_deadline
+        )
+        return self._scenario_result(
+            completion_reason,
+            observations,
+            disconnect,
+            step_results,
+        )
+
+    def _wait_for_response_start(
+        self,
+        server: LocalRunServer,
+        call_deadline: float,
+        *,
+        prefetched_events: tuple[RunEvent, ...] = (),
+        ignore_current_prompt: bool = False,
+    ) -> RunEvent:
+        deadline = min(
+            time.monotonic() + self.config.response_timeout_seconds,
+            call_deadline,
+        )
+        pending = deque(prefetched_events)
+        waiting_for_prior_inactive = ignore_current_prompt
+        while time.monotonic() < deadline:
+            event = (
+                pending.popleft()
+                if pending
+                else self._next_event(
+                    server, min(0.2, deadline - time.monotonic())
+                )
+            )
+            if event is None:
+                continue
+            if waiting_for_prior_inactive:
+                if event.name == "remote_audio_inactive":
+                    waiting_for_prior_inactive = False
+                elif event.name == "disconnect":
+                    raise RunFailure(
+                        "Call disconnected before remote response audio started"
+                    )
+                continue
+            if event.name == "remote_audio_active":
+                return event
+            if event.name == "disconnect":
+                raise RunFailure(
+                    "Call disconnected before remote response audio started"
+                )
+        raise RunFailure("No remote response audio started after caller injection")
+
+    def _wait_for_injection_finished(
+        self,
+        server: LocalRunServer,
+        audio_index: int,
+        timeout: float,
+    ) -> tuple[RunEvent, tuple[RunEvent, ...]]:
+        """Wait for one caller asset while retaining concurrent remote events."""
+        deadline = time.monotonic() + timeout
+        concurrent_events: list[RunEvent] = []
+        while time.monotonic() < deadline:
+            event = self._next_event(
+                server, min(0.2, deadline - time.monotonic())
+            )
+            if event is None:
+                continue
+            if (
+                event.name == "injection_finished"
+                and event.details.get("injectionIndex") == audio_index
+            ):
+                return event, tuple(concurrent_events)
+            if event.name in {
+                "remote_audio_active",
+                "remote_audio_inactive",
+                "disconnect",
+            }:
+                concurrent_events.append(event)
+        raise RunFailure(
+            f"Timed out after {timeout:.1f}s waiting for caller audio {audio_index}"
+        )
+
+    @staticmethod
+    def _scenario_result(
+        completion_reason: str,
+        observations: list[ResponseObservation],
+        disconnect: RunEvent | None,
+        step_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "completion_reason": completion_reason,
+            "remote_response_observed": bool(observations),
+            "remote_response_latency_seconds": (
+                observations[-1].latency_seconds if observations else None
+            ),
+            "observed_remote_prompt_count": sum(
+                observation.prompt_count for observation in observations
+            ),
+            "disconnect": disconnect.details if disconnect else None,
+            "steps": step_results,
+        }
 
     def _wait_for_established(self, server: LocalRunServer, timeout: float) -> RunEvent:
         deadline = time.monotonic() + timeout
@@ -322,7 +575,15 @@ class BrowserRunner:
         injection_finished: RunEvent,
         *,
         wait_for_disconnect: bool = False,
+        expected_response_prompts: int | None = None,
+        prefetched_events: tuple[RunEvent, ...] = (),
+        ignore_current_prompt: bool = False,
     ) -> ResponseObservation:
+        required_prompts = (
+            self.config.expected_response_prompts
+            if expected_response_prompts is None
+            else expected_response_prompts
+        )
         deadline = min(
             time.monotonic() + self.config.response_timeout_seconds,
             call_deadline,
@@ -331,18 +592,33 @@ class BrowserRunner:
         remote_active = False
         quiet_since: float | None = None
         prompt_count = 0
+        pending = deque(prefetched_events)
+        waiting_for_prior_inactive = ignore_current_prompt
         while time.monotonic() < deadline:
-            event = self._next_event(
-                server,
-                min(0.2, deadline - time.monotonic()),
+            event = (
+                pending.popleft()
+                if pending
+                else self._next_event(
+                    server,
+                    min(0.2, deadline - time.monotonic()),
+                )
             )
             now = time.monotonic()
             if event is not None:
+                if waiting_for_prior_inactive:
+                    if event.name == "remote_audio_inactive":
+                        waiting_for_prior_inactive = False
+                    elif event.name == "disconnect":
+                        raise RunFailure(
+                            "Call disconnected before the required remote "
+                            "response outcome was observed"
+                        )
+                    continue
                 if event.name == "disconnect":
                     if wait_for_disconnect and first_active is not None:
                         if remote_active or quiet_since is not None:
                             prompt_count += 1
-                        if prompt_count >= self.config.expected_response_prompts:
+                        if prompt_count >= required_prompts:
                             return ResponseObservation(
                                 prompt_count=prompt_count,
                                 latency_seconds=max(
@@ -372,7 +648,7 @@ class BrowserRunner:
                 prompt_count += 1
                 quiet_since = None
                 if (
-                    prompt_count >= self.config.expected_response_prompts
+                    prompt_count >= required_prompts
                     and not wait_for_disconnect
                 ):
                     return ResponseObservation(
@@ -393,7 +669,7 @@ class BrowserRunner:
             )
         raise RunFailure(
             f"Observed {prompt_count} of "
-            f"{self.config.expected_response_prompts} required completed remote "
+            f"{required_prompts} required completed remote "
             "response prompt(s)"
         )
 
@@ -426,7 +702,7 @@ class BrowserRunner:
             raise RunFailure("Call timed out")
         return min(requested, remaining)
 
-    def _command(self, page: Any, command: str, argument: str | None = None) -> None:
+    def _command(self, page: Any, command: str, argument: Any = None) -> None:
         try:
             page.evaluate(
                 "payload => window.byovaE2E[payload.command](payload.argument)",

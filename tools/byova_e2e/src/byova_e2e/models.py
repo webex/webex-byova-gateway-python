@@ -12,8 +12,36 @@ class ExpectedOutcome(str, Enum):
     """Caller-observable outcome required for a successful E2E run."""
 
     RESPONSE = "response"
+    RESPONSE_START = "response-start"
     SESSION_END = "session-end"
     TRANSFER = "transfer"
+
+
+@dataclass(frozen=True)
+class AudioAsset:
+    """One prepared caller-audio file available to the browser."""
+
+    path: Path
+    sha256: str
+    duration_seconds: float
+
+
+@dataclass(frozen=True)
+class RunAction:
+    """Inject one prepared caller-audio asset."""
+
+    audio_index: int
+    name: str | None = None
+
+
+@dataclass(frozen=True)
+class RunExpectation:
+    """Wait for one caller-observable outcome."""
+
+    outcome: ExpectedOutcome
+    response_prompts: int = 1
+    connected_observation_seconds: float = 0.0
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +65,20 @@ class RunConfig:
     expected_response_prompts: int = 1
     connected_observation_seconds: float = 0.0
     headless: bool = False
+    audio_assets: tuple[AudioAsset, ...] = ()
+    steps: tuple[RunAction | RunExpectation, ...] = ()
+
+    def prepared_audio(self) -> tuple[AudioAsset, ...]:
+        """Return multi-step assets or the legacy single caller fixture."""
+        if self.audio_assets:
+            return self.audio_assets
+        return (
+            AudioAsset(
+                path=self.audio_path,
+                sha256=self.audio_sha256,
+                duration_seconds=self.audio_duration_seconds,
+            ),
+        )
 
 
 @dataclass(frozen=True)

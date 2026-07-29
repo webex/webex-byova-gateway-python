@@ -4,7 +4,14 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from byova_e2e.models import ExpectedOutcome, RunConfig, RunEvent
+from byova_e2e.models import (
+    AudioAsset,
+    ExpectedOutcome,
+    RunAction,
+    RunConfig,
+    RunEvent,
+    RunExpectation,
+)
 from byova_e2e.runner import BrowserRunner, RunFailure
 from playwright.sync_api import Error as PlaywrightError
 
@@ -95,6 +102,130 @@ class _EventServer:
 
     def next_event(self, _timeout: float) -> RunEvent | None:
         return self.events.pop(0) if self.events else None
+
+
+class _CommandPage:
+    def __init__(self) -> None:
+        self.commands: list[dict[str, object]] = []
+
+    def evaluate(self, _script: str, payload: dict[str, object]) -> None:
+        self.commands.append(payload)
+
+
+def _audio_assets(tmp_path: Path, count: int) -> tuple[AudioAsset, ...]:
+    return tuple(
+        AudioAsset(
+            path=tmp_path / f"caller-{index}.wav",
+            sha256=str(index) * 64,
+            duration_seconds=1,
+        )
+        for index in range(count)
+    )
+
+
+def test_executes_two_request_response_turns_in_order(tmp_path) -> None:
+    config = replace(
+        _config(tmp_path),
+        audio_assets=_audio_assets(tmp_path, 2),
+        steps=(
+            RunAction(0, "First request"),
+            RunExpectation(ExpectedOutcome.RESPONSE, name="First response"),
+            RunAction(1, "Second request"),
+            RunExpectation(ExpectedOutcome.RESPONSE, name="Second response"),
+        ),
+        response_timeout_seconds=1,
+        remote_silence_seconds=0,
+    )
+    runner = BrowserRunner(tmp_path, config)
+    page = _CommandPage()
+    server = _EventServer(
+        [
+            RunEvent("remote_audio_active", 1.0),
+            RunEvent("remote_audio_inactive", 2.0),
+            RunEvent("injection_finished", 3.0, {"injectionIndex": 0}),
+            RunEvent("remote_audio_active", 4.0),
+            RunEvent("remote_audio_inactive", 5.0),
+            RunEvent("injection_finished", 6.0, {"injectionIndex": 1}),
+            RunEvent("remote_audio_active", 7.0),
+            RunEvent("remote_audio_inactive", 8.0),
+            RunEvent(
+                "disconnect",
+                9.0,
+                {"initiatedByCaller": True},
+            ),
+        ]
+    )
+
+    result = runner._execute_steps(
+        server,
+        page,
+        time.monotonic() + 2,
+    )
+
+    assert [command["command"] for command in page.commands] == [
+        "injectAudio",
+        "injectAudio",
+        "endCall",
+    ]
+    assert page.commands[0]["argument"] == {
+        "index": 0,
+        "trigger": "remote_prompt",
+    }
+    assert page.commands[1]["argument"] == {
+        "index": 1,
+        "trigger": "scenario_step",
+    }
+    assert result["observed_remote_prompt_count"] == 2
+    assert [step["kind"] for step in result["steps"]] == [
+        "action",
+        "expect",
+        "action",
+        "expect",
+    ]
+
+
+def test_injects_second_utterance_after_response_audio_starts(tmp_path) -> None:
+    config = replace(
+        _config(tmp_path),
+        audio_assets=_audio_assets(tmp_path, 2),
+        steps=(
+            RunAction(0),
+            RunExpectation(ExpectedOutcome.RESPONSE_START),
+            RunAction(1),
+            RunExpectation(ExpectedOutcome.RESPONSE),
+        ),
+        response_timeout_seconds=1,
+        remote_silence_seconds=0,
+    )
+    runner = BrowserRunner(tmp_path, config)
+    page = _CommandPage()
+    server = _EventServer(
+        [
+            RunEvent("remote_audio_active", 1.0),
+            RunEvent("remote_audio_inactive", 2.0),
+            RunEvent("injection_finished", 3.0, {"injectionIndex": 0}),
+            RunEvent("remote_audio_active", 4.0),
+            RunEvent("remote_audio_inactive", 4.2),
+            RunEvent("remote_audio_active", 4.4),
+            RunEvent("remote_audio_inactive", 4.8),
+            RunEvent("injection_finished", 5.0, {"injectionIndex": 1}),
+            RunEvent("disconnect", 9.0, {"initiatedByCaller": True}),
+        ]
+    )
+
+    result = runner._execute_steps(
+        server,
+        page,
+        time.monotonic() + 2,
+    )
+
+    assert page.commands[1]["argument"] == {
+        "index": 1,
+        "trigger": "scenario_step",
+    }
+    assert result["steps"][1]["outcome"] == "response-start"
+    assert result["observed_remote_prompt_count"] == 1
+    assert result["steps"][3]["latency_seconds"] == 0
 
 
 def test_required_remote_response_records_latency_and_waits_for_quiet(

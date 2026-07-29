@@ -4,8 +4,15 @@ from pathlib import Path
 
 import pytest
 from byova_e2e.models import ExpectedOutcome
-from byova_e2e.plan import TestPlanError as PlanError
-from byova_e2e.plan import load_plan, load_test
+from byova_e2e.plan import (
+    ExpectStepDefinition,
+    InputStepDefinition,
+    load_plan,
+    load_test,
+)
+from byova_e2e.plan import (
+    TestPlanError as PlanError,
+)
 
 
 def _write_plan(
@@ -100,6 +107,61 @@ def test_resolves_play_fixture_relative_to_config(tmp_path: Path) -> None:
     selected_test = load_test("sample", path)
 
     assert selected_test.wav == (tmp_path / "fixtures/request.wav").resolve()
+
+
+def test_loads_ordered_multi_injection_steps(tmp_path: Path) -> None:
+    path = _write_plan(
+        tmp_path,
+        steps=[
+            {"action": "speak", "text": "I need a hotel."},
+            {"expect": {"outcome": "response"}},
+            {"action": "speak", "text": "A queen room, please."},
+            {"expect": {"outcome": "response"}},
+        ],
+    )
+
+    selected_test = load_test("sample", path)
+
+    assert selected_test.steps == (
+        InputStepDefinition(text="I need a hotel."),
+        ExpectStepDefinition(outcome=ExpectedOutcome.RESPONSE),
+        InputStepDefinition(text="A queen room, please."),
+        ExpectStepDefinition(outcome=ExpectedOutcome.RESPONSE),
+    )
+
+
+def test_loads_response_start_gate_for_speaking_during_playback(
+    tmp_path: Path,
+) -> None:
+    path = _write_plan(
+        tmp_path,
+        steps=[
+            {"action": "speak", "text": "Tell me about the room."},
+            {"expect": {"outcome": "response-start"}},
+            {"action": "speak", "text": "I also need late checkout."},
+            {"expect": {"outcome": "response"}},
+        ],
+    )
+
+    selected_test = load_test("sample", path)
+
+    assert selected_test.steps[1] == ExpectStepDefinition(
+        outcome=ExpectedOutcome.RESPONSE_START
+    )
+
+
+def test_rejects_consecutive_actions_without_an_expectation(tmp_path: Path) -> None:
+    path = _write_plan(
+        tmp_path,
+        steps=[
+            {"action": "speak", "text": "First"},
+            {"action": "speak", "text": "Second"},
+            {"expect": {"outcome": "response"}},
+        ],
+    )
+
+    with pytest.raises(PlanError, match="must alternate audio actions and expectations"):
+        load_test("sample", path)
 
 
 def test_rejects_unknown_fields_to_catch_misspellings(tmp_path: Path) -> None:

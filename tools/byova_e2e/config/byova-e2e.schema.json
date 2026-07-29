@@ -93,27 +93,24 @@
           "$ref": "#/definitions/use"
         },
         "steps": {
-          "items": [
-            {
-              "oneOf": [
-                {
-                  "$ref": "#/definitions/speakText"
-                },
-                {
-                  "$ref": "#/definitions/speakSegments"
-                },
-                {
-                  "$ref": "#/definitions/play"
-                }
-              ]
-            },
-            {
-              "$ref": "#/definitions/expectStep"
-            }
-          ],
-          "additionalItems": false,
-          "minItems": 2,
-          "maxItems": 2
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/speakText"
+              },
+              {
+                "$ref": "#/definitions/speakSegments"
+              },
+              {
+                "$ref": "#/definitions/play"
+              },
+              {
+                "$ref": "#/definitions/expectStep"
+              }
+            ]
+          },
+          "minItems": 2
         }
       }
     },
@@ -210,6 +207,7 @@
             "outcome": {
               "enum": [
                 "response",
+                "response-start",
                 "session-end",
                 "transfer"
               ]
