@@ -16,6 +16,8 @@
 gateway:
   host: "0.0.0.0"
   port: 50051
+  request_queue_maxsize: 100
+  response_queue_maxsize: 100
 
 # Gateway-owned speech boundaries sent to Webex Contact Center. GECX still
 # receives each caller-audio frame immediately through BidiRunSession.

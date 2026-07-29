@@ -31,14 +31,14 @@ from src.generated.voicevirtualagent_pb2 import (
     VoiceVAResponse,
 )
 from src.generated.voicevirtualagent_pb2_grpc import VoiceVirtualAgentServicer
-
-from .virtual_agent_router import VirtualAgentRouter
-from .health_service import HealthCheckService
 from src.utils.audio_normalizer import normalize_wxcc_audio
 from src.utils.silero_speech_boundary import (
     SileroSpeechBoundaryObserver,
     SpeechBoundarySignal,
 )
+
+from .health_service import HealthCheckService
+from .virtual_agent_router import VirtualAgentRouter
 
 
 class ConversationProcessor:
@@ -114,7 +114,16 @@ class ConversationProcessor:
         self, response_sink: Callable[[VoiceVAResponse], bool]
     ) -> None:
         """Attach the bounded stream queue used by asynchronous boundary work."""
-        self._async_response_sink = response_sink
+        with self._speech_end_lock:
+            self._async_response_sink = response_sink
+
+    def clear_async_response_sink(
+        self, response_sink: Callable[[VoiceVAResponse], bool]
+    ) -> None:
+        """Detach one completed stream without clearing a newer reconnect."""
+        with self._speech_end_lock:
+            if self._async_response_sink is response_sink:
+                self._async_response_sink = None
 
     def has_async_work(self) -> bool:
         """Return whether a delayed speech boundary is still being processed."""
@@ -1221,6 +1230,8 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         router: VirtualAgentRouter,
         vad_config: Optional[Dict[str, Any]] = None,
         max_terminal_playback_seconds: float = 30.0,
+        request_queue_maxsize: int = 100,
+        response_queue_maxsize: int = 100,
     ) -> None:
         """
         Initialize the WxCC Gateway Server.
@@ -1228,10 +1239,18 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         Args:
             router: VirtualAgentRouter instance for routing requests to connectors
             vad_config: Gateway-owned voice activity detection settings.
+            request_queue_maxsize: Maximum caller requests buffered per stream.
+            response_queue_maxsize: Maximum gateway responses buffered per stream.
         """
         self.router = router
         self.vad_config = vad_config or {}
         self.max_terminal_playback_seconds = max_terminal_playback_seconds
+        self.request_queue_maxsize = self._positive_queue_size(
+            request_queue_maxsize, "request_queue_maxsize"
+        )
+        self.response_queue_maxsize = self._positive_queue_size(
+            response_queue_maxsize, "response_queue_maxsize"
+        )
         self.logger = logging.getLogger(__name__)
 
         # Conversation state management - track active conversations by conversation_id
@@ -1244,6 +1263,14 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         self.health_service = HealthCheckService(self.router)
 
         self.logger.info("WxCCGatewayServer initialized")
+
+    @staticmethod
+    def _positive_queue_size(value: int, name: str) -> int:
+        """Return a validated bounded stream queue size."""
+        queue_size = int(value)
+        if queue_size <= 0:
+            raise ValueError(f"{name} must be greater than zero")
+        return queue_size
 
     def shutdown(self):
         """Gracefully shut down the server and cleanup conversations."""
@@ -1406,9 +1433,16 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         agent_id = None
         processor = None
         stream_cancel_event = threading.Event()
-        input_done = threading.Event()
-        response_queue: queue.Queue[VoiceVAResponse] = queue.Queue(maxsize=100)
+        request_reader_done = threading.Event()
+        request_processor_done = threading.Event()
+        request_queue: queue.Queue[VoiceVARequest] = queue.Queue(
+            maxsize=self.request_queue_maxsize
+        )
+        response_queue: queue.Queue[VoiceVAResponse] = queue.Queue(
+            maxsize=self.response_queue_maxsize
+        )
         state = {"stream_end_reason": "client_half_close"}
+        state_lock = threading.Lock()
 
         def wake_stream() -> None:
             stream_cancel_event.set()
@@ -1416,21 +1450,75 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         if context:
             context.add_callback(wake_stream)
 
-        def enqueue_response(response: VoiceVAResponse) -> bool:
+        def set_stream_end_reason(reason: str) -> None:
+            """Record lifecycle outcomes without losing a terminal decision."""
+            with state_lock:
+                current_reason = state["stream_end_reason"]
+                if current_reason == "server_terminal":
+                    return
+                if (
+                    reason == "server_terminal"
+                    or current_reason == "client_half_close"
+                ):
+                    state["stream_end_reason"] = reason
+
+        def enqueue_request(request: VoiceVARequest) -> bool:
             while not stream_cancel_event.is_set():
                 try:
-                    response_queue.put(response, timeout=0.25)
-                    return True
+                    request_queue.put(request, timeout=0.25)
+                    return not stream_cancel_event.is_set()
                 except queue.Full:
                     continue
             return False
 
-        def consume_requests() -> None:
-            nonlocal conversation_id, agent_id, processor
+        def enqueue_response(response: VoiceVAResponse) -> bool:
+            while not stream_cancel_event.is_set():
+                try:
+                    response_queue.put(response, timeout=0.25)
+                    return not stream_cancel_event.is_set()
+                except queue.Full:
+                    continue
+            return False
+
+        def read_requests() -> None:
+            """Read WxCC input independently of connector response production."""
             try:
                 for request in request_iterator:
+                    if not enqueue_request(request):
+                        return
+            except grpc.RpcError as error:
+                if error.code() == grpc.StatusCode.CANCELLED:
+                    set_stream_end_reason("client_cancelled")
+                else:
+                    set_stream_end_reason("stream_error")
+                    self.logger.error(
+                        "Error reading ProcessCallerInput stream: %s", error
+                    )
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details(f"Stream error: {str(error)}")
+            except Exception as error:
+                set_stream_end_reason("stream_error")
+                self.logger.error(
+                    "Error reading ProcessCallerInput stream: %s", error
+                )
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Stream error: {str(error)}")
+            finally:
+                request_reader_done.set()
+
+        def process_requests() -> None:
+            """Process caller requests in order and enqueue outbound responses."""
+            nonlocal conversation_id, agent_id, processor
+            try:
+                while True:
                     if stream_cancel_event.is_set():
                         break
+                    try:
+                        request = request_queue.get(timeout=0.25)
+                    except queue.Empty:
+                        if request_reader_done.is_set():
+                            break
+                        continue
 
                     # Extract conversation and agent information from the first request
                     if conversation_id is None:
@@ -1536,35 +1624,41 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                         "message", conversation_id, agent_id
                     )
                     if processor.can_be_deleted:
-                        state["stream_end_reason"] = "server_terminal"
+                        set_stream_end_reason("server_terminal")
                         return
 
             except grpc.RpcError as error:
                 if error.code() == grpc.StatusCode.CANCELLED:
-                    state["stream_end_reason"] = "client_cancelled"
+                    set_stream_end_reason("client_cancelled")
                 else:
-                    state["stream_end_reason"] = "stream_error"
+                    set_stream_end_reason("stream_error")
                     self.logger.error(
-                        "Error in ProcessCallerInput stream: %s", error
+                        "Error processing ProcessCallerInput stream: %s", error
                     )
                     context.set_code(grpc.StatusCode.INTERNAL)
                     context.set_details(f"Stream error: {str(error)}")
             except Exception as error:
-                state["stream_end_reason"] = "stream_error"
+                set_stream_end_reason("stream_error")
                 self.logger.error(
-                    "Error in ProcessCallerInput stream: %s", error
+                    "Error processing ProcessCallerInput stream: %s", error
                 )
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(f"Stream error: {str(error)}")
             finally:
-                input_done.set()
+                request_processor_done.set()
 
-        input_thread = threading.Thread(
-            target=consume_requests,
-            name="wxcc-ingress",
+        request_processor_thread = threading.Thread(
+            target=process_requests,
+            name="wxcc-request-processor",
             daemon=True,
         )
-        input_thread.start()
+        request_reader_thread = threading.Thread(
+            target=read_requests,
+            name="wxcc-request-reader",
+            daemon=True,
+        )
+        request_processor_thread.start()
+        request_reader_thread.start()
 
         try:
             while True:
@@ -1574,12 +1668,20 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     if stream_cancel_event.is_set():
                         break
                     if (
-                        input_done.is_set()
+                        request_processor_done.is_set()
                         and response_queue.empty()
                         and (processor is None or not processor.has_async_work())
                     ):
                         break
                     continue
+
+                if stream_cancel_event.is_set():
+                    self.logger.debug(
+                        "Suppressing queued response after stream cancellation "
+                        "for conversation %s",
+                        conversation_id,
+                    )
+                    break
 
                 yield response
                 terminal_event = any(
@@ -1591,7 +1693,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     for event in response.output_events
                 )
                 if terminal_event:
-                    state["stream_end_reason"] = "server_terminal"
+                    set_stream_end_reason("server_terminal")
                     self.logger.info(
                         "Completing WxCC response stream after terminal response "
                         "for conversation %s",
@@ -1601,9 +1703,20 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     break
         finally:
             stream_cancel_event.set()
-            input_thread.join(timeout=2.0)
+            request_reader_thread.join(timeout=2.0)
+            request_processor_thread.join(timeout=2.0)
+            for thread in (request_reader_thread, request_processor_thread):
+                if thread.is_alive():
+                    self.logger.error(
+                        "wxcc_stream_thread_join_timeout conversation_id=%s "
+                        "thread=%s",
+                        conversation_id,
+                        thread.name,
+                    )
+            if processor is not None:
+                processor.clear_async_response_sink(enqueue_response)
             if context and not context.is_active():
-                state["stream_end_reason"] = "client_cancelled"
+                set_stream_end_reason("client_cancelled")
 
             # WxCC normally half-closes one request RPC and reconnects with the
             # same conversation ID for subsequent caller input. Preserve the
