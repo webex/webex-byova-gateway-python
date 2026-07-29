@@ -447,25 +447,22 @@ class ConversationProcessor:
             "message_type": "silence",
             "output_events": [boundary_event],
         }
-        streams_connector_responses = (
-            self.router.should_coalesce_speech_end_with_response(
+        coalesce_speech_end = (
+            signal.kind == "speech_ended"
+            and self.router.should_coalesce_speech_end_with_response(
                 self.virtual_agent_id
             )
         )
-        if streams_connector_responses:
+        if coalesce_speech_end:
+            # END_OF_INPUT begins the streamed response turn and therefore
+            # remains open through the following audio CHUNKs. START_OF_INPUT
+            # stays a standalone FINAL event so WxCC continues forwarding
+            # caller audio during the bounded speech-resume grace window.
             boundary_connector_response["response_type"] = "chunk"
-        coalesce_speech_end = (
-            signal.kind == "speech_ended" and streams_connector_responses
-        )
 
         if not coalesce_speech_end:
             response = self._convert_connector_response_to_grpc(
                 boundary_connector_response,
-                response_type=(
-                    VoiceVAResponse.ResponseType.CHUNK
-                    if streams_connector_responses
-                    else None
-                ),
             )
             if response is not None:
                 yield response

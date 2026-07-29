@@ -222,7 +222,7 @@ add a WAV header.
 The normal response sequence is:
 
 ```text
-START_OF_INPUT (CHUNK)
+START_OF_INPUT (standalone FINAL event)
 END_OF_INPUT   (CHUNK)
 audio          (CHUNK)
 audio          (CHUNK)
@@ -325,9 +325,10 @@ playback delay; the response stream itself carries the required order.
 
 The connector retains CES text as transcript/fallback state but leaves it off
 audio chunks. This prevents WxCC from synthesizing a duplicate text prompt.
-For GECX, both `START_OF_INPUT` and `END_OF_INPUT` are immediate, CHUNK-typed
-event responses; audio chunks follow `END_OF_INPUT`, and the turn closes with
-one `FINAL`.
+For GECX, `START_OF_INPUT` remains an immediate standalone `FINAL` event so
+WxCC continues forwarding caller audio through a bounded natural pause.
+`END_OF_INPUT` begins the output stream as a `CHUNK` event; audio chunks follow
+it, and the output turn closes with one `FINAL`.
 
 Caller audio is buffered from a bounded pre-roll through the gateway's Silero
 speech-end boundary, then sent to CES as one contiguous turn. This prevents a

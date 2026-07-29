@@ -169,7 +169,7 @@ class TestConversationProcessor:
         frame = processor.speech_boundary_observer.observe.call_args.args[0]
         assert frame.sample_rate_hertz == 16000
 
-    def test_gateway_emits_chunk_typed_speech_started_event(
+    def test_gateway_keeps_speech_started_as_standalone_final_event(
         self, processor, mock_router, mock_audio_input
     ):
         processor.speech_boundary_observer = MagicMock()
@@ -183,7 +183,7 @@ class TestConversationProcessor:
         responses = list(processor._process_audio_input(mock_audio_input))
 
         assert len(responses) == 1
-        assert responses[0].response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert responses[0].response_type == VoiceVAResponse.ResponseType.FINAL
         assert responses[0].output_events[0].event_type == 4
         assert responses[0].output_events[0].name == ""
 
