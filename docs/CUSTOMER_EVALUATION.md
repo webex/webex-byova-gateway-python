@@ -67,15 +67,24 @@ a derivative of this sample.
 3. Decide who will own the Service App, public gateway endpoint, and voice-agent connector.
 4. Create and authorize the Service App, including the Voice Virtual Agent schema and the
    gateway's data exchange domain.
-5. Make the gateway available at a public TLS-enabled server URL, then register an `ACTIVE`
-   BYOVA data source using that exact URL. Use the same value for
-   `jwt_validation.datasource_url` in the gateway configuration.
+5. Make the gateway available at a public TLS-enabled server URL and set that exact value in
+   `jwt_validation.datasource_url`. Enable automatic datasource lifecycle management to
+   discover or register the `ACTIVE` BYOVA datasource and renew its JWS, or register and
+   maintain it manually.
 6. Configure Contact Center AI and add the Virtual Agent V2 activity to a test flow.
 
 Use the current [Service App authorization steps](https://help.webex.com/default/article/5g8s6u),
 [BYODS guide](https://developer.webex.com/webex-contact-center/docs/bring-your-own-data-source-cc),
 and [BYOVA developer guide](https://developer.webex.com/webex-contact-center/docs/bring-your-own-virtual-agent)
 for the Webex onboarding flow.
+
+For the automatic path, provide the authorized Service App OAuth credentials through
+environment variables and set `data_source.enabled: true`. The gateway establishes the
+datasource before accepting gRPC traffic and prints the ID needed by the Contact Center
+virtual-agent feature. Follow
+[Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md#3-enable-automatic-byova-data-source-registration)
+for a complete sandbox example and
+[Configuration](../config/README.md#byods-datasource-lifecycle) for all lifecycle settings.
 
 For a complete first-time walkthrough, including these dependencies in the required order,
 follow the

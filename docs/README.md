@@ -29,6 +29,8 @@ code, not a managed connector or a production-ready service.
 
 ## Authenticate and Secure
 
+- [BYODS Datasource Lifecycle](../config/README.md#byods-datasource-lifecycle): Discover or
+  register the gateway datasource at startup and renew its JWS before expiry.
 - [gRPC JWT Authentication](JWT_AUTHENTICATION.md): Runtime Webex token validation,
   datasource claims, deployment modes, and troubleshooting.
 - [Monitoring Authentication Quick Start](../AUTHENTICATION_QUICKSTART.md): Configure Webex

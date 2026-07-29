@@ -157,6 +157,44 @@ URL. The gateway will not start with an empty value.
 See [gRPC JWT Authentication](../docs/JWT_AUTHENTICATION.md) for claims, issuers, deployment
 modes, and troubleshooting.
 
+## BYODS Datasource Lifecycle
+
+The optional `data_source` section uses `webex-byods-sdk` to discover or register the
+gateway datasource before the gRPC listener starts and renew its JWS before expiry:
+
+```yaml
+data_source:
+  enabled: true
+  fail_startup_on_error: true
+  id: ""
+  id_env: "WEBEX_BYODS_DATA_SOURCE_ID"
+  # Empty values inherit the JWT validation URL and schema.
+  url: ""
+  schema_id: ""
+  audience: "BYOVAGateway"
+  subject: "callAudioData"
+  token_lifetime_minutes: 1440
+  renewal_lead_time_minutes: 60
+  retry_interval_seconds: 60
+  auth:
+    type: "oauth_refresh"
+    client_id_env: "WEBEX_BYODS_CLIENT_ID"
+    client_secret_env: "WEBEX_BYODS_CLIENT_SECRET"
+    refresh_token_env: "WEBEX_BYODS_REFRESH_TOKEN"
+```
+
+Values ending in `_env` name environment variables; they do not contain credentials. The
+Service App needs `spark-admin:datasource_read` and `spark-admin:datasource_write`.
+
+When neither `id` nor the variable named by `id_env` supplies an ID, startup searches for a
+matching URL, schema, audience, and subject. It registers only when no match exists and
+rejects ambiguous matches. Explicit `url` and `schema_id` values must match the corresponding
+`jwt_validation` settings.
+
+For short-lived development, use `auth.type: "static"` with
+`access_token_env: "WEBEX_BYODS_ACCESS_TOKEN"`. Static access tokens cannot be refreshed;
+use OAuth refresh credentials for unattended operation.
+
 ## Logging
 
 ```yaml
@@ -222,6 +260,7 @@ Common checks:
 
 - [Local development](../docs/LOCAL_DEVELOPMENT.md)
 - [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
+- [BYODS datasource lifecycle](#byods-datasource-lifecycle)
 - [JWT authentication](../docs/JWT_AUTHENTICATION.md)
 - [Testing](../docs/TESTING.md)
 - [Return to the project README](../README.md)

@@ -41,7 +41,8 @@ For an end-to-end sandbox call, you also need:
 - A Webex Contact Center sandbox or organization with BYOVA enabled
 - Contact Center administrator access
 - A Webex Service App authorized by the sandbox organization
-- A BYODS data-source registration using the BYOVA schema
+- Service App credentials with `spark-admin:datasource_read` and
+  `spark-admin:datasource_write` when using automatic datasource registration
 - A publicly reachable HTTPS endpoint that supports HTTP/2 gRPC and routes to
   gateway port `50051`
 - A test entry point and a published flow containing a Virtual Agent V2 activity
@@ -207,21 +208,70 @@ The `datasource_url` must exactly match the URL used in the BYODS registration,
 including scheme, hostname, path, and any explicitly supplied port. Restart the
 gateway after changing it.
 
-### 3. Register the BYOVA data source
+### 3. Enable automatic BYOVA data-source registration
 
 Follow the Webex
 [Bring Your Own Virtual Agent](https://developer.webex.com/webex-contact-center/docs/bring-your-own-virtual-agent)
 and
 [Bring Your Own Data Source](https://developer.webex.com/webex-contact-center/docs/bring-your-own-data-source-cc)
-guides to:
+guides to confirm BYOVA is enabled, create a Service App with the required
+data-source scopes and allowed gateway domain, and have a sandbox administrator
+authorize it.
 
-1. Confirm BYOVA is enabled for the sandbox organization.
-2. Create a Service App with the required data-source scopes and add the gateway
-   hostname as an allowed domain.
-3. Have a sandbox administrator authorize the Service App.
-4. Register a data source with the BYOVA schema UUID
-   `5397013b-7920-4ffc-807c-e8a3e0a18f43` and the exact URL configured above.
-5. Save the returned data-source ID.
+Provide the authorized OAuth credentials through environment variables:
+
+```bash
+export WEBEX_BYODS_CLIENT_ID="your-client-id"
+export WEBEX_BYODS_CLIENT_SECRET="your-client-secret"
+export WEBEX_BYODS_REFRESH_TOKEN="your-refresh-token"
+```
+
+Do not commit these values. Use your deployment platform's secret manager for
+shared or long-running environments.
+
+Enable lifecycle management in `config/config.yaml`:
+
+```yaml
+data_source:
+  enabled: true
+  fail_startup_on_error: true
+  id: ""
+  id_env: "WEBEX_BYODS_DATA_SOURCE_ID"
+  # Empty values inherit jwt_validation.datasource_url and schema.
+  url: ""
+  schema_id: ""
+  audience: "BYOVAGateway"
+  subject: "callAudioData"
+  token_lifetime_minutes: 1440
+  renewal_lead_time_minutes: 60
+  retry_interval_seconds: 60
+  auth:
+    type: "oauth_refresh"
+    client_id_env: "WEBEX_BYODS_CLIENT_ID"
+    client_secret_env: "WEBEX_BYODS_CLIENT_SECRET"
+    refresh_token_env: "WEBEX_BYODS_REFRESH_TOKEN"
+```
+
+Start the gateway after the public endpoint is available. Before accepting gRPC
+traffic, it searches for an exact URL, schema, audience, and subject match. It
+reuses and reconciles one match or registers a new datasource when no match
+exists. The startup summary prints the datasource ID and JWS expiry:
+
+```text
+BYODS Datasource:
+   • Management: ENABLED
+   • ID: <data-source-id>
+   • Token Expires: <timestamp>
+```
+
+Keep the gateway running. It renews the JWS 60 minutes before expiry by default
+and retries a failed renewal every 60 seconds. If more than one existing
+datasource matches, set `WEBEX_BYODS_DATA_SOURCE_ID` to the intended ID and
+restart.
+
+For a one-time manual registration instead, leave `data_source.enabled` set to
+`false`, register the same URL and BYOVA schema through the Webex API, and save
+the returned datasource ID. Automatic renewal is disabled in that mode.
 
 No vendor credentials are needed for the local connector.
 
@@ -231,7 +281,7 @@ In Control Hub:
 
 1. Go to **Contact Center > Integrations > Features**.
 2. Create a virtual-agent feature using the authorized Service App.
-3. Use the data-source ID as the resource identifier.
+3. Use the datasource ID printed by gateway startup as the resource identifier.
 4. Give it a recognizable name such as `BYOVA Local Audio Test`.
 
 ### 5. Configure and publish the flow
@@ -296,6 +346,17 @@ when the diagnostic is complete.
 JWT validation is enabled without a URL. For a localhost-only smoke test, set
 `jwt_validation.enabled` to `false`. For a sandbox call, configure the exact
 public BYODS URL and leave validation enabled.
+
+### Automatic datasource registration fails during startup
+
+- Confirm the three `WEBEX_BYODS_*` environment variables are available to the
+  gateway process.
+- Confirm the authorized Service App has both datasource read and write scopes.
+- Confirm the public URL uses a domain allowed by the Service App.
+- If the logs report multiple matches, set `WEBEX_BYODS_DATA_SOURCE_ID` to the
+  intended datasource ID.
+- Keep `fail_startup_on_error: true` for end-to-end testing so the gateway does
+  not accept traffic without a managed datasource.
 
 ### The local agent does not appear in Flow Designer
 

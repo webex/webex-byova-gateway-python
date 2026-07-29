@@ -26,6 +26,7 @@ from auth.jwt_interceptor import JWTAuthInterceptor
 
 # Import JWT authentication components (required)
 from auth.jwt_validator import JWTValidator
+from core.datasource_lifecycle import create_data_source_lifecycle
 from core.health_service import HealthCheckService
 from core.virtual_agent_router import VirtualAgentRouter
 from core.wxcc_gateway_server import WxCCGatewayServer
@@ -278,6 +279,8 @@ def main():
     """
     logger = None
     server = None
+    grpc_server = None
+    data_source_lifecycle = None
     try:
         # Load configuration
         config_path = "config/config.yaml"
@@ -317,6 +320,21 @@ def main():
         interceptors = []
         if jwt_interceptor:
             interceptors.append(jwt_interceptor)
+
+        # Establish the BYODS registration before accepting gRPC traffic.
+        data_source_lifecycle = create_data_source_lifecycle(config, logger)
+        if data_source_lifecycle:
+            try:
+                data_source_lifecycle.start()
+            except Exception:
+                if config.get("data_source", {}).get("fail_startup_on_error", True):
+                    raise
+                logger.exception(
+                    "BYODS data source lifecycle failed to start; "
+                    "continuing because fail_startup_on_error is false"
+                )
+                data_source_lifecycle.stop()
+                data_source_lifecycle = None
 
         # Create gRPC server with interceptors
         if interceptors:
@@ -424,6 +442,19 @@ def main():
             print("   • Status: DISABLED")
 
         print()
+        print("🗂️  BYODS Datasource:")
+        if data_source_lifecycle:
+            current_data_source = data_source_lifecycle.current_data_source or {}
+            print("   • Management: ENABLED")
+            print(f"   • ID: {data_source_lifecycle.data_source_id}")
+            print(
+                "   • Token Expires: "
+                f"{current_data_source.get('tokenExpiryTime', 'Not provided')}"
+            )
+        else:
+            print("   • Management: DISABLED")
+
+        print()
         print("✅ Gateway is running! Press Ctrl+C to stop.")
         print("=" * 60)
 
@@ -438,9 +469,17 @@ def main():
             if server:
                 server.shutdown()
             grpc_server.stop(grace=5)
+            if data_source_lifecycle:
+                data_source_lifecycle.stop()
             logger.info("Gateway shutdown complete")
 
     except Exception as e:
+        if grpc_server:
+            grpc_server.stop(grace=0)
+        if server:
+            server.shutdown()
+        if data_source_lifecycle:
+            data_source_lifecycle.stop()
         if logger:
             logger.error(f"Failed to start gateway: {e}")
         else:

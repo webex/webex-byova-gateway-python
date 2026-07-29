@@ -33,6 +33,8 @@ The production service should provide all of the following:
   owned runbooks.
 - Explicit timeouts, bounded retries, backpressure, circuit breakers, and graceful draining.
 - Enforced authentication, encrypted transport, least-privilege access, and managed secrets.
+- An owned BYODS registration lifecycle with monitored renewal and an unambiguous
+  production datasource ID.
 - Privacy controls for caller data, transcripts, DTMF, tokens, and recorded audio.
 - Automated builds, security scanning, staged releases, rollback, and disaster recovery.
 - A staffed service ownership model with incident response and change-management processes.
@@ -359,6 +361,29 @@ use readiness, while operators and dashboards should see dependency detail separ
 
 Use [Security Configuration](Security-Configuration.md) as a starting point, then complete a
 formal threat model and security review.
+
+### BYODS datasource lifecycle
+
+If automatic datasource management is enabled in production:
+
+- Store the Service App client secret and refresh token in a managed secret service and
+  expose them only to the lifecycle owner.
+- Configure `fail_startup_on_error: true` so a new instance does not accept calls when it
+  cannot establish the intended registration.
+- Pin `data_source.id` or `WEBEX_BYODS_DATA_SOURCE_ID` after provisioning rather than relying
+  on discovery in an environment where multiple registrations may share a URL and schema.
+- Decide whether one elected control-plane worker owns renewal or prove that concurrent
+  renewal from multiple replicas is safe for the deployed SDK and Webex API behavior.
+- Monitor successful registration, reconciliation, token expiry, renewal attempts, and
+  repeated renewal failures. Alert before the remaining token lifetime can be exhausted.
+- Test Service App credential rotation, refresh-token revocation, Webex API outages, and
+  process restarts without disrupting active calls.
+- Define how stale registrations are reviewed and retired. The sample does not delete
+  registrations when a hostname or environment is decommissioned.
+
+The sample lifecycle runs in the gateway process and retries failed renewals, but it does
+not provide leader election, durable lifecycle state, production metrics, or alert routing.
+Treat those as productization work rather than assuming process startup is sufficient.
 
 ### Data plane
 
