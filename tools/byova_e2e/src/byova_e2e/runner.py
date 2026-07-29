@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -241,6 +242,8 @@ class BrowserRunner:
         observations: list[ResponseObservation] = []
         last_injection: RunEvent | None = None
         first_action = True
+        prior_response_active = False
+        events_during_injection: tuple[RunEvent, ...] = ()
 
         for step_index, step in enumerate(self.config.steps):
             if isinstance(step, RunAction):
@@ -262,14 +265,12 @@ class BrowserRunner:
                             "trigger": "scenario_step",
                         },
                     )
-                last_injection = self._wait_for(
-                    server,
-                    lambda event, expected_index=audio_index: (
-                        event.name == "injection_finished"
-                        and event.details.get("injectionIndex")
-                        == expected_index
-                    ),
-                    self._bounded_timeout(30, call_deadline),
+                last_injection, events_during_injection = (
+                    self._wait_for_injection_finished(
+                        server,
+                        audio_index,
+                        self._bounded_timeout(30, call_deadline),
+                    )
                 )
                 step_results.append(
                     {
@@ -289,8 +290,12 @@ class BrowserRunner:
 
             if step.outcome == ExpectedOutcome.RESPONSE_START:
                 response_start = self._wait_for_response_start(
-                    server, call_deadline
+                    server,
+                    call_deadline,
+                    prefetched_events=events_during_injection,
+                    ignore_current_prompt=prior_response_active,
                 )
+                prior_response_active = True
                 step_results.append(
                     {
                         "index": step_index,
@@ -314,7 +319,10 @@ class BrowserRunner:
                     step.outcome == ExpectedOutcome.SESSION_END
                 ),
                 expected_response_prompts=step.response_prompts,
+                prefetched_events=events_during_injection,
+                ignore_current_prompt=prior_response_active,
             )
+            prior_response_active = False
             observations.append(observation)
             step_results.append(
                 {
@@ -359,17 +367,36 @@ class BrowserRunner:
         )
 
     def _wait_for_response_start(
-        self, server: LocalRunServer, call_deadline: float
+        self,
+        server: LocalRunServer,
+        call_deadline: float,
+        *,
+        prefetched_events: tuple[RunEvent, ...] = (),
+        ignore_current_prompt: bool = False,
     ) -> RunEvent:
         deadline = min(
             time.monotonic() + self.config.response_timeout_seconds,
             call_deadline,
         )
+        pending = deque(prefetched_events)
+        waiting_for_prior_inactive = ignore_current_prompt
         while time.monotonic() < deadline:
-            event = self._next_event(
-                server, min(0.2, deadline - time.monotonic())
+            event = (
+                pending.popleft()
+                if pending
+                else self._next_event(
+                    server, min(0.2, deadline - time.monotonic())
+                )
             )
             if event is None:
+                continue
+            if waiting_for_prior_inactive:
+                if event.name == "remote_audio_inactive":
+                    waiting_for_prior_inactive = False
+                elif event.name == "disconnect":
+                    raise RunFailure(
+                        "Call disconnected before remote response audio started"
+                    )
                 continue
             if event.name == "remote_audio_active":
                 return event
@@ -378,6 +405,36 @@ class BrowserRunner:
                     "Call disconnected before remote response audio started"
                 )
         raise RunFailure("No remote response audio started after caller injection")
+
+    def _wait_for_injection_finished(
+        self,
+        server: LocalRunServer,
+        audio_index: int,
+        timeout: float,
+    ) -> tuple[RunEvent, tuple[RunEvent, ...]]:
+        """Wait for one caller asset while retaining concurrent remote events."""
+        deadline = time.monotonic() + timeout
+        concurrent_events: list[RunEvent] = []
+        while time.monotonic() < deadline:
+            event = self._next_event(
+                server, min(0.2, deadline - time.monotonic())
+            )
+            if event is None:
+                continue
+            if (
+                event.name == "injection_finished"
+                and event.details.get("injectionIndex") == audio_index
+            ):
+                return event, tuple(concurrent_events)
+            if event.name in {
+                "remote_audio_active",
+                "remote_audio_inactive",
+                "disconnect",
+            }:
+                concurrent_events.append(event)
+        raise RunFailure(
+            f"Timed out after {timeout:.1f}s waiting for caller audio {audio_index}"
+        )
 
     @staticmethod
     def _scenario_result(
@@ -519,6 +576,8 @@ class BrowserRunner:
         *,
         wait_for_disconnect: bool = False,
         expected_response_prompts: int | None = None,
+        prefetched_events: tuple[RunEvent, ...] = (),
+        ignore_current_prompt: bool = False,
     ) -> ResponseObservation:
         required_prompts = (
             self.config.expected_response_prompts
@@ -533,13 +592,28 @@ class BrowserRunner:
         remote_active = False
         quiet_since: float | None = None
         prompt_count = 0
+        pending = deque(prefetched_events)
+        waiting_for_prior_inactive = ignore_current_prompt
         while time.monotonic() < deadline:
-            event = self._next_event(
-                server,
-                min(0.2, deadline - time.monotonic()),
+            event = (
+                pending.popleft()
+                if pending
+                else self._next_event(
+                    server,
+                    min(0.2, deadline - time.monotonic()),
+                )
             )
             now = time.monotonic()
             if event is not None:
+                if waiting_for_prior_inactive:
+                    if event.name == "remote_audio_inactive":
+                        waiting_for_prior_inactive = False
+                    elif event.name == "disconnect":
+                        raise RunFailure(
+                            "Call disconnected before the required remote "
+                            "response outcome was observed"
+                        )
+                    continue
                 if event.name == "disconnect":
                     if wait_for_disconnect and first_active is not None:
                         if remote_active or quiet_since is not None:

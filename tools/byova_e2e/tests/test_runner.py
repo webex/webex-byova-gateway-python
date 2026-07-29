@@ -205,10 +205,10 @@ def test_injects_second_utterance_after_response_audio_starts(tmp_path) -> None:
             RunEvent("remote_audio_inactive", 2.0),
             RunEvent("injection_finished", 3.0, {"injectionIndex": 0}),
             RunEvent("remote_audio_active", 4.0),
+            RunEvent("remote_audio_inactive", 4.2),
+            RunEvent("remote_audio_active", 4.4),
+            RunEvent("remote_audio_inactive", 4.8),
             RunEvent("injection_finished", 5.0, {"injectionIndex": 1}),
-            RunEvent("remote_audio_inactive", 6.0),
-            RunEvent("remote_audio_active", 7.0),
-            RunEvent("remote_audio_inactive", 8.0),
             RunEvent("disconnect", 9.0, {"initiatedByCaller": True}),
         ]
     )
@@ -225,6 +225,7 @@ def test_injects_second_utterance_after_response_audio_starts(tmp_path) -> None:
     }
     assert result["steps"][1]["outcome"] == "response-start"
     assert result["observed_remote_prompt_count"] == 1
+    assert result["steps"][3]["latency_seconds"] == 0
 
 
 def test_required_remote_response_records_latency_and_waits_for_quiet(
