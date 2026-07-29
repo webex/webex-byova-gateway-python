@@ -4,6 +4,16 @@ This directory contains the core logic for the Webex Contact Center BYOVA Gatewa
 
 ## Components
 
+### BYODS Datasource Lifecycle (`datasource_lifecycle.py`)
+
+The optional datasource lifecycle is responsible for:
+
+- **Startup Registration**: Discovers or registers the configured gateway URL before gRPC traffic is accepted
+- **Configuration Reconciliation**: Keeps URL, schema, audience, subject, and active status aligned
+- **JWS Renewal**: Uses `webex-byods-sdk` to renew the datasource token before `tokenExpiryTime`
+- **Retry and Shutdown**: Retries background renewal failures and stops through an interruptible event
+- **Credential Isolation**: Resolves SDK credential values only from named environment variables
+
 ### Virtual Agent Router (`virtual_agent_router.py`)
 
 The router is responsible for:
@@ -62,11 +72,12 @@ python -m grpc_tools.protoc -Iproto --python_out=src/core --grpc_python_out=src/
 
 ### Request Flow
 
-1. **WxCC Request**: WxCC sends gRPC request to gateway
-2. **Router Lookup**: Gateway finds appropriate connector for agent
-3. **Connector Processing**: Connector processes request in vendor format
-4. **Response Conversion**: Response converted back to WxCC format
-5. **Stream Response**: Response streamed back to WxCC
+1. **Datasource Readiness**: When enabled, startup reconciles the BYODS registration and schedules renewal
+2. **WxCC Request**: WxCC sends gRPC request to gateway
+3. **Router Lookup**: Gateway finds appropriate connector for agent
+4. **Connector Processing**: Connector processes request in vendor format
+5. **Response Conversion**: Response converted back to WxCC format
+6. **Stream Response**: Response streamed back to WxCC
 
 ### Conversation Management
 
@@ -182,4 +193,4 @@ logging:
 
 ## License
 
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details. 
+This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.

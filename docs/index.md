@@ -29,6 +29,7 @@ A fully functional voice AI system where customers can:
 ## 🔧 Key Features
 
 - **gRPC Integration**: Seamless communication with Webex Contact Center
+- **Automatic BYODS Lifecycle**: Optional startup registration and pre-expiry JWS renewal
 - **Modular Architecture**: Easy to extend with new virtual agent providers
 - **Real-time Monitoring**: Web dashboard for debugging and monitoring
 - **Multiple Connectors**: Support for local audio testing and AWS Lex integration

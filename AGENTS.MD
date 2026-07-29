@@ -80,6 +80,7 @@ webex-byova-gateway-python/
 │   │   ├── i_vendor_connector.py
 │   │   └── local_audio_connector.py
 │   ├── core/                # Core gateway components
+│   │   ├── datasource_lifecycle.py
 │   │   ├── virtual_agent_router.py
 │   │   ├── wxcc_gateway_server.py
 │   │   └── *.py            # Generated gRPC stubs
@@ -137,6 +138,15 @@ webex-byova-gateway-python/
 - Processes different input types (audio, DTMF, events)
 - Converts between gRPC and connector formats
 - Handles error conditions and conversation cleanup
+
+### DataSourceLifecycle (`datasource_lifecycle.py`)
+
+- Uses the `webex-byods-sdk` package rather than implementing BYODS REST calls
+- Discovers or registers the gateway datasource before gRPC starts accepting traffic
+- Reconciles URL, schema, audience, subject, and active status at startup
+- Renews the datasource JWS before `tokenExpiryTime` and retries transient failures
+- Reads credential values only from explicitly named environment variables
+- Requires an explicit datasource ID when discovery returns multiple matches
 
 ## Development Guidelines
 

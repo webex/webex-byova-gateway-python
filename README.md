@@ -27,6 +27,7 @@ The sample includes:
 
 - A BYOVA gRPC server with `ListVirtualAgents` and `ProcessCallerInput`
 - JWT validation for the WxCC data plane
+- Optional BYODS datasource registration and pre-expiry JWS renewal
 - A configuration-driven connector router
 - Local audio and AWS Lex connectors
 - gRPC and HTTP health checks
@@ -53,7 +54,8 @@ Before WxCC can connect to this gateway, you need:
   exchange domain for your gateway
 - Authorization of that Service App by an administrator in the target organization
 - A publicly reachable TLS-enabled gRPC server URL on the authorized domain
-- An `ACTIVE` BYOVA data-source registration whose URL exactly matches the public server URL
+- An `ACTIVE` BYOVA data-source registration whose URL exactly matches the public server URL;
+  the gateway can create and renew this registration when datasource management is enabled
 - A Contact Center AI virtual-agent configuration and a test flow that uses the Virtual
   Agent V2 activity
 - A configured gateway connector: use the local audio connector for a vendor-neutral
@@ -106,6 +108,30 @@ jwt_validation:
 Never use disabled authentication for a Webex-connected or production endpoint. For an
 end-to-end test, configure the exact registered datasource URL and keep JWT enforcement
 enabled.
+
+### Configure Automatic Datasource Management
+
+The optional datasource lifecycle uses
+[`webex-byods-sdk`](https://github.com/WebexCommunity/webex-python-byods-sdk) to discover or
+register this gateway before gRPC starts accepting traffic and to renew its JWS before
+expiry. Configure `jwt_validation.datasource_url`, then enable:
+
+```yaml
+data_source:
+  enabled: true
+  auth:
+    type: "oauth_refresh"
+    client_id_env: "WEBEX_BYODS_CLIENT_ID"
+    client_secret_env: "WEBEX_BYODS_CLIENT_SECRET"
+    refresh_token_env: "WEBEX_BYODS_REFRESH_TOKEN"
+```
+
+Set the named environment variables from an authorized Service App with
+`spark-admin:datasource_read` and `spark-admin:datasource_write`. The gateway discovers an
+exact URL/schema/audience/subject match when no datasource ID is configured, reconciles
+configuration drift, and renews the token 60 minutes before expiry by default. See the
+[Configuration Reference](config/README.md#byods-datasource-lifecycle) for all settings and
+the static-token development option.
 
 ### Run
 
@@ -186,7 +212,7 @@ webex-byova-gateway-python/
 ├── src/
 │   ├── auth/           # gRPC JWT validation
 │   ├── connectors/     # Virtual-agent connectors
-│   ├── core/           # Gateway server, routing, and health
+│   ├── core/           # Datasource lifecycle, gateway server, routing, and health
 │   ├── generated/      # Locally generated gRPC modules
 │   ├── monitoring/     # Development monitoring interface
 │   └── utils/          # Audio utilities

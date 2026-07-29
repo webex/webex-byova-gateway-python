@@ -109,6 +109,42 @@ jwt_validation:
   # Public keys are fetched from Webex identity broker and cached to improve performance
   cache_duration_minutes: 60
 
+# BYODS datasource registration and token lifecycle
+data_source:
+  # Enable to discover/register this gateway with Webex at startup and renew
+  # its JWS before expiration.
+  enabled: false
+
+  # Stop gateway startup if registration or initial renewal fails.
+  fail_startup_on_error: true
+
+  # Optional existing datasource ID. When empty, the gateway discovers a
+  # matching datasource or registers one. id_env takes precedence when id is empty.
+  id: ""
+  id_env: "WEBEX_BYODS_DATA_SOURCE_ID"
+
+  # Leave URL and schema empty to reuse the JWT validation values above.
+  # If explicitly configured, they must exactly match the JWT values.
+  url: ""
+  schema_id: ""
+  audience: "BYOVAGateway"
+  subject: "callAudioData"
+
+  # Webex supports a maximum JWS lifetime of 1440 minutes (24 hours).
+  token_lifetime_minutes: 1440
+  renewal_lead_time_minutes: 60
+  retry_interval_seconds: 60
+
+  # The SDK reads credential values from these environment variables. An OAuth
+  # refresh token supports unattended access-token renewal. A static access
+  # token can be used for short-lived development by setting type: "static"
+  # and access_token_env: "WEBEX_BYODS_ACCESS_TOKEN".
+  auth:
+    type: "oauth_refresh"
+    client_id_env: "WEBEX_BYODS_CLIENT_ID"
+    client_secret_env: "WEBEX_BYODS_CLIENT_SECRET"
+    refresh_token_env: "WEBEX_BYODS_REFRESH_TOKEN"
+
 # Logging configuration
 logging:
   gateway:

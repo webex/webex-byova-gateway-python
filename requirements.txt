@@ -17,6 +17,7 @@ blinker>=1.9.0
 PyJWT[crypto]>=2.8.0  # JWT with cryptography support for RSA signature verification
 cryptography>=43.0.0  # Cryptographic operations for JWT validation
 requests>=2.31.0
+webex-byods-sdk==0.2.0
 
 # Audio processing
 pydub>=0.25.1
