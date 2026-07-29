@@ -1414,6 +1414,19 @@ class TestClientStreamEndCleanup:
             ),
         )
 
+    @staticmethod
+    def _audio_request(audio_data: bytes) -> VoiceVARequest:
+        return VoiceVARequest(
+            conversation_id="stream-end-conv",
+            virtual_agent_id="GECX Agent",
+            audio_input=VoiceInput(
+                caller_audio=audio_data,
+                encoding=VoiceInput.VoiceEncoding.MULAW_FORMAT,
+                sample_rate_hertz=8000,
+                language_code="en-US",
+            ),
+        )
+
     @pytest.mark.parametrize(
         ("message_type", "expected_event_type"),
         [("session_end", 1), ("transfer", 2)],
@@ -1513,13 +1526,15 @@ class TestClientStreamEndCleanup:
         assert consumed_second_request.wait(1.0)
         assert list(responses) == []
 
-    def test_ingress_continues_while_connector_response_is_still_producing(
+    def test_audio_ingress_is_buffered_while_connector_response_is_producing(
         self
     ):
         router = MagicMock(spec=VirtualAgentRouter)
         allow_response_completion = threading.Event()
-        consumed_second_request = threading.Event()
-        processed_second_request = threading.Event()
+        consumed_audio_requests = threading.Event()
+        processed_audio_requests = threading.Event()
+        processed_audio: list[bytes] = []
+        caller_frames = [b"caller-frame-1", b"caller-frame-2", b"caller-frame-3"]
 
         def start_responses():
             yield self._session_start_response()
@@ -1533,11 +1548,14 @@ class TestClientStreamEndCleanup:
             if operation == "start_conversation":
                 return start_responses()
             if operation == "send_message":
-                processed_second_request.set()
+                processed_audio.append(message_data["audio_data"])
+                if len(processed_audio) == len(caller_frames):
+                    processed_audio_requests.set()
                 return None
             raise AssertionError(f"Unexpected operation: {operation}")
 
         router.route_request.side_effect = route_request
+        router.should_observe_speech_boundaries.return_value = False
         router.should_cleanup_on_client_stream_end.return_value = True
         context = MagicMock()
         context.is_active.return_value = True
@@ -1545,16 +1563,17 @@ class TestClientStreamEndCleanup:
 
         def requests():
             yield self._session_start_request()
-            consumed_second_request.set()
-            yield self._custom_event_request()
+            for caller_frame in caller_frames:
+                yield self._audio_request(caller_frame)
+            consumed_audio_requests.set()
 
         responses = server.ProcessCallerInput(requests(), context)
         first_response = next(responses)
 
         try:
             assert first_response.prompts[0].text == "Connected"
-            assert consumed_second_request.wait(0.5)
-            assert processed_second_request.is_set() is False
+            assert consumed_audio_requests.wait(0.5)
+            assert processed_audio == []
         finally:
             allow_response_completion.set()
 
@@ -1563,7 +1582,8 @@ class TestClientStreamEndCleanup:
         assert [response.prompts[0].text for response in remaining_responses] == [
             "The first response is complete."
         ]
-        assert processed_second_request.is_set()
+        assert processed_audio_requests.is_set()
+        assert processed_audio == caller_frames
 
     def test_bounded_ingress_backpressure_stops_on_stream_cancellation(self):
         router = MagicMock(spec=VirtualAgentRouter)

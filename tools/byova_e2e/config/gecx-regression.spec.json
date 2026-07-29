@@ -88,8 +88,8 @@
     },
     {
       "id": "speak-during-playback",
-      "title": "accepts a caller turn while GECX audio is playing",
-      "description": "Caller ingress remains active during a GECX response and produces a later complete response.",
+      "title": "probes caller injection while GECX audio is playing",
+      "description": "Audio-plane probe only: the browser injects during playback and verifies the call remains healthy. Because buffered GECX prompts keep barge-in disabled until Phase 4, a green runner result does not prove that CES received the second utterance; correlate the CES transcript.",
       "steps": [
         {
           "name": "Request a detailed hotel description",
@@ -108,7 +108,7 @@
           "text": "Actually, I only need a queen room."
         },
         {
-          "name": "Expect a later complete virtual-agent response",
+          "name": "Observe remote audio completion without a call failure",
           "expect": {
             "outcome": "response",
             "responsePrompts": 1

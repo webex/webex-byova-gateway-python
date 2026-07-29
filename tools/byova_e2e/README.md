@@ -329,9 +329,12 @@ Correlate each artifact window and config SHA-256 with gateway and CES evidence:
   `END_OF_INPUT`, and one complete CES transcript.
 - `multi-turn-response`: two caller injections, two complete GECX responses,
   and no terminal output event.
-- `speak-during-playback`: the second caller injection begins after the first
-  GECX response starts, reaches GECX while response audio is active, and
-  produces a later complete response.
+- `speak-during-playback`: an audio-plane probe in Phase 2. The second caller
+  injection begins after the first GECX response starts and the call remains
+  healthy through remote-audio completion. Buffered GECX prompts keep barge-in
+  disabled until Phase 4, so a green runner result does **not** prove CES
+  received the second utterance; correlate the CES transcript and record that
+  live semantic gap explicitly.
 - `task-complete`: one `SESSION_END` output event before the remote disconnect.
 - `transfer`: one `TRANSFER_TO_AGENT` output event and both configured
   post-input announcement epochs.
