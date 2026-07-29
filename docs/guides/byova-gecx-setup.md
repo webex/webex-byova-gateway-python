@@ -8,9 +8,10 @@ This guide explains how to connect Webex Contact Center (WxCC) BYOVA to an agent
 Caller -> WxCC -> BYOVA Gateway (gRPC) -> GECXConnector -> CES BidiRunSession -> CX Agent Studio
 ```
 
-The connector sends WxCC caller audio to Google as it arrives. Its current
-output mode buffers each CES agent turn and returns one WAV `FINAL` response;
-BYOVA `CHUNK` output streaming is planned separately.
+The connector sends WxCC caller audio to Google as it arrives and forwards each
+CES 8 kHz mu-law output frame immediately as a BYOVA `CHUNK`. Each agent turn
+ends with exactly one `FINAL`; terminal turns place `TRANSFER_TO_AGENT` or
+`SESSION_END` on that final response.
 
 ## Prerequisites
 
@@ -169,18 +170,16 @@ are worth understanding if you fork this connector.
 
 `GECXStreamingSession` runs a background thread per conversation that holds one
 CES `BidiRunSession` open. WxCC caller audio is pushed onto an inbound queue and
-forwarded to CES; CES server messages (STT, agent text, TTS audio, barge-in,
-end-of-session) are mapped to BYOVA responses on an outbound queue. The gateway
-drains responses while caller audio is flowing and, after gateway speech-end
-detection, waits for CES `turn_completed` before returning the final turn to
-WxCC. This prevents a response that arrives after `END_OF_INPUT` from remaining
-queued when WxCC stops sending caller audio.
+forwarded to CES; CES server messages (STT, agent text, TTS audio,
+interruption, and end-of-session) are mapped to BYOVA responses on an outbound
+queue. After the gateway emits `END_OF_INPUT`, it consumes that queue
+incrementally instead of materializing the complete turn. The first CES audio
+frame can therefore reach WxCC before CES emits `turn_completed`.
 
 All terminal causes pass through one session-scoped decision guard. The first
-decision rejects later caller input, finalizes agent audio received before the
-decision, half-closes the CES request stream once, and emits at most one
-terminal response. Duplicate `EndSession` messages and late CES output are
-ignored.
+decision rejects later caller input, preserves already-queued audio chunks,
+half-closes the CES request stream once, and emits at most one terminal
+`FINAL`. Duplicate `EndSession` messages and late CES output are ignored.
 
 | Terminal cause | WxCC outcome |
 |----------------|--------------|
@@ -213,28 +212,36 @@ merges up to `input_pause_preroll_ms` of the resumed onset, and keeps one CES
 input turn. Otherwise it commits the boundary normally. Configure the observer
 under the top-level `voice_activity_detection` block in `config/config.yaml`.
 
-### Audio format: WxCC expects a self-describing WAV clip
+### Output audio: raw 8 kHz mu-law BYOVA chunks
 
-This is the single most important detail. WxCC's `Prompt.audio_content` field
-carries **no encoding metadata**, so the bytes must be a **self-describing WAV
-file**. Telephony uses **8 kHz, 8-bit, mono mu-law** (`WAVE_FORMAT_MULAW`).
+CES streams TTS output as small frames. The connector places every frame
+directly in `Prompt.audio_content` with `response_type=CHUNK`, keeping
+`is_barge_in_enabled=false`. It does not accumulate a full turn and does not
+add a WAV header.
 
-CES streams TTS output as many small raw frames per agent turn. If you forward
-those raw frames straight to WxCC, the caller **hears nothing** (WxCC can't tell
-what format the bytes are). The connector therefore:
+The normal response sequence is:
 
-1. **Buffers** all raw CES audio frames for an agent turn.
-2. On turn completion (`turn_completed` / `end_session`), **wraps** the whole
-   buffer in a WAV header (via `wrap_output_audio` / `_build_wxcc_wav`).
-3. Emits **one** complete WAV clip per turn as a single WxCC prompt — the same
-   shape the `local_audio_connector` produces.
+```text
+START_OF_INPUT (CHUNK)
+END_OF_INPUT   (CHUNK)
+audio          (CHUNK)
+audio          (CHUNK)
+...
+turn complete  (FINAL)
+```
 
-Barge-in (`interruption_signal`) clears the buffer and any queued audio so the
-agent stops talking when the caller interrupts.
+A terminal turn uses the same audio chunks, followed by one `FINAL` carrying
+`TRANSFER_TO_AGENT` or `SESSION_END`. The initial greeting uses the same
+`CHUNK`/`FINAL` pipeline.
 
-> If you change `output_audio_encoding`/`output_sample_rate_hertz`, keep them
-> consistent with the WAV header the connector writes. For WxCC telephony, leave
-> them at `MULAW` / `8000`.
+The current CHUNK path intentionally supports only 8 kHz mu-law output.
+`output_audio_encoding` must remain `MULAW` and
+`output_sample_rate_hertz` must remain `8000`; unsupported combinations fail
+configuration early. Broader output-format support requires explicit
+conversion and validation.
+
+Barge-in remains disabled. CES `interruption_signal` cleanup is retained, but
+caller-driven output cancellation is a separate implementation phase.
 
 ### Input audio
 
@@ -312,19 +319,15 @@ Wire that branch to a queue that routes to human agents. (A normal
 `SESSION_END` ends the virtual-agent interaction without a transfer.)
 
 When CES includes its final spoken announcement with `EndSession`, the GECX
-connector sends the CES announcement first and follows it with a prompt-free
-terminal response. WxCC skips prompt audio when `TRANSFER_TO_AGENT` shares the
-same response, so this ordering lets the full CES announcement play and then
-transfers as soon as playback completes. The gateway calculates that gate from
-the CES WAV byte rate and data length rather than applying a fixed termination
-delay.
+connector streams the announcement as ordered `CHUNK` responses and follows it
+with one prompt-free terminal `FINAL`. The GECX path no longer calculates a WAV
+playback delay; the response stream itself carries the required order.
 
-The connector also keeps CES text with its matching CES audio until the turn is
-complete. This prevents WxCC from synthesizing a separate text-only prompt ahead
-of the provider audio, which would duplicate speech and delay later responses.
-For GECX, the gateway also places `END_OF_INPUT` on that completed response
-instead of sending it as a preceding standalone response; `START_OF_INPUT`
-remains immediate.
+The connector retains CES text as transcript/fallback state but leaves it off
+audio chunks. This prevents WxCC from synthesizing a duplicate text prompt.
+For GECX, both `START_OF_INPUT` and `END_OF_INPUT` are immediate, CHUNK-typed
+event responses; audio chunks follow `END_OF_INPUT`, and the turn closes with
+one `FINAL`.
 
 Caller audio is buffered from a bounded pre-roll through the gateway's Silero
 speech-end boundary, then sent to CES as one contiguous turn. This prevents a
@@ -345,7 +348,9 @@ window for an `EndSession` that follows the final TTS frames.
 | `api_endpoint` | No | CES endpoint; defaults to `ces.<location>.rep.googleapis.com` |
 | `service_account_key` | No | Path to SA JSON; omit to use ADC |
 | `initial_message` | No | Text sent when the CES stream opens (default: `Hello`) |
-| `enable_partial_responses` | No | Map CES partial outputs to WxCC `PARTIAL` responses |
+| `enable_partial_responses` | No | Request CES text streaming for logs, terminal-cue detection, and text-only fallback |
+| `output_sample_rate_hertz` | No | Must be `8000` for the current raw CHUNK path |
+| `output_audio_encoding` | No | Must be `MULAW` for the current raw CHUNK path |
 | `force_input_format` | No | `wxcc` forces 8 kHz MULAW when input metadata is unavailable |
 | `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
 | `endpointing_silence_ms` | No | Codec-correct silence appended to each buffered caller turn for CES endpoint detection (default: `2000`; one second may leave a turn open until more audio arrives) |
@@ -378,7 +383,7 @@ and grant the represented identity `roles/ces.client`.
 | Stream fails on start | `roles/ces.client`, API enabled, correct `location` |
 | `404` / `UNIMPLEMENTED` on BidiRunSession | Wrong endpoint — must be regional `ces.<location>.rep.googleapis.com` (auto-derived from `location`) |
 | `429 Resource exhausted` | CES per-app session quota; retry/backoff or request more quota |
-| No audio to caller (silence) | WxCC needs a WAV-wrapped clip, not raw audio. Confirm `Audio out: NNNN bytes WAV` in logs and `output_audio_encoding: MULAW` / `output_sample_rate_hertz: 8000`. See [How it works](#audio-format-wxcc-expects-a-self-describing-wav-clip). |
+| No audio to caller (silence) | Confirm `gecx_first_audio_chunk` appears, the next response is a BYOVA `CHUNK`, and output remains `MULAW` / `8000`. See [Output audio](#output-audio-raw-8-khz-mu-law-byova-chunks). |
 | Garbled speech | Confirm the gateway logs the declared WxCC encoding/sample rate; use `force_input_format: "wxcc"` only when the client omits metadata |
 | No response after `END_OF_INPUT` | Check for `turn_completed` or a turn-completion timeout in `[GECX]` logs; increase `turn_response_timeout_seconds` if the agent regularly needs more than 30 seconds |
 | `GoAway` from CES | The connector intentionally emits one `SESSION_END` and half-closes CES; it does not reconnect in the current implementation |
@@ -391,8 +396,12 @@ Search gateway logs for `[GECX]`:
 - `Starting conversation` — session created
 - `STT` — recognition results from CES
 - `Agent` — text responses
-- `Audio out: NNNN bytes WAV (MMMM raw)` — one WAV clip emitted per agent turn
-  (`NNNN` includes the WAV header; `MMMM` is the raw CES bytes buffered)
+- `gecx_first_audio_chunk` — first raw CES frame queued for WxCC, including
+  first-frame latency
+- `gecx_streamed_turn_complete` — one normal `FINAL` emitted after the logged
+  chunk and byte totals
+- `gecx_terminal_decision` — one terminal `FINAL`, with chunk and byte totals
+  but without sensitive metadata values
 - `Barge-in` — interruption signal from CES
 - `gecx_terminal_decision` — the winning lifecycle decision, with
   `conversation_id`, CES `session`, `reason`, `outcome`, `source`,

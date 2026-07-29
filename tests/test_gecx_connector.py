@@ -84,6 +84,23 @@ class TestGECXConnectorInit:
 
         assert connector.endpointing_silence_ms == 2000
 
+    @pytest.mark.parametrize(
+        ("encoding", "sample_rate"),
+        [("LINEAR16", 8000), ("MULAW", 16000)],
+    )
+    def test_rejects_output_format_that_wxcc_chunk_stream_cannot_play(
+        self, gecx_config, encoding, sample_rate
+    ):
+        gecx_config["output_audio_encoding"] = encoding
+        gecx_config["output_sample_rate_hertz"] = sample_rate
+
+        with patch("src.connectors.gecx_connector.ces_v1.SessionServiceClient"):
+            with pytest.raises(
+                ValueError,
+                match="CHUNK streaming currently requires",
+            ):
+                GECXConnector(gecx_config)
+
 
 class TestRequestGenerator:
     def test_first_message_is_session_config(self, connector):
@@ -254,7 +271,7 @@ class TestRequestGenerator:
 
 
 class TestServerMessageMapping:
-    def test_session_output_maps_to_connector_responses(self, connector):
+    def test_session_output_streams_raw_chunk_then_one_final(self, connector):
         session = GECXStreamingSession(
             connector=connector,
             conversation_id="conv-1",
@@ -277,17 +294,67 @@ class TestServerMessageMapping:
 
         session.begin_input_turn()
         session._handle_server_message(message)
-        completed, responses = session.wait_for_turn_responses(timeout=0.1)
+        responses = list(session.iter_turn_responses(timeout=0.1))
 
-        assert completed
-        assert len(responses) == 1
+        assert session._turn_completed.is_set()
+        assert len(responses) == 2
         assert responses[0]["message_type"] == "audio"
-        assert responses[0]["text"] == "Hi there"
-        assert responses[0]["response_type"] == "final"
-        # Text and audio are emitted atomically so WxCC does not synthesize a
-        # duplicate text-only prompt before playing the CES audio.
-        assert responses[0]["audio_content"].startswith(b"RIFF")
-        assert responses[0]["audio_content"].endswith(b"\x01\x02")
+        assert responses[0]["text"] == ""
+        assert responses[0]["response_type"] == "chunk"
+        assert responses[0]["audio_content"] == b"\x01\x02"
+        assert responses[1]["message_type"] == "silence"
+        assert responses[1]["response_type"] == "final"
+        assert responses[1]["audio_content"] == b""
+
+    def test_first_audio_chunk_is_available_before_ces_turn_completion(
+        self, connector
+    ):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        session.begin_input_turn()
+        stream = session.iter_turn_responses(timeout=1.0)
+
+        session._handle_server_message(
+            SimpleNamespace(
+                recognition_result=None,
+                interruption_signal=None,
+                end_session=None,
+                go_away=None,
+                session_output=SimpleNamespace(
+                    text="",
+                    audio=b"first frame",
+                    turn_completed=False,
+                    end_session=False,
+                ),
+            )
+        )
+
+        assert session._turn_completed.is_set() is False
+        first_response = next(stream)
+        assert first_response["response_type"] == "chunk"
+        assert first_response["audio_content"] == b"first frame"
+
+        session._handle_server_message(
+            SimpleNamespace(
+                recognition_result=None,
+                interruption_signal=None,
+                end_session=None,
+                go_away=None,
+                session_output=SimpleNamespace(
+                    text="",
+                    audio=b"",
+                    turn_completed=True,
+                    end_session=False,
+                ),
+            )
+        )
+        remaining = list(stream)
+
+        assert [response["response_type"] for response in remaining] == ["final"]
 
     def test_end_session_emits_session_end_event(self, connector):
         session = GECXStreamingSession(
@@ -397,13 +464,13 @@ class TestServerMessageMapping:
             "audio",
             "transfer",
         ]
-        assert responses[0]["text"] == (
-            "Certainly. Let me connect you with a hotel specialist."
-        )
-        assert responses[0]["audio_content"].endswith(b"transfer audio")
+        assert responses[0]["text"] == ""
+        assert responses[0]["response_type"] == "chunk"
+        assert responses[0]["audio_content"] == b"transfer audio"
         assert responses[0]["output_events"] == []
         assert responses[1]["text"] == ""
         assert responses[1]["audio_content"] == b""
+        assert responses[1]["response_type"] == "final"
 
     def test_configurable_escalation_alias_remains_supported(self, connector):
         connector.transfer_metadata_keys = ["custom_handoff"]
@@ -479,36 +546,42 @@ class TestServerMessageMapping:
         assert session.terminal_decision.reason == GECXTerminalReason.GO_AWAY
         assert session.drain_responses()[0]["message_type"] == "session_end"
 
-    def test_initial_escalation_keeps_greeting_and_transfer_separate(
+    def test_initial_escalation_streams_greeting_before_transfer_final(
         self, connector
     ):
-        combined_terminal_response = connector.create_response(
+        greeting_chunk = connector.create_response(
+            conversation_id="conv-1",
+            message_type="audio",
+            audio_content=b"greeting",
+            barge_in_enabled=False,
+            response_type="chunk",
+        )
+        terminal_response = connector.create_response(
             conversation_id="conv-1",
             message_type="transfer",
-            text="Let me connect you now.",
-            audio_content=b"RIFFgreeting",
             barge_in_enabled=False,
             response_type="final",
         )
         stream_session = MagicMock()
-        stream_session.wait_for_turn_responses.return_value = (
-            True,
-            [combined_terminal_response],
+        stream_session.iter_turn_responses.return_value = iter(
+            [greeting_chunk, terminal_response]
         )
 
         with patch(
             "src.connectors.gecx_connector.GECXStreamingSession",
             return_value=stream_session,
         ):
-            responses = connector.start_conversation("conv-1", {})
+            responses = list(connector.start_conversation("conv-1", {}))
 
         assert [response["message_type"] for response in responses] == [
             "audio",
             "transfer",
         ]
-        assert responses[0]["audio_content"] == b"RIFFgreeting"
+        assert responses[0]["audio_content"] == b"greeting"
+        assert responses[0]["response_type"] == "chunk"
         assert responses[1]["audio_content"] == b""
         assert responses[1]["text"] == ""
+        assert responses[1]["response_type"] == "final"
 
 
 class TestTerminalLifecycle:
@@ -523,9 +596,8 @@ class TestTerminalLifecycle:
     def test_turn_timeout_decides_session_end(self, connector):
         session = self._session(connector)
 
-        completed, responses = session.wait_for_turn_responses(timeout=0)
+        responses = list(session.iter_turn_responses(timeout=0))
 
-        assert not completed
         assert session.terminal_decision.reason == GECXTerminalReason.TIMEOUT
         assert [response["message_type"] for response in responses] == ["session_end"]
 
@@ -621,15 +693,14 @@ class TestTerminalLifecycle:
 
         responses = session.drain_responses()
         assert [response["message_type"] for response in responses] == [
-            "agent_response",
-            "session_end",
+            "session_end"
         ]
         assert responses[0]["text"] == "I can help with that"
-        assert responses[1]["text"] == ""
+        assert responses[0]["response_type"] == "final"
 
-    def test_buffered_agent_audio_before_terminal_is_preserved(self, connector):
+    def test_streamed_agent_audio_precedes_terminal_final(self, connector):
         session = self._session(connector)
-        session._buffer_active_audio(b"agent audio")
+        session._emit_active_audio_chunk(b"agent audio")
 
         session.terminate(
             GECXTerminalReason.GO_AWAY,
@@ -642,7 +713,47 @@ class TestTerminalLifecycle:
             "audio",
             "session_end",
         ]
-        assert responses[0]["audio_content"].endswith(b"agent audio")
+        assert responses[0]["audio_content"] == b"agent audio"
+        assert responses[0]["response_type"] == "chunk"
+        assert responses[1]["response_type"] == "final"
+        assert sum(
+            response["response_type"] == "final" for response in responses
+        ) == 1
+
+    def test_delayed_end_session_replaces_normal_final_after_streamed_audio(
+        self, connector
+    ):
+        session = self._session(connector)
+        session.begin_input_turn()
+        session._handle_server_message(
+            SimpleNamespace(
+                recognition_result=None,
+                interruption_signal=None,
+                end_session=None,
+                go_away=None,
+                session_output=SimpleNamespace(
+                    text="Thank you. Have a great day.",
+                    audio=b"goodbye audio",
+                    turn_completed=True,
+                    end_session=False,
+                ),
+            )
+        )
+        responses = session.iter_turn_responses(
+            timeout=1.0,
+            terminal_grace_seconds=1.0,
+        )
+
+        first_chunk = next(responses)
+        session._handle_end_session("conv-1", SimpleNamespace(metadata={}))
+        remaining = list(responses)
+
+        assert first_chunk["response_type"] == "chunk"
+        assert first_chunk["audio_content"] == b"goodbye audio"
+        assert [response["message_type"] for response in remaining] == [
+            "session_end"
+        ]
+        assert remaining[0]["response_type"] == "final"
 
     @pytest.mark.parametrize(
         ("gateway_reason", "terminal_reason"),
@@ -766,17 +877,20 @@ class TestSpeechBoundaries:
         assert responses == []
         stream_session.begin_input_turn.assert_called_once_with()
 
-    def test_speech_ended_waits_for_and_yields_completed_turn(self, connector):
+    def test_speech_ended_yields_streamed_turn_responses(self, connector):
         stream_session = MagicMock()
         stream_session.is_terminal = False
-        expected = connector.create_response(
+        chunk = connector.create_response(
             conversation_id="conv-1",
             message_type="audio",
-            audio_content=b"RIFFaudio",
+            audio_content=b"raw audio",
+            response_type="chunk",
+        )
+        final = connector.create_response(
+            conversation_id="conv-1",
             response_type="final",
         )
-        stream_session.wait_for_turn_responses.return_value = (True, [expected])
-        stream_session.wait_for_terminal_responses.return_value = []
+        stream_session.iter_turn_responses.return_value = iter([chunk, final])
 
         with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
             responses = list(
@@ -786,15 +900,17 @@ class TestSpeechBoundaries:
                 )
             )
 
-        assert responses == [expected]
+        assert responses == [chunk, final]
         stream_session.end_audio_turn.assert_called_once_with()
-        stream_session.wait_for_turn_responses.assert_called_once_with(timeout=30.0)
-        stream_session.wait_for_terminal_responses.assert_not_called()
+        stream_session.iter_turn_responses.assert_called_once_with(
+            timeout=30.0,
+            terminal_grace_seconds=3.0,
+        )
 
     def test_precommitted_speech_end_only_waits_for_response(self, connector):
         stream_session = MagicMock()
         stream_session.is_terminal = False
-        stream_session.wait_for_turn_responses.return_value = (True, [])
+        stream_session.iter_turn_responses.return_value = iter([])
 
         with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
             responses = list(
@@ -809,9 +925,12 @@ class TestSpeechBoundaries:
 
         assert responses == []
         stream_session.end_audio_turn.assert_not_called()
-        stream_session.wait_for_turn_responses.assert_called_once_with(timeout=30.0)
+        stream_session.iter_turn_responses.assert_called_once_with(
+            timeout=30.0,
+            terminal_grace_seconds=3.0,
+        )
 
-    def test_speech_ended_yields_delayed_terminal_after_agent_audio(
+    def test_speech_ended_yields_chunks_then_terminal_final(
         self, connector
     ):
         stream_session = MagicMock()
@@ -819,17 +938,15 @@ class TestSpeechBoundaries:
         audio = connector.create_response(
             conversation_id="conv-1",
             message_type="audio",
-            text="Alright. Have a great day.",
-            audio_content=b"RIFFaudio",
-            response_type="final",
+            audio_content=b"raw audio",
+            response_type="chunk",
         )
         terminal = connector.create_response(
             conversation_id="conv-1",
             message_type="session_end",
             response_type="final",
         )
-        stream_session.wait_for_turn_responses.return_value = (True, [audio])
-        stream_session.wait_for_terminal_responses.return_value = [terminal]
+        stream_session.iter_turn_responses.return_value = iter([audio, terminal])
 
         with patch.object(connector, "streaming_sessions", {"conv-1": stream_session}):
             responses = list(
@@ -840,6 +957,10 @@ class TestSpeechBoundaries:
             )
 
         assert responses == [audio, terminal]
-        stream_session.wait_for_terminal_responses.assert_called_once_with(
-            timeout=3.0
+        assert sum(
+            response["response_type"] == "final" for response in responses
+        ) == 1
+        stream_session.iter_turn_responses.assert_called_once_with(
+            timeout=30.0,
+            terminal_grace_seconds=3.0,
         )

@@ -163,7 +163,9 @@ The `test_gecx_connector.py` file covers:
 
 - CES session and deployment resource construction
 - `BidiRunSession` request ordering and initial text
-- Agent text and WAV-wrapped audio response mapping
+- Immediate raw mu-law `CHUNK` mapping before CES turn completion
+- Exactly one normal or terminal `FINAL` after ordered audio chunks
+- Initial-greeting, transfer-announcement, and session-end streaming order
 - WxCC encoding and sample-rate metadata handling
 - Normal `EndSession` and human-transfer metadata
 - CES stream half-close behavior after `EndSession`

@@ -33,6 +33,25 @@
       ]
     },
     {
+      "id": "long-response",
+      "title": "streams one detailed hotel response",
+      "description": "A detailed answer exercises multiple ordered BYOVA audio chunks before one final response.",
+      "steps": [
+        {
+          "name": "Request a detailed hotel description",
+          "action": "speak",
+          "text": "Please give me a detailed description of all available hotel room types and amenities."
+        },
+        {
+          "name": "Expect one complete streamed response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
       "id": "natural-pause",
       "title": "keeps a bounded natural pause in one caller turn",
       "description": "Two speech segments separated by a bounded pause remain one caller turn.",
@@ -89,7 +108,7 @@
     {
       "id": "speak-during-playback",
       "title": "probes caller injection while GECX audio is playing",
-      "description": "Audio-plane probe only: the browser injects during playback and verifies the call remains healthy. Because buffered GECX prompts keep barge-in disabled until Phase 4, a green runner result does not prove that CES received the second utterance; correlate the CES transcript.",
+      "description": "Audio-plane probe only: the browser injects during playback and verifies the call remains healthy. Because streamed GECX chunks keep barge-in disabled until Phase 4, a green runner result does not prove that CES received the second utterance; correlate the CES transcript.",
       "steps": [
         {
           "name": "Request a detailed hotel description",
