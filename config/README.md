@@ -14,14 +14,24 @@ AWS credential chain.
 gateway:
   host: "0.0.0.0"
   port: 50051
+  streaming_max_workers: 100
+  request_queue_maxsize: 100
+  response_queue_maxsize: 100
+  max_terminal_playback_seconds: 30
 ```
 
 `host` and `port` control the insecure application listener. Production deployments should
 place it behind an approved TLS boundary or add an appropriate secure listener. See
 [Security Configuration](../docs/Security-Configuration.md).
 
-The gRPC worker count, maximum message sizes, and concurrent-stream option are currently set
-in `main.py`; values elsewhere in YAML are not production capacity controls.
+`streaming_max_workers` sizes the method-specific executor for long-lived caller streams.
+`request_queue_maxsize` and `response_queue_maxsize` bound the number of protobuf messages
+buffered per stream while caller ingestion, ordered connector processing, and WxCC response
+delivery run independently. Both queue sizes must be greater than zero. The queues bound
+memory and apply backpressure; they are not production throughput targets.
+
+`max_terminal_playback_seconds` is a safety ceiling for the buffered-WAV announcement gate.
+Maximum gRPC message sizes and the concurrent-stream option remain set in `main.py`.
 
 ## Voice Activity Detection
 

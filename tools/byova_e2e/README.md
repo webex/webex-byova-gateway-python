@@ -307,6 +307,14 @@ byova-e2e run --destination 9999 \
 
 byova-e2e run --destination 9999 \
   --config config/gecx-regression.spec.json \
+  --test multi-turn-response
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test speak-during-playback
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
   --test task-complete
 
 byova-e2e run --destination 9999 \
@@ -319,6 +327,14 @@ Correlate each artifact window and config SHA-256 with gateway and CES evidence:
 - `normal-response`: one caller turn and no terminal output event.
 - `natural-pause`: one outward `START_OF_INPUT`, one merged resume, one outward
   `END_OF_INPUT`, and one complete CES transcript.
+- `multi-turn-response`: two caller injections, two complete GECX responses,
+  and no terminal output event.
+- `speak-during-playback`: an audio-plane probe in Phase 2. The second caller
+  injection begins after the first GECX response starts and the call remains
+  healthy through remote-audio completion. Buffered GECX prompts keep barge-in
+  disabled until Phase 4, so a green runner result does **not** prove CES
+  received the second utterance; correlate the CES transcript and record that
+  live semantic gap explicitly.
 - `task-complete`: one `SESSION_END` output event before the remote disconnect.
 - `transfer`: one `TRANSFER_TO_AGENT` output event and both configured
   post-input announcement epochs.

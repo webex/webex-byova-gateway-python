@@ -24,6 +24,9 @@ For Google CX Agent Studio, use the
 At runtime, WxCC opens a bidirectional gRPC stream to the registered gateway endpoint. The
 gateway validates the signed Webex token, routes the conversation to the configured
 connector, and translates audio and events between WxCC and the voice-agent provider.
+Caller ingestion, ordered connector processing, and response delivery use independent
+workers with bounded per-stream queues, so WxCC can continue sending caller frames while a
+connector is still producing output.
 
 The sample includes:
 

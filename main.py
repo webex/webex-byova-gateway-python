@@ -324,6 +324,12 @@ def main():
             max_terminal_playback_seconds=float(
                 gateway_config.get("max_terminal_playback_seconds", 30.0)
             ),
+            request_queue_maxsize=int(
+                gateway_config.get("request_queue_maxsize", 100)
+            ),
+            response_queue_maxsize=int(
+                gateway_config.get("response_queue_maxsize", 100)
+            ),
         )
         logger.info("WxCCGatewayServer created")
 
