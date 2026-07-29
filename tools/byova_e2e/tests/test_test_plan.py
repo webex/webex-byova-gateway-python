@@ -1,10 +1,11 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 from byova_e2e.models import ExpectedOutcome
-from byova_e2e.test_plan import TestPlanError as PlanError
-from byova_e2e.test_plan import load_test
+from byova_e2e.plan import TestPlanError as PlanError
+from byova_e2e.plan import load_plan, load_test
 
 
 def _write_plan(
@@ -75,6 +76,16 @@ def test_loads_playwright_shaped_defaults_and_test_override(tmp_path: Path) -> N
     assert selected_test.remote_prompt_occurrence == 2
     assert selected_test.response_timeout_seconds == 45
     assert selected_test.expected_outcome == ExpectedOutcome.RESPONSE
+
+
+def test_load_plan_records_order_and_content_hash(tmp_path: Path) -> None:
+    path = _write_plan(tmp_path)
+
+    plan = load_plan(path)
+
+    assert [test.test_id for test in plan.tests] == ["sample"]
+    assert plan.config_sha256 == sha256(path.read_bytes()).hexdigest()
+    assert plan.tests[0].config_sha256 == plan.config_sha256
 
 
 def test_resolves_play_fixture_relative_to_config(tmp_path: Path) -> None:

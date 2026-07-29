@@ -24,13 +24,13 @@ from .auth import (
     load_local_environment,
 )
 from .models import ExpectedOutcome, RunConfig
-from .runner import BrowserRunner, RunFailure
-from .test_plan import (
-    DEFAULT_CONFIG_FILE,
+from .plan import (
     TestDefinition,
     TestPlanError,
+    load_plan,
     load_test,
 )
+from .runner import BrowserRunner, RunFailure
 
 DESTINATION_PATTERN = re.compile(r"^(?:tel:)?\+?[0-9]{2,20}$")
 TOOL_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     login.add_argument("--timeout-seconds", type=float, default=300)
 
+    validate = commands.add_parser(
+        "validate", help="Validate a JSON test plan without placing a call"
+    )
+    validate.add_argument("--config", dest="config_file", type=Path, required=True)
+    validate.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_tests",
+        help="List test IDs and titles after validation",
+    )
+
     run = commands.add_parser("run", help="Place one headless regression call")
     run.add_argument(
         "--destination", required=True, help="Extension or E.164 number to dial"
@@ -62,16 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source.add_argument(
         "--test",
-        "--scenario",
         dest="test_id",
         help="Run one named test and its assertions from the JSON test plan",
     )
     run.add_argument(
         "--config",
-        "--scenario-file",
         dest="config_file",
         type=Path,
-        default=DEFAULT_CONFIG_FILE,
+        default=None,
         help="Playwright-shaped JSON test plan used by --test",
     )
     run.add_argument(
@@ -163,6 +172,16 @@ def main(argv: list[str] | None = None) -> None:
             )
             print(f"Webex OAuth authorization saved locally at {token_path}")
             return
+        if args.command == "validate":
+            plan = load_plan(args.config_file)
+            print(
+                f"Validated {len(plan.tests)} test(s) from {plan.source_file} "
+                f"(sha256: {plan.config_sha256})"
+            )
+            if args.list_tests:
+                for selected_test in plan.tests:
+                    print(f"{selected_test.test_id}: {selected_test.title}")
+            return
         _run(args)
     except (
         AudioPreparationError,
@@ -191,8 +210,10 @@ def main(argv: list[str] | None = None) -> None:
                 },
             )
             print(f"BYOVA E2E caller failed. Artifact: {artifact}", file=sys.stderr)
-        else:
+        elif args.command == "login":
             print(f"BYOVA E2E login failed: {error}", file=sys.stderr)
+        else:
+            print(f"BYOVA E2E config validation failed: {error}", file=sys.stderr)
         raise SystemExit(1) from error
 
 
@@ -201,6 +222,10 @@ class CLIError(ValueError):
 
 
 def _run(args: argparse.Namespace) -> None:
+    if args.test_id and args.config_file is None:
+        raise CLIError("--config is required with --test")
+    if args.config_file is not None and not args.test_id:
+        raise CLIError("--config is only valid with --test")
     selected_test = load_test(args.test_id, args.config_file) if args.test_id else None
     text = args.text if selected_test is None else selected_test.text
     text_segments = (
@@ -354,6 +379,7 @@ def _run(args: argparse.Namespace) -> None:
             "test": selected_test.test_id if selected_test else None,
             "test_title": selected_test.title if selected_test else None,
             "config_file": (str(selected_test.source_file) if selected_test else None),
+            "config_sha256": (selected_test.config_sha256 if selected_test else None),
             "expected_outcome": (
                 config.expected_outcome.value if config.expected_outcome else None
             ),

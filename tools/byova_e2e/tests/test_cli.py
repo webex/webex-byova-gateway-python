@@ -1,6 +1,8 @@
-from byova_e2e.cli import build_parser
-from byova_e2e.models import ExpectedOutcome
-from byova_e2e.test_plan import load_test
+import json
+from pathlib import Path
+
+import pytest
+from byova_e2e.cli import CLIError, _run, build_parser, main
 
 
 def test_live_runs_have_no_cli_browser_override_by_default() -> None:
@@ -21,39 +23,68 @@ def test_headed_mode_is_an_explicit_debug_opt_in() -> None:
 
 def test_named_test_is_a_complete_audio_source() -> None:
     args = build_parser().parse_args(
-        ["run", "--destination", "9999", "--test", "task-complete"]
+        [
+            "run",
+            "--destination",
+            "9999",
+            "--config",
+            "connector.spec.json",
+            "--test",
+            "request-response",
+        ]
     )
 
-    assert args.test_id == "task-complete"
+    assert args.test_id == "request-response"
+    assert args.config_file == Path("connector.spec.json")
     assert args.text is None
     assert args.text_segments is None
 
 
-def test_scenario_alias_remains_available() -> None:
+def test_named_test_requires_an_explicit_config() -> None:
     args = build_parser().parse_args(
-        ["run", "--destination", "9999", "--scenario", "task-complete"]
+        ["run", "--destination", "9999", "--test", "request-response"]
     )
 
-    assert args.test_id == "task-complete"
+    with pytest.raises(CLIError, match="--config is required with --test"):
+        _run(args)
 
 
-def test_terminal_tests_encode_distinct_observable_outcomes() -> None:
-    completion = load_test("task-complete")
-    transfer = load_test("transfer")
-
-    assert completion.expected_outcome == ExpectedOutcome.SESSION_END
-    assert completion.expected_response_prompts == 1
-    assert transfer.expected_outcome == ExpectedOutcome.TRANSFER
-    assert transfer.expected_response_prompts == 2
-
-
-def test_natural_pause_test_keeps_one_turn_fixture() -> None:
-    selected_test = load_test("natural-pause")
-
-    assert selected_test.text_segments == (
-        "I'd like to book",
-        "a room in San Jose",
+def test_validate_can_list_tests_without_run_inputs() -> None:
+    args = build_parser().parse_args(
+        ["validate", "--config", "connector.spec.json", "--list"]
     )
-    assert selected_test.segment_pause_ms == 1800
-    assert selected_test.headless
-    assert selected_test.remote_prompt_occurrence == 2
+
+    assert args.command == "validate"
+    assert args.config_file == Path("connector.spec.json")
+    assert args.list_tests
+
+
+def test_validate_lists_plan_without_authentication(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "connector.spec.json"
+    config.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tests": [
+                    {
+                        "id": "request-response",
+                        "title": "receives one response",
+                        "steps": [
+                            {"action": "speak", "text": "Hello"},
+                            {"expect": {"outcome": "response"}},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["validate", "--config", str(config), "--list"])
+
+    output = capsys.readouterr().out
+    assert "Validated 1 test(s)" in output
+    assert "request-response: receives one response" in output
+    assert "sha256:" in output

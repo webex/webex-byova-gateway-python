@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from .models import ExpectedOutcome
 
-DEFAULT_CONFIG_FILE = (
-    Path(__file__).resolve().parents[2] / "config" / "gecx-regression.spec.json"
-)
 SUPPORTED_VERSION = 1
 
 USE_FIELDS = {
@@ -39,6 +37,7 @@ class TestDefinition:
     title: str
     description: str
     source_file: Path
+    config_sha256: str
     text: str | None = None
     text_segments: tuple[str, ...] = ()
     wav: Path | None = None
@@ -57,15 +56,36 @@ class TestDefinition:
     connected_observation_seconds: float = 0.0
 
 
-def load_test(test_id: str, config_file: Path = DEFAULT_CONFIG_FILE) -> TestDefinition:
-    """Load one named test from a versioned JSON test plan."""
+@dataclass(frozen=True)
+class TestPlan:
+    """One validated test plan and its reproducibility metadata."""
+
+    source_file: Path
+    config_sha256: str
+    tests: tuple[TestDefinition, ...]
+
+    def get_test(self, test_id: str) -> TestDefinition:
+        """Return one named test from this plan."""
+        for selected_test in self.tests:
+            if selected_test.test_id == test_id:
+                return selected_test
+        available = ", ".join(sorted(test.test_id for test in self.tests))
+        raise TestPlanError(
+            f"Unknown test {test_id!r} in {self.source_file}. Available: {available}"
+        )
+
+
+def load_plan(config_file: Path) -> TestPlan:
+    """Load and validate every test in a versioned JSON plan."""
     path = config_file.expanduser().resolve()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        payload = path.read_bytes()
     except FileNotFoundError as error:
         raise TestPlanError(f"Test config does not exist: {path}") from error
     except OSError as error:
         raise TestPlanError(f"Unable to read test config {path}: {error}") from error
+    try:
+        raw = json.loads(payload)
     except json.JSONDecodeError as error:
         raise TestPlanError(
             f"Invalid JSON in test config {path} at line {error.lineno}, "
@@ -83,25 +103,33 @@ def load_test(test_id: str, config_file: Path = DEFAULT_CONFIG_FILE) -> TestDefi
     if not isinstance(tests, list) or not tests:
         raise TestPlanError("test config.tests must be a non-empty array")
 
-    parsed_tests: dict[str, TestDefinition] = {}
+    config_sha256 = sha256(payload).hexdigest()
+    parsed_tests: list[TestDefinition] = []
+    test_ids: set[str] = set()
     for index, test in enumerate(tests):
-        parsed = _parse_test(test, index, path, shared_use)
-        if parsed.test_id in parsed_tests:
+        parsed = _parse_test(test, index, path, config_sha256, shared_use)
+        if parsed.test_id in test_ids:
             raise TestPlanError(f"Duplicate test id: {parsed.test_id!r}")
-        parsed_tests[parsed.test_id] = parsed
+        test_ids.add(parsed.test_id)
+        parsed_tests.append(parsed)
 
-    if test_id not in parsed_tests:
-        available = ", ".join(sorted(parsed_tests))
-        raise TestPlanError(
-            f"Unknown test {test_id!r} in {path}. Available: {available}"
-        )
-    return parsed_tests[test_id]
+    return TestPlan(
+        source_file=path,
+        config_sha256=config_sha256,
+        tests=tuple(parsed_tests),
+    )
+
+
+def load_test(test_id: str, config_file: Path) -> TestDefinition:
+    """Load one named test from a versioned JSON test plan."""
+    return load_plan(config_file).get_test(test_id)
 
 
 def _parse_test(
     raw: Any,
     index: int,
     source_file: Path,
+    config_sha256: str,
     shared_use: dict[str, Any],
 ) -> TestDefinition:
     location = f"tests[{index}]"
@@ -128,6 +156,7 @@ def _parse_test(
         title=title,
         description=description or title,
         source_file=source_file,
+        config_sha256=config_sha256,
         **input_values,
         voice=merged_use.get("voice"),
         headless=merged_use.get("headless"),

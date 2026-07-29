@@ -176,38 +176,14 @@ Live runs use headless Chromium by default, so automated calls do not open a
 browser window over other work. Add `--headed` only when interactive browser
 media debugging is required.
 
-## Run the GECX regression tests
-
-The default test plan is
-`config/gecx-regression.spec.json`. Its structure follows Playwright conventions:
-top-level `use` defaults, named `tests`, ordered `steps`, and explicit `expect`
-assertions. The adjacent `byova-e2e.schema.json` provides editor validation and
-autocomplete.
-
-```bash
-# Short request: one complete virtual-agent response.
-byova-e2e run --destination 9999 --test normal-response
-
-# One caller turn with a bounded 1.8-second natural pause.
-byova-e2e run --destination 9999 --test natural-pause
-
-# Successful task completion: hear the completion response, then require
-# WxCC to disconnect the call without a caller-issued hangup.
-byova-e2e run --destination 9999 --test task-complete
-
-# Human escalation: require the CES and WxCC announcement epochs.
-byova-e2e run --destination 9999 --test transfer
-```
-
-The completed artifact records the test, config file, expected outcome, completed
-remote-prompt count, Calling SDK disconnect cause/code, whether the caller
-requested that disconnect, and the exact UTC event window.
-
-### Define tests in JSON
+## Define tests in JSON
 
 Each version 1 test contains one audio action followed by one expectation. A
 `speak` action accepts either `text` or `segments` plus `pauseMs`; a `play`
-action accepts a WAV `path` relative to the config file.
+action accepts a WAV `path` relative to the config file. Test plans follow
+Playwright conventions: top-level `use` defaults, named `tests`, ordered
+`steps`, and explicit `expect` assertions. Reference
+`config/byova-e2e.schema.json` for editor validation and autocomplete.
 
 ```json
 {
@@ -215,24 +191,23 @@ action accepts a WAV `path` relative to the config file.
   "version": 1,
   "use": {
     "headless": true,
-    "remotePromptOccurrence": 2,
     "responseTimeoutSeconds": 30
   },
   "tests": [
     {
-      "id": "transfer",
-      "title": "transfers the caller to a human agent",
+      "id": "request-response",
+      "title": "receives a complete virtual-agent response",
       "steps": [
         {
-          "name": "Request a human agent",
+          "name": "Speak one request",
           "action": "speak",
-          "text": "Please transfer me to a human agent."
+          "text": "Please help me with my request."
         },
         {
-          "name": "Expect both transfer announcements",
+          "name": "Expect one complete response",
           "expect": {
-            "outcome": "transfer",
-            "responsePrompts": 2
+            "outcome": "response",
+            "responsePrompts": 1
           }
         }
       ]
@@ -241,13 +216,19 @@ action accepts a WAV `path` relative to the config file.
 }
 ```
 
-Run a test from another plan with Playwright-style `--config` selection:
+Validate and list the plan without authenticating or placing a call:
+
+```bash
+byova-e2e validate --config path/to/connector.spec.json --list
+```
+
+Then run one selected test with Playwright-style `--config` selection:
 
 ```bash
 byova-e2e run \
   --destination 9999 \
-  --config path/to/customer-flow.spec.json \
-  --test transfer
+  --config path/to/connector.spec.json \
+  --test request-response
 ```
 
 Top-level `use` values apply to every test. A test may define its own `use`
@@ -256,20 +237,10 @@ which is useful for a one-off timeout or headed debugging run. The loader
 rejects unsupported versions, duplicate test IDs, invalid step order, and
 unknown fields before it obtains a token or places a call.
 
-These assertions intentionally use only behavior available to a real caller.
-For release evidence, correlate the artifact window with gateway logs:
-
-- `normal-response`: one caller turn and no terminal output event.
-- `natural-pause`: one outward `START_OF_INPUT`, one merged resume, one outward
-  `END_OF_INPUT`, and one complete CES transcript.
-- `task-complete`: one `SESSION_END` output event before the remote disconnect.
-- `transfer`: one `TRANSFER_TO_AGENT` output event corresponding to the second
-  configured announcement epoch.
-
-The `transfer` test expects two completed post-injection announcement
-epochs because the current dev flow is configured to play both the CES and WxCC
-transfer announcements. Override `--expected-response-prompts` only when the
-target flow intentionally has different announcement behavior.
+The completed artifact records the selected test, config path and SHA-256,
+expected outcome, completed remote-prompt count, Calling SDK disconnect
+cause/code, whether the caller requested that disconnect, and the exact UTC
+event window. The config hash ties live evidence to the exact plan contents.
 
 For custom fixtures, `--expect-outcome response|session-end|transfer` enables
 the same assertions without using a named test. Flows that guarantee a
