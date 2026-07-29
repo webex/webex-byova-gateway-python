@@ -21,6 +21,7 @@ from .auth import (
     OAuthTokenStore,
     access_token_for_run,
     complete_login,
+    default_token_path,
     load_local_environment,
 )
 from .models import ExpectedOutcome, RunConfig
@@ -34,7 +35,7 @@ from .runner import BrowserRunner, RunFailure
 
 DESTINATION_PATTERN = re.compile(r"^(?:tel:)?\+?[0-9]{2,20}$")
 TOOL_ROOT = Path(__file__).resolve().parents[2]
-TOKEN_PATH = TOOL_ROOT / ".state" / "oauth-token.json"
+LEGACY_TOKEN_PATH = TOOL_ROOT / ".state" / "oauth-token.json"
 T = TypeVar("T")
 
 
@@ -167,9 +168,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "login":
             if args.timeout_seconds <= 0:
                 raise CLIError("--timeout-seconds must be greater than zero")
-            token_path = complete_login(
-                OAuthTokenStore(TOKEN_PATH), args.timeout_seconds
-            )
+            token_path = complete_login(_oauth_token_store(), args.timeout_seconds)
             print(f"Webex OAuth authorization saved locally at {token_path}")
             return
         if args.command == "validate":
@@ -219,6 +218,10 @@ def main(argv: list[str] | None = None) -> None:
 
 class CLIError(ValueError):
     """A validated user-facing CLI input failure."""
+
+
+def _oauth_token_store() -> OAuthTokenStore:
+    return OAuthTokenStore(default_token_path(), legacy_path=LEGACY_TOKEN_PATH)
 
 
 def _run(args: argparse.Namespace) -> None:
@@ -321,7 +324,7 @@ def _run(args: argparse.Namespace) -> None:
         if segment_pause_ms <= 0:
             raise CLIError("--segment-pause-ms must be greater than zero")
 
-    token = access_token_for_run(OAuthTokenStore(TOKEN_PATH))
+    token = access_token_for_run(_oauth_token_store())
     with tempfile.TemporaryDirectory(prefix="byova-e2e-") as temp_dir:
         audio_path = Path(temp_dir) / "caller.wav"
         if text is not None:
