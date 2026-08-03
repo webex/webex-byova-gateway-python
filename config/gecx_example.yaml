@@ -29,7 +29,9 @@ gecx_connector:
 
     language_code: "en-US"
 
-    # WxCC telephony is typically 8 kHz MULAW in both directions
+    # Input can be normalized from WxCC metadata. The current raw BYOVA CHUNK
+    # output path requires exactly 8 kHz MULAW; other output combinations fail
+    # connector initialization until explicit format support is added.
     input_sample_rate_hertz: 8000
     input_audio_encoding: "MULAW"
     output_sample_rate_hertz: 8000

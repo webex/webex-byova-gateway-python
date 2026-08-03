@@ -30,7 +30,8 @@ buffered per stream while caller ingestion, ordered connector processing, and Wx
 delivery run independently. Both queue sizes must be greater than zero. The queues bound
 memory and apply backpressure; they are not production throughput targets.
 
-`max_terminal_playback_seconds` is a safety ceiling for the buffered-WAV announcement gate.
+`max_terminal_playback_seconds` is a safety ceiling for legacy complete-WAV
+announcement responses. GECX raw CHUNK streaming does not use this delay.
 Maximum gRPC message sizes and the concurrent-stream option remain set in `main.py`.
 
 ## Voice Activity Detection
@@ -106,7 +107,9 @@ and end-to-end sandbox test paths.
 ### GECX / CX Agent Studio Connector
 
 The GECX connector streams WxCC caller audio to Google CX Agent Studio through the CES
-`BidiRunSession` API and returns each completed agent turn as a WxCC-compatible response.
+`BidiRunSession` API. CES 8 kHz mu-law output frames are forwarded immediately
+as raw BYOVA `CHUNK` responses, followed by exactly one normal or terminal
+`FINAL`.
 
 ```yaml
 connectors:
@@ -135,6 +138,10 @@ connectors:
       agents:
         - "My GECX Agent"
 ```
+
+GECX CHUNK output currently requires `output_sample_rate_hertz: 8000` and
+`output_audio_encoding: "MULAW"`. Unsupported output combinations fail during
+connector initialization; broader output formats are not silently mislabeled.
 
 See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
 [GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and
