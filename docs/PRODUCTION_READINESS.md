@@ -422,6 +422,9 @@ other obligations that apply to the contact center.
 ## 10. Establish a production delivery process
 
 - Build immutable, versioned artifacts in CI from reviewed source.
+- Build gateway runtime archives with `scripts/build-runtime-release.sh`. Do not deploy the
+  repository root: local tools, tests, documentation, JavaScript manifests and lockfiles,
+  and workstation metadata are not runtime components and must not reach gateway hosts.
 - Run formatting, linting, type checks, unit tests, integration tests, dependency scans,
   secret scans, and artifact/image scans on every change.
 - Generate gRPC code deterministically and detect incompatible protocol changes.
@@ -548,6 +551,8 @@ answer **yes** to every applicable item:
 - [ ] Secrets use managed storage and short-lived/workload credentials where possible.
 - [ ] Debug/test endpoints and production audio logging are disabled or separately approved.
 - [ ] Privacy, security, compliance, retention, and data-residency reviews are complete.
+- [ ] The deployed filesystem contains only the allowlisted gateway runtime and has no local
+  test tools or JavaScript package manifests and lockfiles.
 - [ ] CI/CD produces immutable scanned artifacts with canary and rollback support.
 - [ ] Vendor quotas, throttling behavior, outage handling, and support escalation are documented.
 - [ ] Disaster recovery meets approved recovery objectives and has been exercised.

@@ -209,6 +209,7 @@ webex-byova-gateway-python/
 ├── config/             # Gateway and connector configuration
 ├── docs/               # Evaluation, security, testing, and operations guides
 ├── proto/              # BYOVA and health protocol definitions
+├── scripts/            # Runtime release tooling
 ├── src/
 │   ├── auth/           # gRPC JWT validation
 │   ├── connectors/     # Virtual-agent connectors
@@ -217,9 +218,33 @@ webex-byova-gateway-python/
 │   ├── monitoring/     # Development monitoring interface
 │   └── utils/          # Audio utilities
 ├── tests/              # Automated test suite
+├── tools/              # Local development and end-to-end test tools
 ├── main.py             # Application entry point
 └── requirements.txt    # Python dependencies
 ```
+
+## Build a Runtime Release Artifact
+
+Build EC2 and server releases with the allowlisted runtime artifact builder:
+
+```bash
+scripts/build-runtime-release.sh \
+  --ref HEAD \
+  --output /tmp/byova-gateway-runtime.tar.gz
+```
+
+The archive contains only the Python gateway runtime: `main.py`, Python dependency
+metadata, `audio/`, `config/`, `proto/`, and `src/`. It deliberately excludes `tools/`,
+`tests/`, `docs/`, JavaScript package manifests and lockfiles, and macOS AppleDouble files.
+
+`tools/byova_e2e/` is a local validation utility. Its browser dependencies must not be copied
+to an EC2 gateway or included in an image or release archive. Deploying the whole repository
+can cause host scanners to report development-only dependencies as if the gateway loaded
+them at runtime.
+
+Before deployment, scan the generated archive and verify its checksum. Keep environment
+configuration and secrets outside the artifact and inject them through the deployment
+system.
 
 ## Development
 

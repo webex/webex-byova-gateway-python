@@ -391,6 +391,20 @@ See [README.md](README.md) for complete JWT authentication documentation and tro
 
 ## Working with the Codebase
 
+### Runtime Release Artifacts
+
+All EC2, VM, container-context, and server release bundles must be built with the runtime
+allowlist:
+
+```bash
+scripts/build-runtime-release.sh --ref HEAD --output /tmp/byova-gateway-runtime.tar.gz
+```
+
+Do not deploy or archive the repository root. In particular, `tools/byova_e2e/`, `tests/`,
+`docs/`, npm manifests and lockfiles, and AppleDouble files are development-only and must not
+be present on gateway hosts. Verify the generated archive and scan the installed runtime
+filesystem, not the source checkout, before closing dependency incidents.
+
 To begin development (for learning or building upon this example):
    
    Always use a virtual environment to keep dependencies isolated:
