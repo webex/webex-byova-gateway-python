@@ -150,6 +150,14 @@ class GECXStreamingSession:
         self._turn_audio_chunk_count = 0
         self._turn_audio_bytes = 0
         self._turn_started_at = time.monotonic()
+        # Inspect only the start of each CES turn for anomalously long,
+        # low-energy audio before synthesized speech. Normal short frames keep
+        # their direct streaming path.
+        self._output_audio_gate_state = (
+            "inspect" if connector.suppress_long_leading_audio else "open"
+        )
+        self._output_audio_gate_seen_bytes = 0
+        self._output_audio_gate_buffer = bytearray()
         self._input_lock = threading.Lock()
         self._input_audio_buffer = bytearray()
         self._input_resume_buffer = bytearray()
@@ -353,6 +361,7 @@ class GECXStreamingSession:
                 self._input_resume_buffer.clear()
             self._turn_started_at = time.monotonic()
             self._turn_completed.clear()
+            self._reset_output_audio_gate()
         return True
 
     def iter_turn_responses(
@@ -463,6 +472,7 @@ class GECXStreamingSession:
                 self._turn_audio_emitted = False
                 self._turn_audio_chunk_count = 0
                 self._turn_audio_bytes = 0
+                self._reset_output_audio_gate()
 
         self.logger.info(
             "gecx_streamed_turn_complete conversation_id=%s chunks=%d "
@@ -543,6 +553,7 @@ class GECXStreamingSession:
                 self._turn_audio_emitted = False
                 self._turn_audio_chunk_count = 0
                 self._turn_audio_bytes = 0
+                self._reset_output_audio_gate()
 
             # Queue the stop sentinel exactly once. The request generator also
             # checks terminal state after dequeuing to close the final race where
@@ -760,6 +771,7 @@ class GECXStreamingSession:
                         self._turn_audio_emitted = False
                         self._turn_audio_chunk_count = 0
                         self._turn_audio_bytes = 0
+                        self._reset_output_audio_gate()
                     while True:
                         try:
                             self.outbound_queue.get_nowait()
@@ -778,7 +790,9 @@ class GECXStreamingSession:
 
             audio_bytes = self._decode_output_audio(output.audio)
             if audio_bytes:
-                self._emit_active_audio_chunk(audio_bytes)
+                playable_audio = self._filter_leading_output_audio(audio_bytes)
+                if playable_audio:
+                    self._emit_active_audio_chunk(playable_audio)
 
             # Audio frames are already queued as CHUNK responses. Completion
             # only releases the response iterator to emit its sole FINAL.
@@ -814,6 +828,122 @@ class GECXStreamingSession:
                 return False
             self.outbound_queue.put(response)
         return True
+
+    def _reset_output_audio_gate(self) -> None:
+        """Reset guarded leading-audio inspection for the next CES turn."""
+        self._output_audio_gate_state = (
+            "inspect" if self.connector.suppress_long_leading_audio else "open"
+        )
+        self._output_audio_gate_seen_bytes = 0
+        self._output_audio_gate_buffer.clear()
+
+    @staticmethod
+    def _mulaw_rms(audio_bytes: bytes) -> int:
+        """Return the RMS level of raw G.711 mu-law samples."""
+        if not audio_bytes:
+            return 0
+        if AUDIOOP_AVAILABLE:
+            return audioop.rms(audioop.ulaw2lin(audio_bytes, 2), 2)
+
+        total = 0
+        for sample in audio_bytes:
+            inverted = (~sample) & 0xFF
+            magnitude = (((inverted & 0x0F) << 3) + 0x84) << (
+                (inverted & 0x70) >> 4
+            )
+            linear = magnitude - 0x84
+            total += linear * linear
+        return int((total / len(audio_bytes)) ** 0.5)
+
+    def _find_output_speech_offset(self, audio_bytes: bytes) -> Optional[int]:
+        """Find the first sustained speech-like mu-law frame in audio bytes."""
+        frame_bytes = self.connector.output_speech_frame_bytes
+        required_frames = self.connector.output_speech_start_frames
+        consecutive = 0
+
+        for offset in range(0, len(audio_bytes) - frame_bytes + 1, frame_bytes):
+            frame = audio_bytes[offset : offset + frame_bytes]
+            if self._mulaw_rms(frame) >= self.connector.output_speech_rms_threshold:
+                consecutive += 1
+                if consecutive >= required_frames:
+                    return offset - ((required_frames - 1) * frame_bytes)
+            else:
+                consecutive = 0
+        return None
+
+    def _open_output_audio_gate(
+        self,
+        audio_bytes: bytes,
+        speech_offset: int,
+    ) -> bytes:
+        """Open the gate at detected speech while retaining bounded pre-roll."""
+        start_offset = max(
+            0,
+            speech_offset - self.connector.output_speech_preroll_bytes,
+        )
+        playable_audio = audio_bytes[start_offset:]
+        dropped_bytes = max(
+            0,
+            self._output_audio_gate_seen_bytes - len(playable_audio),
+        )
+        self._output_audio_gate_state = "open"
+        self._output_audio_gate_buffer.clear()
+
+        self.logger.warning(
+            "gecx_leading_audio_suppressed conversation_id=%s "
+            "dropped_bytes=%d dropped_seconds=%.3f speech_rms_threshold=%d",
+            self.conversation_id,
+            dropped_bytes,
+            dropped_bytes / self.connector.output_sample_rate_hertz,
+            self.connector.output_speech_rms_threshold,
+        )
+        return playable_audio
+
+    def _filter_leading_output_audio(self, audio_bytes: bytes) -> bytes:
+        """Suppress only anomalously long low-energy audio before CES speech."""
+        if self._output_audio_gate_state == "open":
+            return audio_bytes
+
+        if self._output_audio_gate_state == "inspect":
+            self._output_audio_gate_seen_bytes = len(audio_bytes)
+            speech_offset = self._find_output_speech_offset(audio_bytes)
+            minimum_lead_bytes = self.connector.output_leading_audio_min_bytes
+
+            if speech_offset is not None:
+                if speech_offset >= minimum_lead_bytes:
+                    return self._open_output_audio_gate(audio_bytes, speech_offset)
+                self._output_audio_gate_state = "open"
+                return audio_bytes
+
+            if len(audio_bytes) < minimum_lead_bytes:
+                # Preserve short natural pauses and the normal CES framing path.
+                self._output_audio_gate_state = "open"
+                return audio_bytes
+
+            self._output_audio_gate_state = "gating"
+            keep_bytes = self.connector.output_audio_gate_tail_bytes
+            self._output_audio_gate_buffer.extend(audio_bytes[-keep_bytes:])
+            self.logger.warning(
+                "gecx_long_leading_audio_detected conversation_id=%s "
+                "frame_bytes=%d frame_seconds=%.3f speech_rms_threshold=%d",
+                self.conversation_id,
+                len(audio_bytes),
+                len(audio_bytes) / self.connector.output_sample_rate_hertz,
+                self.connector.output_speech_rms_threshold,
+            )
+            return b""
+
+        previous_tail = bytes(self._output_audio_gate_buffer)
+        combined_audio = previous_tail + audio_bytes
+        self._output_audio_gate_seen_bytes += len(audio_bytes)
+        speech_offset = self._find_output_speech_offset(combined_audio)
+        if speech_offset is not None:
+            return self._open_output_audio_gate(combined_audio, speech_offset)
+
+        keep_bytes = self.connector.output_audio_gate_tail_bytes
+        self._output_audio_gate_buffer.clear()
+        self._output_audio_gate_buffer.extend(combined_audio[-keep_bytes:])
+        return b""
 
     def _emit_active_audio_chunk(self, audio_bytes: bytes) -> bool:
         """Queue one raw CES audio frame as a BYOVA CHUNK response."""
@@ -1086,6 +1216,39 @@ class GECXConnector(IVendorConnector):
                 "GECX BYOVA CHUNK streaming currently requires "
                 "output_audio_encoding=MULAW and output_sample_rate_hertz=8000"
             )
+        self.suppress_long_leading_audio = bool(
+            config.get("suppress_long_leading_audio", True)
+        )
+        self.output_leading_audio_min_ms = min(
+            60000,
+            max(1000, int(config.get("output_leading_audio_min_ms", 5000))),
+        )
+        self.output_speech_frame_ms = 20
+        self.output_speech_rms_threshold = min(
+            4000,
+            max(1, int(config.get("output_speech_rms_threshold", 200))),
+        )
+        self.output_speech_start_frames = min(
+            10,
+            max(1, int(config.get("output_speech_start_frames", 2))),
+        )
+        self.output_speech_preroll_ms = min(
+            1000,
+            max(0, int(config.get("output_speech_preroll_ms", 100))),
+        )
+        self.output_speech_frame_bytes = (
+            self.output_sample_rate_hertz * self.output_speech_frame_ms // 1000
+        )
+        self.output_speech_preroll_bytes = (
+            self.output_sample_rate_hertz * self.output_speech_preroll_ms // 1000
+        )
+        self.output_leading_audio_min_bytes = (
+            self.output_sample_rate_hertz * self.output_leading_audio_min_ms // 1000
+        )
+        self.output_audio_gate_tail_bytes = (
+            self.output_speech_preroll_bytes
+            + (self.output_speech_start_frames * self.output_speech_frame_bytes)
+        )
         self.initial_message = config.get("initial_message", "Hello")
         self.enable_partial_responses = config.get("enable_partial_responses", True)
         self.force_input_format = config.get("force_input_format", "").lower()

@@ -37,6 +37,14 @@ gecx_connector:
     output_sample_rate_hertz: 8000
     output_audio_encoding: "MULAW"
 
+    # Guard against a provider returning a multi-second low-energy audio asset
+    # before synthesized speech. Short CES frames remain on the direct path.
+    suppress_long_leading_audio: true
+    output_leading_audio_min_ms: 5000
+    output_speech_rms_threshold: 200
+    output_speech_start_frames: 2
+    output_speech_preroll_ms: 100
+
     initial_message: "Hello"
     enable_partial_responses: true
     force_input_format: "wxcc"

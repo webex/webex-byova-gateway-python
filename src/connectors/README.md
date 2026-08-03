@@ -158,7 +158,9 @@ Experience) through the CES `BidiRunSession` API.
 **Features**:
 - Streams WxCC caller audio to Google as it arrives
 - Maps CES recognition, text, audio, interruption, and end-session messages
-- Streams each raw 8 kHz mu-law CES output frame as a BYOVA `CHUNK`
+- Streams 8 kHz mu-law CES output as BYOVA `CHUNK` responses
+- Suppresses only a long low-energy prefix before detected prompt speech;
+  normal short CES frames retain the direct streaming path
 - Emits exactly one normal or terminal `FINAL` after the ordered chunks
 - Maps CES escalation metadata to WxCC human-transfer events
 - Supports service-account credentials, ADC, OAuth, and short-lived access tokens
@@ -183,6 +185,11 @@ gecx_connector:
     input_audio_encoding: "MULAW"
     output_sample_rate_hertz: 8000
     output_audio_encoding: "MULAW"
+    suppress_long_leading_audio: true
+    output_leading_audio_min_ms: 5000
+    output_speech_rms_threshold: 200
+    output_speech_start_frames: 2
+    output_speech_preroll_ms: 100
     force_input_format: "wxcc"
     turn_response_timeout_seconds: 30
     # service_account_key: "/path/to/ces-key.json"

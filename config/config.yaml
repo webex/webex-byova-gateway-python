@@ -92,6 +92,13 @@ connectors:
   #     input_audio_encoding: "MULAW"
   #     output_sample_rate_hertz: 8000
   #     output_audio_encoding: "MULAW"
+  #     # Suppress only anomalously long low-energy CES pre-roll while retaining
+  #     # 100ms before detected prompt speech. Normal short frames pass through.
+  #     suppress_long_leading_audio: true
+  #     output_leading_audio_min_ms: 5000
+  #     output_speech_rms_threshold: 200
+  #     output_speech_start_frames: 2
+  #     output_speech_preroll_ms: 100
   #     initial_message: "Hello"
   #     enable_partial_responses: true
   #     force_input_format: "wxcc"

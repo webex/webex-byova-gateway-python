@@ -126,6 +126,11 @@ connectors:
       input_audio_encoding: "MULAW"
       output_sample_rate_hertz: 8000
       output_audio_encoding: "MULAW"
+      suppress_long_leading_audio: true
+      output_leading_audio_min_ms: 5000
+      output_speech_rms_threshold: 200
+      output_speech_start_frames: 2
+      output_speech_preroll_ms: 100
       force_input_format: "wxcc"
       turn_response_timeout_seconds: 30
       # Trailing codec silence for reliable CES audio endpoint detection.
@@ -142,6 +147,9 @@ connectors:
 GECX CHUNK output currently requires `output_sample_rate_hertz: 8000` and
 `output_audio_encoding: "MULAW"`. Unsupported output combinations fail during
 connector initialization; broader output formats are not silently mislabeled.
+The leading-audio guard activates only when the first CES frame is at least
+`output_leading_audio_min_ms` and contains no sustained speech. It then retains
+`output_speech_preroll_ms` before the first detected speech frames.
 
 See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
 [GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and

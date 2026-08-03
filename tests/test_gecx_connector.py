@@ -271,6 +271,26 @@ class TestRequestGenerator:
 
 
 class TestServerMessageMapping:
+    @staticmethod
+    def _server_output(
+        audio: bytes,
+        *,
+        text: str = "",
+        turn_completed: bool = False,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            recognition_result=None,
+            interruption_signal=None,
+            end_session=None,
+            go_away=None,
+            session_output=SimpleNamespace(
+                text=text,
+                audio=audio,
+                turn_completed=turn_completed,
+                end_session=False,
+            ),
+        )
+
     def test_session_output_streams_raw_chunk_then_one_final(self, connector):
         session = GECXStreamingSession(
             connector=connector,
@@ -355,6 +375,79 @@ class TestServerMessageMapping:
         remaining = list(stream)
 
         assert [response["response_type"] for response in remaining] == ["final"]
+
+    def test_suppresses_anomalous_low_energy_lead_until_speech(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-leading-audio",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        long_low_energy_frame = b"\xfb" * (connector.output_sample_rate_hertz * 6)
+
+        session._handle_server_message(
+            self._server_output(long_low_energy_frame)
+        )
+
+        assert session.drain_responses() == []
+        assert session._output_audio_gate_state == "gating"
+
+        trailing_noise = b"\xfb" * 320
+        speech = b"\x00" * 320
+        session._handle_server_message(
+            self._server_output(
+                trailing_noise + speech,
+                text="Your prompt",
+                turn_completed=True,
+            )
+        )
+        responses = list(session.iter_turn_responses(timeout=0.1))
+
+        assert [response["response_type"] for response in responses] == [
+            "chunk",
+            "final",
+        ]
+        assert responses[0]["audio_content"] == b"\xfb" * 800 + speech
+        assert responses[1]["audio_content"] == b""
+        assert session._output_audio_gate_state == "inspect"
+
+    def test_trims_long_low_energy_prefix_inside_one_ces_frame(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-leading-prefix",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        long_low_energy_prefix = b"\xfb" * (
+            connector.output_sample_rate_hertz * 6
+        )
+        speech = b"\x00" * 320
+
+        session._handle_server_message(
+            self._server_output(
+                long_low_energy_prefix + speech,
+                turn_completed=True,
+            )
+        )
+        responses = list(session.iter_turn_responses(timeout=0.1))
+
+        assert responses[0]["audio_content"] == b"\xfb" * 800 + speech
+
+    def test_preserves_short_low_energy_ces_frame(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-short-pause",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        natural_pause = b"\xfb" * 160
+
+        session._handle_server_message(
+            self._server_output(natural_pause, turn_completed=True)
+        )
+        responses = list(session.iter_turn_responses(timeout=0.1))
+
+        assert responses[0]["audio_content"] == natural_pause
 
     def test_end_session_emits_session_end_event(self, connector):
         session = GECXStreamingSession(

@@ -8,9 +8,11 @@ This guide explains how to connect Webex Contact Center (WxCC) BYOVA to an agent
 Caller -> WxCC -> BYOVA Gateway (gRPC) -> GECXConnector -> CES BidiRunSession -> CX Agent Studio
 ```
 
-The connector sends WxCC caller audio to Google as it arrives and forwards each
-CES 8 kHz mu-law output frame immediately as a BYOVA `CHUNK`. Each agent turn
-ends with exactly one `FINAL`; terminal turns place `TRANSFER_TO_AGENT` or
+The connector sends WxCC caller audio to Google as it arrives and forwards CES
+8 kHz mu-law output as BYOVA `CHUNK` responses. Normal short CES frames stream
+immediately. A guarded speech gate suppresses only an anomalously long,
+low-energy prefix and retains bounded pre-roll before prompt speech. Each agent
+turn ends with exactly one `FINAL`; terminal turns place `TRANSFER_TO_AGENT` or
 `SESSION_END` on that final response.
 
 ## Prerequisites
@@ -85,6 +87,11 @@ gecx_connector:
     input_audio_encoding: "MULAW"
     output_sample_rate_hertz: 8000
     output_audio_encoding: "MULAW"
+    suppress_long_leading_audio: true
+    output_leading_audio_min_ms: 5000
+    output_speech_rms_threshold: 200
+    output_speech_start_frames: 2
+    output_speech_preroll_ms: 100
     initial_message: "Hello"
     enable_partial_responses: true
     force_input_format: "wxcc"
@@ -214,10 +221,13 @@ under the top-level `voice_activity_detection` block in `config/config.yaml`.
 
 ### Output audio: raw 8 kHz mu-law BYOVA chunks
 
-CES streams TTS output as small frames. The connector places every frame
-directly in `Prompt.audio_content` with `response_type=CHUNK`, keeping
-`is_barge_in_enabled=false`. It does not accumulate a full turn and does not
-add a WAV header.
+CES normally streams TTS output as small frames. The connector places normal
+frames directly in `Prompt.audio_content` with `response_type=CHUNK`, keeping
+`is_barge_in_enabled=false`. If the first CES frame is both longer than
+`output_leading_audio_min_ms` and contains no sustained speech, the connector
+drops low-energy frames until speech is detected and keeps
+`output_speech_preroll_ms` before that boundary. It does not accumulate a full
+turn and does not add a WAV header.
 
 The normal response sequence is:
 
@@ -352,6 +362,11 @@ window for an `EndSession` that follows the final TTS frames.
 | `enable_partial_responses` | No | Request CES text streaming for logs, terminal-cue detection, and text-only fallback |
 | `output_sample_rate_hertz` | No | Must be `8000` for the current raw CHUNK path |
 | `output_audio_encoding` | No | Must be `MULAW` for the current raw CHUNK path |
+| `suppress_long_leading_audio` | No | Guard anomalously long low-energy CES output before prompt speech (default: `true`) |
+| `output_leading_audio_min_ms` | No | Minimum first-frame duration that can activate the guard (default: `5000`) |
+| `output_speech_rms_threshold` | No | 16-bit linear RMS threshold used to identify speech in decoded mu-law frames (default: `200`) |
+| `output_speech_start_frames` | No | Consecutive 20ms frames required to open the output gate (default: `2`) |
+| `output_speech_preroll_ms` | No | Audio retained immediately before detected speech (default: `100`) |
 | `force_input_format` | No | `wxcc` forces 8 kHz MULAW when input metadata is unavailable |
 | `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
 | `endpointing_silence_ms` | No | Codec-correct silence appended to each buffered caller turn for CES endpoint detection (default: `2000`; one second may leave a turn open until more audio arrives) |
@@ -385,6 +400,7 @@ and grant the represented identity `roles/ces.client`.
 | `404` / `UNIMPLEMENTED` on BidiRunSession | Wrong endpoint — must be regional `ces.<location>.rep.googleapis.com` (auto-derived from `location`) |
 | `429 Resource exhausted` | CES per-app session quota; retry/backoff or request more quota |
 | No audio to caller (silence) | Confirm `gecx_first_audio_chunk` appears, the next response is a BYOVA `CHUNK`, and output remains `MULAW` / `8000`. See [Output audio](#output-audio-raw-8-khz-mu-law-byova-chunks). |
+| Long static/noise before a prompt | Look for `gecx_long_leading_audio_detected` followed by `gecx_leading_audio_suppressed`; tune the guarded output settings only with captured CES evidence. |
 | Garbled speech | Confirm the gateway logs the declared WxCC encoding/sample rate; use `force_input_format: "wxcc"` only when the client omits metadata |
 | No response after `END_OF_INPUT` | Check for `turn_completed` or a turn-completion timeout in `[GECX]` logs; increase `turn_response_timeout_seconds` if the agent regularly needs more than 30 seconds |
 | `GoAway` from CES | The connector intentionally emits one `SESSION_END` and half-closes CES; it does not reconnect in the current implementation |
@@ -399,6 +415,10 @@ Search gateway logs for `[GECX]`:
 - `Agent` — text responses
 - `gecx_first_audio_chunk` — first raw CES frame queued for WxCC, including
   first-frame latency
+- `gecx_long_leading_audio_detected` — an anomalously long low-energy CES
+  prefix activated the guarded speech gate
+- `gecx_leading_audio_suppressed` — the gate opened on sustained speech and
+  reports the dropped duration
 - `gecx_streamed_turn_complete` — one normal `FINAL` emitted after the logged
   chunk and byte totals
 - `gecx_terminal_decision` — one terminal `FINAL`, with chunk and byte totals
