@@ -15,7 +15,11 @@ from typing import Iterator, Dict, Any
 from src.core.wxcc_gateway_server import ConversationProcessor, WxCCGatewayServer
 from src.core.virtual_agent_router import VirtualAgentRouter
 from src.generated.byova_common_pb2 import EventInput
-from src.generated.voicevirtualagent_pb2 import VoiceInput, VoiceVARequest
+from src.generated.voicevirtualagent_pb2 import (
+    VoiceInput,
+    VoiceVARequest,
+    VoiceVAResponse,
+)
 from src.utils.silero_speech_boundary import SpeechBoundarySignal
 
 
@@ -111,42 +115,37 @@ class TestConversationProcessor:
         assert responses[0].prompts[0].text == "Hello, how can I help you?"
         assert responses[0].prompts[0].audio_content == b"audio_response_bytes"
 
-    def test_initial_escalation_plays_audio_before_transfer(
+    def test_initial_escalation_streams_chunk_before_transfer_final(
         self, processor, mock_router
     ):
-        wav_audio = bytearray(44 + 8000)
-        wav_audio[:4] = b"RIFF"
-        wav_audio[8:12] = b"WAVE"
-        wav_audio[28:32] = (8000).to_bytes(4, "little")
-        wav_audio[36:40] = b"data"
-        wav_audio[40:44] = (8000).to_bytes(4, "little")
+        raw_audio = b"\xff" * 800
         audio_response = {
             "message_type": "audio",
-            "text": "Let me connect you now.",
-            "audio_content": bytes(wav_audio),
+            "text": "",
+            "audio_content": raw_audio,
             "barge_in_enabled": False,
+            "response_type": "chunk",
         }
         terminal_response = {
             "message_type": "transfer",
             "text": "",
             "audio_content": b"",
             "barge_in_enabled": False,
+            "response_type": "final",
         }
         mock_router.route_request.return_value = iter(
             [audio_response, terminal_response]
         )
-        cancel_event = MagicMock()
-        cancel_event.wait.return_value = False
-        processor.set_stream_cancel_event(cancel_event)
 
         responses = list(processor._start_conversation())
 
         assert len(responses) == 2
-        assert responses[0].prompts[0].audio_content == bytes(wav_audio)
+        assert responses[0].response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert responses[0].prompts[0].audio_content == raw_audio
         assert responses[0].output_events == []
+        assert responses[1].response_type == VoiceVAResponse.ResponseType.FINAL
         assert responses[1].prompts == []
         assert [event.event_type for event in responses[1].output_events] == [2]
-        cancel_event.wait.assert_called_once_with(1.0)
 
     def test_process_audio_input_uses_configured_rate_when_wxcc_omits_it(self, mock_router):
         processor = ConversationProcessor(
@@ -170,17 +169,21 @@ class TestConversationProcessor:
         frame = processor.speech_boundary_observer.observe.call_args.args[0]
         assert frame.sample_rate_hertz == 16000
 
-    def test_gateway_emits_speech_started_event(self, processor, mock_router, mock_audio_input):
+    def test_gateway_keeps_speech_started_as_standalone_final_event(
+        self, processor, mock_router, mock_audio_input
+    ):
         processor.speech_boundary_observer = MagicMock()
         processor.speech_boundary_observer.observe.return_value = [
             SpeechBoundarySignal("speech_started", "test_conv_123", 8000)
         ]
         mock_router.route_request.return_value = None
         mock_router.should_observe_speech_boundaries.return_value = True
+        mock_router.should_coalesce_speech_end_with_response.return_value = True
 
         responses = list(processor._process_audio_input(mock_audio_input))
 
         assert len(responses) == 1
+        assert responses[0].response_type == VoiceVAResponse.ResponseType.FINAL
         assert responses[0].output_events[0].event_type == 4
         assert responses[0].output_events[0].name == ""
 
@@ -219,61 +222,112 @@ class TestConversationProcessor:
     def test_gateway_sends_gecx_speech_end_before_normal_prompt(
         self, processor, mock_router, mock_audio_input
     ):
-        """Keep a normal GECX prompt separate from END_OF_INPUT."""
+        """Keep END_OF_INPUT ahead of raw audio chunks and one normal FINAL."""
         processor.speech_boundary_observer = MagicMock()
         processor.speech_boundary_observer.observe.return_value = [
             SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)
         ]
-        wav_audio = bytearray(44 + 8000)
-        wav_audio[:4] = b"RIFF"
-        wav_audio[8:12] = b"WAVE"
-        wav_audio[28:32] = (8000).to_bytes(4, "little")
-        wav_audio[36:40] = b"data"
-        wav_audio[40:44] = (8000).to_bytes(4, "little")
-        wav_audio = bytes(wav_audio)
+        raw_audio = b"\xff" * 800
         audio_response = {
             "message_type": "audio",
-            "text": "What dates would you like to book?",
-            "audio_content": wav_audio,
+            "text": "",
+            "audio_content": raw_audio,
             "barge_in_enabled": False,
             "output_events": [],
+            "response_type": "chunk",
+        }
+        final_response = {
+            "message_type": "silence",
+            "text": "",
+            "audio_content": b"",
+            "barge_in_enabled": False,
+            "output_events": [],
+            "response_type": "final",
         }
         mock_router.route_request.side_effect = [
             None,
-            iter([audio_response]),
+            iter([audio_response, final_response]),
         ]
         mock_router.should_observe_speech_boundaries.return_value = True
         mock_router.should_coalesce_speech_end_with_response.return_value = True
 
         responses = list(processor._process_audio_input(mock_audio_input))
 
-        assert len(responses) == 2
+        assert len(responses) == 3
         assert responses[0].prompts == []
         assert [event.event_type for event in responses[0].output_events] == [5]
-        assert responses[1].prompts[0].audio_content == wav_audio
-        assert responses[1].prompts[0].text == "What dates would you like to book?"
+        assert responses[0].response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert responses[1].response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert responses[1].prompts[0].audio_content == raw_audio
+        assert responses[1].prompts[0].text == ""
         assert responses[1].output_events == []
+        assert responses[2].response_type == VoiceVAResponse.ResponseType.FINAL
+        assert responses[2].prompts == []
+        assert sum(
+            response.response_type == VoiceVAResponse.ResponseType.FINAL
+            for response in responses
+        ) == 1
 
-    def test_gateway_sends_gecx_speech_end_before_transfer_announcement(
+    def test_gateway_does_not_materialize_gecx_chunk_stream(
+        self, processor, mock_router
+    ):
+        raw_audio = b"\xff" * 800
+        release_final = threading.Event()
+
+        def connector_responses():
+            yield {
+                "message_type": "audio",
+                "text": "",
+                "audio_content": raw_audio,
+                "barge_in_enabled": False,
+                "output_events": [],
+                "response_type": "chunk",
+            }
+            assert release_final.wait(1.0)
+            yield {
+                "message_type": "silence",
+                "text": "",
+                "audio_content": b"",
+                "barge_in_enabled": False,
+                "output_events": [],
+                "response_type": "final",
+            }
+
+        mock_router.should_coalesce_speech_end_with_response.return_value = True
+        mock_router.route_request.return_value = connector_responses()
+        responses = processor._process_speech_boundary(
+            SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)
+        )
+
+        end_of_input = next(responses)
+        first_chunk = next(responses)
+
+        assert end_of_input.response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert [event.event_type for event in end_of_input.output_events] == [5]
+        assert first_chunk.response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert first_chunk.prompts[0].audio_content == raw_audio
+
+        release_final.set()
+        final = next(responses)
+        assert final.response_type == VoiceVAResponse.ResponseType.FINAL
+        with pytest.raises(StopIteration):
+            next(responses)
+
+    def test_gateway_streams_gecx_transfer_after_chunk_typed_speech_end(
         self, processor, mock_router, mock_audio_input
     ):
         processor.speech_boundary_observer = MagicMock()
         processor.speech_boundary_observer.observe.return_value = [
             SpeechBoundarySignal("speech_ended", "test_conv_123", 8000)
         ]
-        wav_audio = bytearray(44 + 8000)
-        wav_audio[:4] = b"RIFF"
-        wav_audio[8:12] = b"WAVE"
-        wav_audio[28:32] = (8000).to_bytes(4, "little")
-        wav_audio[36:40] = b"data"
-        wav_audio[40:44] = (8000).to_bytes(4, "little")
-        wav_audio = bytes(wav_audio)
+        raw_audio = b"\xff" * 800
         audio_response = {
             "message_type": "audio",
-            "text": "Let me connect you now.",
-            "audio_content": wav_audio,
+            "text": "",
+            "audio_content": raw_audio,
             "barge_in_enabled": False,
             "output_events": [],
+            "response_type": "chunk",
         }
         transfer_response = {
             "message_type": "transfer",
@@ -281,6 +335,7 @@ class TestConversationProcessor:
             "audio_content": b"",
             "barge_in_enabled": False,
             "output_events": [],
+            "response_type": "final",
         }
         mock_router.route_request.side_effect = [
             None,
@@ -289,20 +344,19 @@ class TestConversationProcessor:
         mock_router.should_observe_speech_boundaries.return_value = True
         mock_router.should_coalesce_speech_end_with_response.return_value = True
 
-        cancel_event = MagicMock()
-        cancel_event.wait.return_value = False
-        processor.set_stream_cancel_event(cancel_event)
         responses = list(processor._process_audio_input(mock_audio_input))
 
         assert len(responses) == 3
         assert responses[0].prompts == []
         assert [event.event_type for event in responses[0].output_events] == [5]
-        assert responses[1].prompts[0].audio_content == wav_audio
-        assert responses[1].prompts[0].text == "Let me connect you now."
+        assert responses[0].response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert responses[1].response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert responses[1].prompts[0].audio_content == raw_audio
+        assert responses[1].prompts[0].text == ""
         assert responses[1].output_events == []
+        assert responses[2].response_type == VoiceVAResponse.ResponseType.FINAL
         assert responses[2].prompts == []
         assert [event.event_type for event in responses[2].output_events] == [2]
-        cancel_event.wait.assert_called_once_with(1.0)
 
     def test_gateway_merges_speech_resumed_during_end_grace(
         self, processor, mock_router, mock_audio_input

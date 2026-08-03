@@ -305,7 +305,6 @@ class ConversationProcessor:
             if is_iterator:
                 yield from self._iter_grpc_connector_responses(
                     connector_response,
-                    delay_terminal_after_audio=True,
                 )
                 return
 
@@ -454,10 +453,16 @@ class ConversationProcessor:
                 self.virtual_agent_id
             )
         )
+        if coalesce_speech_end:
+            # END_OF_INPUT begins the streamed response turn and therefore
+            # remains open through the following audio CHUNKs. START_OF_INPUT
+            # stays a standalone FINAL event so WxCC continues forwarding
+            # caller audio during the bounded speech-resume grace window.
+            boundary_connector_response["response_type"] = "chunk"
 
         if not coalesce_speech_end:
             response = self._convert_connector_response_to_grpc(
-                boundary_connector_response
+                boundary_connector_response,
             )
             if response is not None:
                 yield response
@@ -483,39 +488,18 @@ class ConversationProcessor:
             )
             return
 
-        is_iterator = (
-            hasattr(boundary_response, "__iter__")
-            and not isinstance(boundary_response, (dict, str, bytes))
-        )
-        if is_iterator:
-            boundary_responses = list(boundary_response)
-        elif boundary_response is None:
-            boundary_responses = []
-        else:
-            boundary_responses = [boundary_response]
-
-        has_terminal_response = any(
-            isinstance(response, dict)
-            and response.get("message_type") in {"transfer", "session_end"}
-            for response in boundary_responses
-        )
-        response_kind = "terminal" if has_terminal_response else "normal"
         self.logger.info(
-            "Emitting END_OF_INPUT before %d %s connector response(s) for "
+            "Emitting END_OF_INPUT before the connector response stream for "
             "conversation %s",
-            len(boundary_responses),
-            response_kind,
             self.conversation_id,
         )
         response = self._convert_connector_response_to_grpc(
-            boundary_connector_response
+            boundary_connector_response,
+            response_type=VoiceVAResponse.ResponseType.CHUNK,
         )
         if response is not None:
             yield response
-        yield from self._iter_grpc_connector_responses(
-            boundary_responses,
-            delay_terminal_after_audio=has_terminal_response,
-        )
+        yield from self._iter_grpc_connector_responses(boundary_response)
 
     def _iter_grpc_connector_responses(
         self,
@@ -866,6 +850,11 @@ class ConversationProcessor:
                 if has_start_event:
                     self.logger.debug(
                         "Detected START_OF_INPUT event, setting minimal input_handling_config"
+                    )
+                    va_response.response_type = (
+                        response_type
+                        if response_type is not None
+                        else VoiceVAResponse.ResponseType.FINAL
                     )
                     # Set minimal input_handling_config for START_OF_INPUT events
                     va_response.input_handling_config.CopyFrom(

@@ -11,7 +11,8 @@ gateway:
   # and response delivery run independently.
   request_queue_maxsize: 100
   response_queue_maxsize: 100
-  # Safety ceiling only; the actual terminal gate is derived from each CES WAV.
+  # Safety ceiling for legacy complete-WAV prompt responses. GECX raw CHUNK
+  # streaming preserves order without this playback delay.
   max_terminal_playback_seconds: 30
 
 # Voice activity detection controls. The configured detector implementation is internal.

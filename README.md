@@ -34,6 +34,8 @@ The sample includes:
 - JWT validation for the WxCC data plane
 - A configuration-driven connector router
 - Local audio, AWS Lex, and Google CX Agent Studio connectors
+- Immediate raw 8 kHz mu-law BYOVA `CHUNK` output for Google CX Agent Studio,
+  with one ordered `FINAL` per normal or terminal turn
 - gRPC and HTTP health checks
 - A development monitoring dashboard
 - Unit tests and local gRPC smoke-test utilities

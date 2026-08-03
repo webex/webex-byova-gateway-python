@@ -158,7 +158,8 @@ Experience) through the CES `BidiRunSession` API.
 **Features**:
 - Streams WxCC caller audio to Google as it arrives
 - Maps CES recognition, text, audio, interruption, and end-session messages
-- Buffers each CES output turn into a WxCC-compatible 8 kHz mu-law WAV response
+- Streams each raw 8 kHz mu-law CES output frame as a BYOVA `CHUNK`
+- Emits exactly one normal or terminal `FINAL` after the ordered chunks
 - Maps CES escalation metadata to WxCC human-transfer events
 - Supports service-account credentials, ADC, OAuth, and short-lived access tokens
 
