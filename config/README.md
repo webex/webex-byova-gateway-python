@@ -151,9 +151,11 @@ The leading-audio guard activates only when the first CES frame is at least
 `output_leading_audio_min_ms` and contains no sustained speech. It then retains
 `output_speech_preroll_ms` before the first detected speech frames.
 When the gateway detects caller speech, it also isolates the next response turn
-until CES sends a recognition result or interruption signal. Any autonomous
-no-input prompt that overlaps that caller turn is suppressed, allowing the
-post-input CES answer to remain attached to the active WxCC response stream.
+until CES sends a recognition result. An interruption signal alone does not
+open the gate because CES can send the stale turn completion immediately after
+that signal. Any autonomous no-input prompt that overlaps the caller turn is
+suppressed, allowing the post-input CES answer to remain attached to the active
+WxCC response stream.
 
 See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
 [GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and

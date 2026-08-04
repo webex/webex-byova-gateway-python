@@ -185,9 +185,10 @@ frame can therefore reach WxCC before CES emits `turn_completed`.
 
 When gateway VAD emits `START_OF_INPUT`, the connector opens an isolated caller
 turn and waits for CES to acknowledge the committed audio with a recognition
-result or interruption signal. CES output produced before that acknowledgement
-belongs to an overlapping autonomous no-input turn and is suppressed. The
-acknowledged post-input answer then uses the still-active WxCC response stream.
+result. An interruption signal does not open the gate because CES can complete
+the interrupted no-input turn immediately afterward. CES output produced before
+recognition belongs to that overlapping autonomous turn and is suppressed. The
+recognized post-input answer then uses the still-active WxCC response stream.
 
 All terminal causes pass through one session-scoped decision guard. The first
 decision rejects later caller input, preserves already-queued audio chunks,
@@ -258,7 +259,7 @@ conversion and validation.
 
 Prompt-level barge-in remains disabled (`is_barge_in_enabled=false`). Gateway
 `START_OF_INPUT` still discards already-buffered prompt output and isolates CES
-output until CES acknowledges the caller audio. This prevents a stale no-input
+output until CES recognizes the caller audio. This prevents a stale no-input
 prompt from finalizing the response stream needed for the caller's answer; it
 does not advertise arbitrary prompt interruption to WxCC.
 
@@ -433,8 +434,8 @@ Search gateway logs for `[GECX]`:
   prior turn was discarded when gateway VAD detected caller speech
 - `gecx_pre_input_output_suppressed` — CES completed an autonomous output turn
   before acknowledging the caller's committed audio
-- `gecx_caller_input_acknowledged` — recognition or interruption opened the
-  response stream for post-input CES output
+- `gecx_caller_input_acknowledged` — CES recognition opened the response stream
+  for post-input CES output
 - `gecx_streamed_turn_complete` — one normal `FINAL` emitted after the logged
   chunk and byte totals
 - `gecx_terminal_decision` — one terminal `FINAL`, with chunk and byte totals

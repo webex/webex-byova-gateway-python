@@ -391,14 +391,26 @@ class TestServerMessageMapping:
             self._server_output(
                 b"stale no-input audio",
                 text="I did not catch that.",
-                turn_completed=True,
+                turn_completed=False,
             )
+        )
+        session.end_audio_turn()
+        session._handle_server_message(
+            SimpleNamespace(
+                recognition_result=None,
+                interruption_signal=SimpleNamespace(),
+                end_session=None,
+                go_away=None,
+                session_output=None,
+            )
+        )
+        session._handle_server_message(
+            self._server_output(b"", turn_completed=True)
         )
 
         assert session.drain_responses() == []
         assert session._turn_completed.is_set() is False
 
-        session.end_audio_turn()
         session._handle_server_message(
             SimpleNamespace(
                 recognition_result=SimpleNamespace(

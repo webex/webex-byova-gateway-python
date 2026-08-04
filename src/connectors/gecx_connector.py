@@ -837,7 +837,6 @@ class GECXStreamingSession:
                 )
 
         if message.interruption_signal:
-            self._acknowledge_caller_input_locked("interruption_signal")
             self.logger.info(f"[{conversation_id}] [GECX] Barge-in interruption signal")
             # Keep lifecycle -> audio locking consistent with terminate() so a
             # concurrent interruption cannot erase the winning terminal response.
