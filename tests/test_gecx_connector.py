@@ -376,6 +376,57 @@ class TestServerMessageMapping:
 
         assert [response["response_type"] for response in remaining] == ["final"]
 
+    def test_caller_turn_suppresses_stale_no_input_prompt_until_ces_ack(
+        self, connector
+    ):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-caller-reply",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+
+        session.begin_input_turn(expect_recognition=True)
+        session._handle_server_message(
+            self._server_output(
+                b"stale no-input audio",
+                text="I did not catch that.",
+                turn_completed=True,
+            )
+        )
+
+        assert session.drain_responses() == []
+        assert session._turn_completed.is_set() is False
+
+        session.end_audio_turn()
+        session._handle_server_message(
+            SimpleNamespace(
+                recognition_result=SimpleNamespace(
+                    transcript="My name is Adam and my store number is 1234"
+                ),
+                interruption_signal=None,
+                end_session=None,
+                go_away=None,
+                session_output=None,
+            )
+        )
+        session._handle_server_message(
+            self._server_output(
+                b"correct reply audio",
+                text="Great, Adam. What can I help you with today?",
+                turn_completed=True,
+            )
+        )
+
+        responses = list(session.iter_turn_responses(timeout=0.1))
+
+        assert [response["response_type"] for response in responses] == [
+            "chunk",
+            "final",
+        ]
+        assert responses[0]["audio_content"] == b"correct reply audio"
+        assert responses[1]["message_type"] == "silence"
+
     def test_suppresses_anomalous_low_energy_lead_until_speech(self, connector):
         session = GECXStreamingSession(
             connector=connector,
@@ -968,7 +1019,9 @@ class TestSpeechBoundaries:
             )
 
         assert responses == []
-        stream_session.begin_input_turn.assert_called_once_with()
+        stream_session.begin_input_turn.assert_called_once_with(
+            expect_recognition=True
+        )
 
     def test_speech_ended_yields_streamed_turn_responses(self, connector):
         stream_session = MagicMock()

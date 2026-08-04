@@ -137,7 +137,10 @@ class GECXStreamingSession:
         self._stream_error: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
-        self._lifecycle_lock = threading.Lock()
+        # Server callbacks can re-enter lifecycle helpers such as terminate()
+        # while the callback holds the turn-state lock. An RLock keeps that
+        # atomic without deadlocking the callback thread.
+        self._lifecycle_lock = threading.RLock()
         self._terminal_decision: Optional[GECXTerminalDecision] = None
         self._join_attempted = False
         self._started_at = time.monotonic()
@@ -163,6 +166,14 @@ class GECXStreamingSession:
         self._input_resume_buffer = bytearray()
         self._input_turn_active = False
         self._input_turn_paused = False
+        # CES can autonomously start a no-input prompt immediately before the
+        # gateway detects caller speech. Keep that stale output isolated until
+        # CES acknowledges the committed caller audio with recognition or an
+        # interruption signal.
+        self._awaiting_input_ack = False
+        self._suppressed_pre_input_messages = 0
+        self._suppressed_pre_input_audio_bytes = 0
+        self._suppressed_pre_input_text_chars = 0
 
     def start(self) -> None:
         """Start the background bidi stream thread."""
@@ -349,8 +360,8 @@ class GECXStreamingSession:
                 break
         return responses
 
-    def begin_input_turn(self) -> bool:
-        """Reset completion tracking when gateway VAD detects caller speech."""
+    def begin_input_turn(self, *, expect_recognition: bool = False) -> bool:
+        """Isolate the response turn when gateway VAD detects caller speech."""
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 self._log_late_input("speech_boundary")
@@ -359,10 +370,69 @@ class GECXStreamingSession:
                 self._input_turn_active = True
                 self._input_turn_paused = False
                 self._input_resume_buffer.clear()
+            with self._lock:
+                discarded_chunks = self._turn_audio_chunk_count
+                discarded_audio_bytes = self._turn_audio_bytes
+                discarded_text_chars = sum(map(len, self._text_buffer))
+                self._text_buffer = []
+                self._turn_audio_emitted = False
+                self._turn_audio_chunk_count = 0
+                self._turn_audio_bytes = 0
+                self._reset_output_audio_gate()
+            discarded_responses = 0
+            while True:
+                try:
+                    self.outbound_queue.get_nowait()
+                    discarded_responses += 1
+                except queue.Empty:
+                    break
             self._turn_started_at = time.monotonic()
             self._turn_completed.clear()
-            self._reset_output_audio_gate()
+            self._awaiting_input_ack = expect_recognition
+            self._suppressed_pre_input_messages = 0
+            self._suppressed_pre_input_audio_bytes = 0
+            self._suppressed_pre_input_text_chars = 0
+
+        if any(
+            (
+                discarded_chunks,
+                discarded_audio_bytes,
+                discarded_text_chars,
+                discarded_responses,
+            )
+        ):
+            self.logger.info(
+                "gecx_output_discarded_on_caller_start conversation_id=%s "
+                "chunks=%d audio_bytes=%d text_chars=%d queued_responses=%d",
+                self.conversation_id,
+                discarded_chunks,
+                discarded_audio_bytes,
+                discarded_text_chars,
+                discarded_responses,
+            )
         return True
+
+    def _acknowledge_caller_input_locked(self, source: str) -> None:
+        """Open the post-input response turn after CES accepts caller audio."""
+        if not self._awaiting_input_ack:
+            return
+
+        self._awaiting_input_ack = False
+        self._turn_completed.clear()
+        self._reset_output_audio_gate()
+        self.logger.info(
+            "gecx_caller_input_acknowledged conversation_id=%s source=%s "
+            "suppressed_messages=%d suppressed_audio_bytes=%d "
+            "suppressed_text_chars=%d",
+            self.conversation_id,
+            source,
+            self._suppressed_pre_input_messages,
+            self._suppressed_pre_input_audio_bytes,
+            self._suppressed_pre_input_text_chars,
+        )
+        self._suppressed_pre_input_messages = 0
+        self._suppressed_pre_input_audio_bytes = 0
+        self._suppressed_pre_input_text_chars = 0
 
     def iter_turn_responses(
         self,
@@ -737,7 +807,12 @@ class GECXStreamingSession:
             self._turn_completed.set()
 
     def _handle_server_message(self, message: Any) -> None:
-        """Map CES server messages to BYOVA connector responses."""
+        """Map one CES message atomically against gateway turn boundaries."""
+        with self._lifecycle_lock:
+            self._handle_server_message_locked(message)
+
+    def _handle_server_message_locked(self, message: Any) -> None:
+        """Map a CES server message while holding the lifecycle lock."""
         conversation_id = self.conversation_id
         turn_completed = False
 
@@ -753,7 +828,8 @@ class GECXStreamingSession:
             )
             return
 
-        if message.recognition_result and message.recognition_result.transcript:
+        if message.recognition_result:
+            self._acknowledge_caller_input_locked("recognition_result")
             transcript = message.recognition_result.transcript.strip()
             if transcript:
                 self.logger.debug(
@@ -761,6 +837,7 @@ class GECXStreamingSession:
                 )
 
         if message.interruption_signal:
+            self._acknowledge_caller_input_locked("interruption_signal")
             self.logger.info(f"[{conversation_id}] [GECX] Barge-in interruption signal")
             # Keep lifecycle -> audio locking consistent with terminate() so a
             # concurrent interruption cannot erase the winning terminal response.
@@ -782,22 +859,36 @@ class GECXStreamingSession:
             output = message.session_output
             has_terminal_output = bool(output.end_session)
 
-            if output.text:
-                self.logger.info(
-                    f"[{conversation_id}] [GECX] Agent: '{output.text}'"
-                )
-                self._buffer_active_text(output.text)
-
             audio_bytes = self._decode_output_audio(output.audio)
-            if audio_bytes:
-                playable_audio = self._filter_leading_output_audio(audio_bytes)
-                if playable_audio:
-                    self._emit_active_audio_chunk(playable_audio)
+            if self._awaiting_input_ack and not has_terminal_output:
+                self._suppressed_pre_input_messages += 1
+                self._suppressed_pre_input_audio_bytes += len(audio_bytes)
+                self._suppressed_pre_input_text_chars += len(output.text or "")
+                if output.turn_completed:
+                    self.logger.info(
+                        "gecx_pre_input_output_suppressed conversation_id=%s "
+                        "messages=%d audio_bytes=%d text_chars=%d",
+                        conversation_id,
+                        self._suppressed_pre_input_messages,
+                        self._suppressed_pre_input_audio_bytes,
+                        self._suppressed_pre_input_text_chars,
+                    )
+            else:
+                if output.text:
+                    self.logger.info(
+                        f"[{conversation_id}] [GECX] Agent: '{output.text}'"
+                    )
+                    self._buffer_active_text(output.text)
 
-            # Audio frames are already queued as CHUNK responses. Completion
-            # only releases the response iterator to emit its sole FINAL.
-            if output.turn_completed and not has_terminal_output:
-                turn_completed = True
+                if audio_bytes:
+                    playable_audio = self._filter_leading_output_audio(audio_bytes)
+                    if playable_audio:
+                        self._emit_active_audio_chunk(playable_audio)
+
+                # Audio frames are already queued as CHUNK responses. Completion
+                # only releases the response iterator to emit its sole FINAL.
+                if output.turn_completed and not has_terminal_output:
+                    turn_completed = True
 
             if has_terminal_output:
                 self._handle_end_session(
@@ -1505,7 +1596,7 @@ class GECXConnector(IVendorConnector):
 
         boundary_kind = message_data.get("speech_boundary", {}).get("kind")
         if boundary_kind == "speech_started":
-            stream_session.begin_input_turn()
+            stream_session.begin_input_turn(expect_recognition=True)
             return
 
         if boundary_kind != "speech_ended":

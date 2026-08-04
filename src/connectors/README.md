@@ -158,6 +158,8 @@ Experience) through the CES `BidiRunSession` API.
 **Features**:
 - Streams WxCC caller audio to Google as it arrives
 - Maps CES recognition, text, audio, interruption, and end-session messages
+- Isolates each gateway-detected caller turn until CES acknowledges the input,
+  suppressing an overlapping stale no-input prompt without dropping the reply
 - Streams 8 kHz mu-law CES output as BYOVA `CHUNK` responses
 - Suppresses only a long low-energy prefix before detected prompt speech;
   normal short CES frames retain the direct streaming path

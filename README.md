@@ -208,7 +208,8 @@ production without the controls described in the production guide.
   end-to-end validation. See [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md).
 - **AWS Lex**: Connects to Amazon Lex V2 through the standard AWS SDK credential chain.
 - **Google CX Agent Studio**: Streams caller audio to Gemini Enterprise for Customer
-  Experience through CES `BidiRunSession`. See the
+  Experience through CES `BidiRunSession`. Caller speech starts an isolated response turn,
+  so an overlapping CES no-input prompt cannot consume the caller's post-input reply. See the
   [GECX Setup Guide](docs/guides/byova-gecx-setup.md).
 
 Connectors implement `IVendorConnector` and are loaded from `config/config.yaml`. See the

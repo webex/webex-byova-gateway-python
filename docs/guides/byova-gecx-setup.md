@@ -183,6 +183,12 @@ queue. After the gateway emits `END_OF_INPUT`, it consumes that queue
 incrementally instead of materializing the complete turn. The first CES audio
 frame can therefore reach WxCC before CES emits `turn_completed`.
 
+When gateway VAD emits `START_OF_INPUT`, the connector opens an isolated caller
+turn and waits for CES to acknowledge the committed audio with a recognition
+result or interruption signal. CES output produced before that acknowledgement
+belongs to an overlapping autonomous no-input turn and is suppressed. The
+acknowledged post-input answer then uses the still-active WxCC response stream.
+
 All terminal causes pass through one session-scoped decision guard. The first
 decision rejects later caller input, preserves already-queued audio chunks,
 half-closes the CES request stream once, and emits at most one terminal
@@ -250,8 +256,11 @@ The current CHUNK path intentionally supports only 8 kHz mu-law output.
 configuration early. Broader output-format support requires explicit
 conversion and validation.
 
-Barge-in remains disabled. CES `interruption_signal` cleanup is retained, but
-caller-driven output cancellation is a separate implementation phase.
+Prompt-level barge-in remains disabled (`is_barge_in_enabled=false`). Gateway
+`START_OF_INPUT` still discards already-buffered prompt output and isolates CES
+output until CES acknowledges the caller audio. This prevents a stale no-input
+prompt from finalizing the response stream needed for the caller's answer; it
+does not advertise arbitrary prompt interruption to WxCC.
 
 ### Input audio
 
@@ -402,6 +411,7 @@ and grant the represented identity `roles/ces.client`.
 | No audio to caller (silence) | Confirm `gecx_first_audio_chunk` appears, the next response is a BYOVA `CHUNK`, and output remains `MULAW` / `8000`. See [Output audio](#output-audio-raw-8-khz-mu-law-byova-chunks). |
 | Long static/noise before a prompt | Look for `gecx_long_leading_audio_detected` followed by `gecx_leading_audio_suppressed`; tune the guarded output settings only with captured CES evidence. |
 | Garbled speech | Confirm the gateway logs the declared WxCC encoding/sample rate; use `force_input_format: "wxcc"` only when the client omits metadata |
+| Agent recognizes the caller but its reply is not audible | Confirm `gecx_pre_input_output_suppressed` is followed by `gecx_caller_input_acknowledged`, `gecx_first_audio_chunk`, and `gecx_streamed_turn_complete` for the same conversation. |
 | No response after `END_OF_INPUT` | Check for `turn_completed` or a turn-completion timeout in `[GECX]` logs; increase `turn_response_timeout_seconds` if the agent regularly needs more than 30 seconds |
 | `GoAway` from CES | The connector intentionally emits one `SESSION_END` and half-closes CES; it does not reconnect in the current implementation |
 | Import error | `pip install google-cloud-ces` |
@@ -419,6 +429,12 @@ Search gateway logs for `[GECX]`:
   prefix activated the guarded speech gate
 - `gecx_leading_audio_suppressed` — the gate opened on sustained speech and
   reports the dropped duration
+- `gecx_output_discarded_on_caller_start` — buffered or queued output from the
+  prior turn was discarded when gateway VAD detected caller speech
+- `gecx_pre_input_output_suppressed` — CES completed an autonomous output turn
+  before acknowledging the caller's committed audio
+- `gecx_caller_input_acknowledged` — recognition or interruption opened the
+  response stream for post-input CES output
 - `gecx_streamed_turn_complete` — one normal `FINAL` emitted after the logged
   chunk and byte totals
 - `gecx_terminal_decision` — one terminal `FINAL`, with chunk and byte totals
