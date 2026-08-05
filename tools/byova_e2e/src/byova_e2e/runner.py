@@ -296,6 +296,14 @@ class BrowserRunner:
                     ignore_current_prompt=prior_response_active,
                 )
                 prior_response_active = True
+                latency_seconds = max(
+                    0.0,
+                    response_start.timestamp - last_injection.timestamp,
+                )
+                self._assert_latency_target(
+                    latency_seconds,
+                    step.max_latency_seconds,
+                )
                 step_results.append(
                     {
                         "index": step_index,
@@ -303,10 +311,7 @@ class BrowserRunner:
                         "name": step.name,
                         "outcome": step.outcome.value,
                         "observed_timestamp": response_start.timestamp,
-                        "latency_seconds": max(
-                            0.0,
-                            response_start.timestamp - last_injection.timestamp,
-                        ),
+                        "latency_seconds": latency_seconds,
                     }
                 )
                 continue
@@ -323,6 +328,10 @@ class BrowserRunner:
                 ignore_current_prompt=prior_response_active,
             )
             prior_response_active = False
+            self._assert_latency_target(
+                observation.latency_seconds,
+                step.max_latency_seconds,
+            )
             observations.append(observation)
             step_results.append(
                 {
@@ -365,6 +374,17 @@ class BrowserRunner:
             disconnect,
             step_results,
         )
+
+    @staticmethod
+    def _assert_latency_target(
+        observed_seconds: float,
+        maximum_seconds: float | None,
+    ) -> None:
+        if maximum_seconds is not None and observed_seconds > maximum_seconds:
+            raise RunFailure(
+                f"Remote response latency {observed_seconds:.3f}s exceeded "
+                f"target {maximum_seconds:.3f}s"
+            )
 
     def _wait_for_response_start(
         self,

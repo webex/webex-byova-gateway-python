@@ -23,6 +23,7 @@ temp/
 # Secrets and credentials - NEVER ship these in the image
 *.pickle
 *_token.pickle
+*_token.json
 *-key.json
 *_credentials.json
 client_secret*.json

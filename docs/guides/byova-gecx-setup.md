@@ -385,6 +385,9 @@ window for an `EndSession` that follows the final TTS frames.
 | `entry_agent` | No | Full agent resource path to run a specific sub-agent |
 | `api_endpoint` | No | CES endpoint; defaults to `ces.<location>.rep.googleapis.com` |
 | `service_account_key` | No | Path to SA JSON; omit to use ADC |
+| `oauth_client_id` | No | Client ID for the interactive installed-app OAuth flow |
+| `oauth_client_secret` | No | Client secret for the interactive installed-app OAuth flow |
+| `oauth_token_file` | No | Authorized-user JSON cache (default: `gecx_oauth_token.json`) |
 | `initial_message` | No | Text sent when the CES stream opens (default: `Hello`) |
 | `enable_partial_responses` | No | Request CES text streaming for logs, terminal-cue detection, and text-only fallback |
 | `barge_in_enabled` | No | Allow interruption of autonomous/no-input prompt playback (default: `false`; greeting and caller-triggered replies always remain non-bargeable) |
@@ -412,12 +415,15 @@ window for an `EndSession` that follows the final TTS frames.
 |--------|-------------|-------|
 | Service account | `service_account_key` | Recommended for production |
 | ADC | (none) | `gcloud auth application-default login` for dev |
-| OAuth | `oauth_client_id`, `oauth_client_secret` | Interactive browser flow |
+| OAuth | `oauth_client_id`, `oauth_client_secret`, optional `oauth_token_file` | Interactive browser flow; token JSON is saved atomically with owner-only permissions |
 | Access token | `access_token` | Short-lived (~1 hour), not for production |
 
 Outside Google Cloud, ADC can also use a credential configuration referenced by
 `GOOGLE_APPLICATION_CREDENTIALS`. Keep credential files outside the repository
 and grant the represented identity `roles/ces.client`.
+The connector does not deserialize pickle credentials. If an older checkout
+created `gecx_oauth_token.pickle`, remove it and complete the OAuth flow once to
+create the JSON cache.
 
 ## Troubleshooting
 

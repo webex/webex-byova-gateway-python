@@ -27,7 +27,8 @@
           "name": "Expect one complete virtual-agent response",
           "expect": {
             "outcome": "response",
-            "responsePrompts": 1
+            "responsePrompts": 1,
+            "maxLatencySeconds": 6.0
           }
         }
       ]

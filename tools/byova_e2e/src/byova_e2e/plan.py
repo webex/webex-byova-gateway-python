@@ -48,6 +48,7 @@ class ExpectStepDefinition:
     name: str | None = None
     response_prompts: int = 1
     connected_observation_seconds: float = 0.0
+    max_latency_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -299,7 +300,12 @@ def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:
     expect = _object(step.get("expect"), f"{location}.expect")
     _reject_unknown(
         expect,
-        {"outcome", "responsePrompts", "connectedObservationSeconds"},
+        {
+            "outcome",
+            "responsePrompts",
+            "connectedObservationSeconds",
+            "maxLatencySeconds",
+        },
         f"{location}.expect",
     )
     outcome_value = _nonempty_string(
@@ -321,6 +327,14 @@ def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:
         expect.get("connectedObservationSeconds", 0),
         f"{location}.expect.connectedObservationSeconds",
     )
+    max_latency_seconds = (
+        _positive_number(
+            expect["maxLatencySeconds"],
+            f"{location}.expect.maxLatencySeconds",
+        )
+        if "maxLatencySeconds" in expect
+        else None
+    )
     if (
         connected_observation_seconds > 0
         and expected_outcome != ExpectedOutcome.TRANSFER
@@ -334,6 +348,7 @@ def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:
         outcome=expected_outcome,
         response_prompts=expected_response_prompts,
         connected_observation_seconds=connected_observation_seconds,
+        max_latency_seconds=max_latency_seconds,
     )
 
 

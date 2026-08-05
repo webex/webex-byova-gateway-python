@@ -216,6 +216,10 @@
               "type": "integer",
               "exclusiveMinimum": 0
             },
+            "maxLatencySeconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
             "connectedObservationSeconds": {
               "type": "number",
               "minimum": 0

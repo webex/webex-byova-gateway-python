@@ -93,7 +93,7 @@ gecx_connector:
     # access_token: "ya29...."  # short-lived, not recommended for production
     # oauth_client_id: "..."
     # oauth_client_secret: "..."
-    # oauth_token_file: "gecx_oauth_token.pickle"
+    # oauth_token_file: "gecx_oauth_token.json"
 
     agents:
       - "My GECX Agent"
