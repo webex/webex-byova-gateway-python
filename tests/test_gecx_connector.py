@@ -84,6 +84,20 @@ class TestGECXConnectorInit:
 
         assert connector.endpointing_silence_ms == 2000
 
+    def test_barge_in_is_disabled_by_default(self, gecx_config):
+        with patch("src.connectors.gecx_connector.ces_v1.SessionServiceClient"):
+            connector = GECXConnector(gecx_config)
+
+        assert connector.barge_in_enabled is False
+
+    def test_barge_in_can_be_enabled_explicitly(self, gecx_config):
+        gecx_config["barge_in_enabled"] = True
+
+        with patch("src.connectors.gecx_connector.ces_v1.SessionServiceClient"):
+            connector = GECXConnector(gecx_config)
+
+        assert connector.barge_in_enabled is True
+
     @pytest.mark.parametrize(
         ("encoding", "sample_rate"),
         [("LINEAR16", 8000), ("MULAW", 16000)],
@@ -376,9 +390,34 @@ class TestServerMessageMapping:
 
         assert [response["response_type"] for response in remaining] == ["final"]
 
-    def test_autonomous_output_pushes_to_live_sink_with_barge_in(
+    def test_autonomous_output_pushes_to_live_sink_without_barge_in_by_default(
         self, connector
     ):
+        delivered = []
+
+        def response_sink(response):
+            delivered.append(response)
+            return True
+
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-autonomous-no-barge-in",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            async_response_sink=response_sink,
+        )
+
+        session._handle_server_message(
+            self._server_output(b"no-input prompt audio")
+        )
+
+        assert len(delivered) == 1
+        assert delivered[0]["barge_in_enabled"] is False
+
+    def test_autonomous_output_pushes_to_live_sink_with_barge_in_when_enabled(
+        self, connector
+    ):
+        connector.barge_in_enabled = True
         delivered = []
 
         def response_sink(response):

@@ -47,6 +47,9 @@ gecx_connector:
 
     initial_message: "Hello"
     enable_partial_responses: true
+    # Temporary safety switch. When false, no GECX prompt can be interrupted
+    # during playback. Only autonomous/no-input prompts are eligible when true.
+    barge_in_enabled: false
     force_input_format: "wxcc"
     turn_response_timeout_seconds: 30
     # Queued after gateway VAD speech end so CES can endpoint short utterances.

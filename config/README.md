@@ -131,6 +131,8 @@ connectors:
       output_speech_rms_threshold: 200
       output_speech_start_frames: 2
       output_speech_preroll_ms: 100
+      # Keep GECX prompt interruption disabled while barge-in is under review.
+      barge_in_enabled: false
       force_input_format: "wxcc"
       turn_response_timeout_seconds: 30
       # Trailing codec silence for reliable CES audio endpoint detection.
@@ -158,7 +160,8 @@ suppressed, allowing the post-input CES answer to remain attached to the active
 WxCC response stream. Outside a caller-owned turn, autonomous CES prompt audio
 is pushed directly to the active WxCC stream instead of waiting for another
 caller frame to drain it. Those autonomous chunks set
-`is_barge_in_enabled=true`; caller-triggered and greeting chunks remain false.
+`is_barge_in_enabled` from the `barge_in_enabled` connector setting, which
+defaults to `false`; caller-triggered and greeting chunks always remain false.
 
 See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
 [GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and

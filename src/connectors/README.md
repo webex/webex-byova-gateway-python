@@ -162,7 +162,7 @@ Experience) through the CES `BidiRunSession` API.
   suppressing an overlapping stale no-input prompt without dropping the reply
 - Streams 8 kHz mu-law CES output as BYOVA `CHUNK` responses
 - Pushes autonomous CES no-input prompts directly to the active WxCC stream and
-  enables barge-in for those open prompts
+  optionally enables barge-in for those open prompts (disabled by default)
 - Suppresses only a long low-energy prefix before detected prompt speech;
   normal short CES frames retain the direct streaming path
 - Emits exactly one normal or terminal `FINAL` after the ordered chunks

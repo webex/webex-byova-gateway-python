@@ -1154,13 +1154,17 @@ class GECXStreamingSession:
                 self._turn_audio_bytes += len(audio_bytes)
                 chunk_index = self._turn_audio_chunk_count
                 total_bytes = self._turn_audio_bytes
+            barge_in_enabled = (
+                autonomous_output and self.connector.barge_in_enabled
+            )
             response = self.connector.create_response(
                 conversation_id=self.conversation_id,
                 message_type="audio",
                 audio_content=audio_bytes,
                 # CES no-input prompts can remain open while waiting for the
-                # caller. They must allow WxCC to keep forwarding caller audio.
-                barge_in_enabled=autonomous_output,
+                # caller. Barge-in is opt-in while the temporary GECX safety
+                # switch remains disabled.
+                barge_in_enabled=barge_in_enabled,
                 response_type="chunk",
             )
             self._publish_response_locked(response)
@@ -1174,7 +1178,7 @@ class GECXStreamingSession:
                 len(audio_bytes),
                 time.monotonic() - self._turn_started_at,
                 "async" if autonomous_output else "turn",
-                autonomous_output,
+                barge_in_enabled,
             )
         else:
             self.logger.debug(
@@ -1453,6 +1457,10 @@ class GECXConnector(IVendorConnector):
         )
         self.initial_message = config.get("initial_message", "Hello")
         self.enable_partial_responses = config.get("enable_partial_responses", True)
+        # Keep prompt interruption opt-in until the GECX barge-in path is
+        # validated end to end. Greeting and caller-owned output are always
+        # non-bargeable; this flag affects autonomous/no-input prompts only.
+        self.barge_in_enabled = bool(config.get("barge_in_enabled", False))
         self.force_input_format = config.get("force_input_format", "").lower()
         self.turn_response_timeout_seconds = float(
             config.get("turn_response_timeout_seconds", 30.0)

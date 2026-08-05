@@ -14,8 +14,9 @@ immediately. A guarded speech gate suppresses only an anomalously long,
 low-energy prefix and retains bounded pre-roll before prompt speech. Each agent
 turn ends with exactly one `FINAL` when CES marks it complete; terminal turns
 place `TRANSFER_TO_AGENT` or `SESSION_END` on that final response. Autonomous
-CES no-input prompts are pushed directly to the active WxCC stream and enable
-barge-in while CES keeps the prompt turn open.
+CES no-input prompts are pushed directly to the active WxCC stream. Barge-in
+is disabled by default and can be enabled only for those prompts after the
+interruption path is validated end to end.
 
 ## Prerequisites
 
@@ -96,6 +97,8 @@ gecx_connector:
     output_speech_preroll_ms: 100
     initial_message: "Hello"
     enable_partial_responses: true
+    # Keep prompt interruption disabled until the barge-in path is validated.
+    barge_in_enabled: false
     force_input_format: "wxcc"
     turn_response_timeout_seconds: 30
     # Omit auth entirely to use Application Default Credentials (recommended on
@@ -189,8 +192,10 @@ CES can also produce an autonomous no-input prompt after the preceding
 caller-owned response has already reached `FINAL`. The connector publishes
 those chunks through the active gateway response sink immediately; it does not
 wait for a later caller frame to drain the connector queue. Autonomous chunks
-set `is_barge_in_enabled=true` so WxCC continues forwarding caller audio while
-CES waits for an interruption or a reply.
+set `is_barge_in_enabled` from the connector's `barge_in_enabled` setting. It
+defaults to `false`; set it to `true` only after the interruption path is
+validated end to end. When enabled, WxCC continues forwarding caller audio
+while CES waits for an interruption or a reply.
 
 When gateway VAD emits `START_OF_INPUT`, the connector opens an isolated caller
 turn and waits for CES to acknowledge the committed audio with a recognition
@@ -239,9 +244,10 @@ under the top-level `voice_activity_detection` block in `config/config.yaml`.
 
 CES normally streams TTS output as small frames. The connector places normal
 frames directly in `Prompt.audio_content` with `response_type=CHUNK`.
-Greeting and caller-triggered reply chunks keep `is_barge_in_enabled=false`;
-autonomous no-input chunks use `true` because CES can wait indefinitely for the
-caller without emitting `turn_completed`. If the first CES frame is both longer than
+Greeting and caller-triggered reply chunks keep `is_barge_in_enabled=false`.
+Autonomous no-input chunks use the `barge_in_enabled` connector setting, which
+defaults to `false`; when enabled, it prevents an open CES no-input prompt from
+blocking caller interruption. If the first CES frame is both longer than
 `output_leading_audio_min_ms` and contains no sustained speech, the connector
 drops low-energy frames until speech is detected and keeps
 `output_speech_preroll_ms` before that boundary. It does not accumulate a full
@@ -381,6 +387,7 @@ window for an `EndSession` that follows the final TTS frames.
 | `service_account_key` | No | Path to SA JSON; omit to use ADC |
 | `initial_message` | No | Text sent when the CES stream opens (default: `Hello`) |
 | `enable_partial_responses` | No | Request CES text streaming for logs, terminal-cue detection, and text-only fallback |
+| `barge_in_enabled` | No | Allow interruption of autonomous/no-input prompt playback (default: `false`; greeting and caller-triggered replies always remain non-bargeable) |
 | `output_sample_rate_hertz` | No | Must be `8000` for the current raw CHUNK path |
 | `output_audio_encoding` | No | Must be `MULAW` for the current raw CHUNK path |
 | `suppress_long_leading_audio` | No | Guard anomalously long low-energy CES output before prompt speech (default: `true`) |
@@ -424,7 +431,7 @@ and grant the represented identity `roles/ces.client`.
 | Long static/noise before a prompt | Look for `gecx_long_leading_audio_detected` followed by `gecx_leading_audio_suppressed`; tune the guarded output settings only with captured CES evidence. |
 | Garbled speech | Confirm the gateway logs the declared WxCC encoding/sample rate; use `force_input_format: "wxcc"` only when the client omits metadata |
 | Agent recognizes the caller but its reply is not audible | Confirm `gecx_pre_input_output_suppressed` is followed by `gecx_caller_input_acknowledged`, `gecx_first_audio_chunk`, and `gecx_streamed_turn_complete` for the same conversation. |
-| CES logs a no-input prompt but the caller does not hear it | Confirm `gecx_first_audio_chunk` reports `delivery_mode=async` and `barge_in_enabled=True`; verify the active WxCC stream did not cancel before that timestamp. |
+| CES logs a no-input prompt but the caller does not hear it | Confirm `gecx_first_audio_chunk` reports `delivery_mode=async`; its `barge_in_enabled` value should match connector configuration. Verify the active WxCC stream did not cancel before that timestamp. |
 | No response after `END_OF_INPUT` | Check for `turn_completed` or a turn-completion timeout in `[GECX]` logs; increase `turn_response_timeout_seconds` if the agent regularly needs more than 30 seconds |
 | `GoAway` from CES | The connector intentionally emits one `SESSION_END` and half-closes CES; it does not reconnect in the current implementation |
 | Import error | `pip install google-cloud-ces` |

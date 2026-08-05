@@ -39,8 +39,8 @@ The sample includes:
   with guarded suppression of anomalously long low-energy pre-roll and one
   ordered `FINAL` per completed normal or terminal turn
 - Direct delivery of autonomous CES no-input prompts to the active WxCC stream;
-  those prompts enable barge-in while caller-triggered replies retain ordered
-  gateway speech boundaries
+  barge-in is disabled by default and can be enabled only for those prompts,
+  while caller-triggered replies retain ordered gateway speech boundaries
 - gRPC and HTTP health checks
 - A development monitoring dashboard
 - Unit tests and local gRPC smoke-test utilities
