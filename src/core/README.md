@@ -55,6 +55,8 @@ The gRPC server implements the `VoiceVirtualAgentServicer` interface:
 - Bidirectional streaming for real-time voice communication
 - Independent bounded ingress/response queues and incremental connector
   iterator consumption, including raw BYOVA `CHUNK` output
+- A connector response sink for autonomous full-duplex output produced after a
+  request-owned response iterator has completed
 - Session lifecycle tracking (start, message, end events)
 - Automatic session cleanup on stream termination
 - Error handling and logging

@@ -100,6 +100,8 @@ webex-byova-gateway-python/
 - Manages conversation state through `ConversationProcessor` instances
 - Handles bidirectional streaming with bounded request and response queues so caller input
   ingestion remains independent from ordered connector response production
+- Attaches a connector response sink so autonomous full-duplex prompts can be
+  delivered without waiting for another caller request frame
 - Routes requests to the appropriate virtual agent via `VirtualAgentRouter`
 - Tracks connections and manages session lifecycle
 

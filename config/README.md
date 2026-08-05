@@ -155,7 +155,10 @@ until CES sends a recognition result. An interruption signal alone does not
 open the gate because CES can send the stale turn completion immediately after
 that signal. Any autonomous no-input prompt that overlaps the caller turn is
 suppressed, allowing the post-input CES answer to remain attached to the active
-WxCC response stream.
+WxCC response stream. Outside a caller-owned turn, autonomous CES prompt audio
+is pushed directly to the active WxCC stream instead of waiting for another
+caller frame to drain it. Those autonomous chunks set
+`is_barge_in_enabled=true`; caller-triggered and greeting chunks remain false.
 
 See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
 [GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and

@@ -18,7 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Generator, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, Iterator, Optional, Tuple
 
 try:
     import audioop
@@ -29,6 +29,8 @@ except ImportError:
     audioop = None
 
 try:
+    import pickle
+
     from google.api_core import client_options as client_options_lib
     from google.api_core import exceptions as google_exceptions
     from google.auth.transport.requests import Request
@@ -36,7 +38,6 @@ try:
     from google.oauth2 import service_account
     from google.oauth2.credentials import Credentials as OAuth2Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
-    import pickle
 
     CES_AVAILABLE = True
 except ImportError:
@@ -121,6 +122,9 @@ class GECXStreamingSession:
         session_path: str,
         deployment_path: str,
         initial_message: Optional[str] = None,
+        async_response_sink: Optional[
+            Callable[[Dict[str, Any]], bool]
+        ] = None,
     ) -> None:
         self.connector = connector
         self.conversation_id = conversation_id
@@ -144,6 +148,12 @@ class GECXStreamingSession:
         self._terminal_decision: Optional[GECXTerminalDecision] = None
         self._join_attempted = False
         self._started_at = time.monotonic()
+        self._async_response_sink = async_response_sink
+        self._turn_response_waiters = 0
+        # Reserve the greeting for start_conversation's pull iterator even if
+        # CES emits it before that generator begins iterating.
+        self._caller_response_expected = bool(initial_message)
+        self._output_turn_active = False
         # CES streams text and TTS output separately during an agent turn. Text
         # is retained only as a transcript/fallback; each audio frame is emitted
         # immediately as raw telephony audio so WxCC can begin playback before
@@ -174,6 +184,32 @@ class GECXStreamingSession:
         self._suppressed_pre_input_messages = 0
         self._suppressed_pre_input_audio_bytes = 0
         self._suppressed_pre_input_text_chars = 0
+
+    def set_async_response_sink(
+        self, response_sink: Callable[[Dict[str, Any]], bool]
+    ) -> None:
+        """Attach the active WxCC stream and flush queued autonomous output."""
+        with self._lifecycle_lock:
+            self._async_response_sink = response_sink
+            if self._turn_response_waiters or self._caller_response_expected:
+                return
+
+            while True:
+                try:
+                    response = self.outbound_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if not response_sink(response):
+                    self.outbound_queue.put(response)
+                    break
+
+    def clear_async_response_sink(
+        self, response_sink: Callable[[Dict[str, Any]], bool]
+    ) -> None:
+        """Detach only the WxCC stream that currently owns the session."""
+        with self._lifecycle_lock:
+            if self._async_response_sink is response_sink:
+                self._async_response_sink = None
 
     def start(self) -> None:
         """Start the background bidi stream thread."""
@@ -360,6 +396,29 @@ class GECXStreamingSession:
                 break
         return responses
 
+    def _publish_response_locked(self, response: Dict[str, Any]) -> bool:
+        """Deliver a response to its active turn waiter or live WxCC stream."""
+        is_autonomous = (
+            self._turn_response_waiters == 0
+            and not self._caller_response_expected
+        )
+        if is_autonomous and self._async_response_sink is not None:
+            if self._async_response_sink(response):
+                return True
+
+        # Preserve the existing pull path for caller-owned turns and retain
+        # autonomous output when the WxCC stream is temporarily detached.
+        self.outbound_queue.put(response)
+        return True
+
+    def _mark_output_turn_started_locked(self) -> None:
+        """Open a newly observed CES output turn and reset stale completion."""
+        if self._output_turn_active:
+            return
+        self._output_turn_active = True
+        self._turn_completed.clear()
+        self._turn_started_at = time.monotonic()
+
     def begin_input_turn(self, *, expect_recognition: bool = False) -> bool:
         """Isolate the response turn when gateway VAD detects caller speech."""
         with self._lifecycle_lock:
@@ -388,6 +447,8 @@ class GECXStreamingSession:
                     break
             self._turn_started_at = time.monotonic()
             self._turn_completed.clear()
+            self._caller_response_expected = True
+            self._output_turn_active = False
             self._awaiting_input_ack = expect_recognition
             self._suppressed_pre_input_messages = 0
             self._suppressed_pre_input_audio_bytes = 0
@@ -442,6 +503,28 @@ class GECXStreamingSession:
         terminate_on_timeout: bool = True,
     ) -> Iterator[Dict[str, Any]]:
         """Yield CES audio frames immediately, followed by exactly one FINAL."""
+        with self._lifecycle_lock:
+            self._turn_response_waiters += 1
+        try:
+            yield from self._iter_turn_responses(
+                timeout,
+                terminal_grace_seconds=terminal_grace_seconds,
+                terminate_on_timeout=terminate_on_timeout,
+            )
+        finally:
+            with self._lifecycle_lock:
+                self._turn_response_waiters = max(
+                    0, self._turn_response_waiters - 1
+                )
+
+    def _iter_turn_responses(
+        self,
+        timeout: float,
+        *,
+        terminal_grace_seconds: float = 0.0,
+        terminate_on_timeout: bool = True,
+    ) -> Iterator[Dict[str, Any]]:
+        """Run the pull-based response loop while a gateway turn owns output."""
         deadline = time.monotonic() + max(0.0, timeout)
         terminal_grace_deadline: Optional[float] = None
 
@@ -471,7 +554,10 @@ class GECXStreamingSession:
                 response = None
             if response is not None:
                 yield response
-                if response.get("message_type") in {"transfer", "session_end"}:
+                if (
+                    response.get("message_type") in {"transfer", "session_end"}
+                    or response.get("response_type") == "final"
+                ):
                     return
                 continue
 
@@ -520,7 +606,10 @@ class GECXStreamingSession:
                 continue
 
             yield response
-            if response.get("message_type") in {"transfer", "session_end"}:
+            if (
+                response.get("message_type") in {"transfer", "session_end"}
+                or response.get("response_type") == "final"
+            ):
                 return
 
     def _active_text(self) -> str:
@@ -543,6 +632,8 @@ class GECXStreamingSession:
                 self._turn_audio_chunk_count = 0
                 self._turn_audio_bytes = 0
                 self._reset_output_audio_gate()
+                self._output_turn_active = False
+                self._caller_response_expected = False
 
         self.logger.info(
             "gecx_streamed_turn_complete conversation_id=%s chunks=%d "
@@ -624,6 +715,8 @@ class GECXStreamingSession:
                 self._turn_audio_chunk_count = 0
                 self._turn_audio_bytes = 0
                 self._reset_output_audio_gate()
+                self._output_turn_active = False
+                self._caller_response_expected = False
 
             # Queue the stop sentinel exactly once. The request generator also
             # checks terminal state after dequeuing to close the final race where
@@ -639,7 +732,7 @@ class GECXStreamingSession:
                 ),
             )
             if terminal_response is not None:
-                self.outbound_queue.put(terminal_response)
+                self._publish_response_locked(terminal_response)
 
             # Set completion only after the terminal response is visible so a
             # waiter cannot wake and drain the queue too early.
@@ -873,6 +966,8 @@ class GECXStreamingSession:
                         self._suppressed_pre_input_text_chars,
                     )
             else:
+                if output.text or audio_bytes:
+                    self._mark_output_turn_started_locked()
                 if output.text:
                     self.logger.info(
                         f"[{conversation_id}] [GECX] Agent: '{output.text}'"
@@ -910,6 +1005,15 @@ class GECXStreamingSession:
 
         if turn_completed:
             self._turn_completed.set()
+            if (
+                not self.is_terminal
+                and self._turn_response_waiters == 0
+                and not self._caller_response_expected
+                and self._output_turn_active
+            ):
+                final_response = self._finish_normal_turn()
+                if final_response is not None:
+                    self._publish_response_locked(final_response)
 
     def _enqueue_active_response(self, response: Dict[str, Any]) -> bool:
         """Queue a non-terminal response only while the session is active."""
@@ -1036,33 +1140,41 @@ class GECXStreamingSession:
         return b""
 
     def _emit_active_audio_chunk(self, audio_bytes: bytes) -> bool:
-        """Queue one raw CES audio frame as a BYOVA CHUNK response."""
+        """Publish one raw CES audio frame as a BYOVA CHUNK response."""
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 return False
+            autonomous_output = (
+                self._turn_response_waiters == 0
+                and not self._caller_response_expected
+            )
             with self._lock:
                 self._turn_audio_emitted = True
                 self._turn_audio_chunk_count += 1
                 self._turn_audio_bytes += len(audio_bytes)
                 chunk_index = self._turn_audio_chunk_count
                 total_bytes = self._turn_audio_bytes
-            self.outbound_queue.put(
-                self.connector.create_response(
-                    conversation_id=self.conversation_id,
-                    message_type="audio",
-                    audio_content=audio_bytes,
-                    barge_in_enabled=False,
-                    response_type="chunk",
-                )
+            response = self.connector.create_response(
+                conversation_id=self.conversation_id,
+                message_type="audio",
+                audio_content=audio_bytes,
+                # CES no-input prompts can remain open while waiting for the
+                # caller. They must allow WxCC to keep forwarding caller audio.
+                barge_in_enabled=autonomous_output,
+                response_type="chunk",
             )
+            self._publish_response_locked(response)
 
         if chunk_index == 1:
             self.logger.info(
                 "gecx_first_audio_chunk conversation_id=%s bytes=%d "
-                "elapsed_seconds=%.3f",
+                "elapsed_seconds=%.3f delivery_mode=%s "
+                "barge_in_enabled=%s",
                 self.conversation_id,
                 len(audio_bytes),
                 time.monotonic() - self._turn_started_at,
+                "async" if autonomous_output else "turn",
+                autonomous_output,
             )
         else:
             self.logger.debug(
@@ -1408,6 +1520,9 @@ class GECXConnector(IVendorConnector):
 
         self.detected_formats: Dict[str, Tuple[int, str]] = {}
         self.streaming_sessions: Dict[str, GECXStreamingSession] = {}
+        self.async_response_sinks: Dict[
+            str, Callable[[Dict[str, Any]], bool]
+        ] = {}
         self.sessions_lock = threading.Lock()
 
         credentials = self._load_credentials(config)
@@ -1544,6 +1659,32 @@ class GECXConnector(IVendorConnector):
         """Keep a caller turn open briefly after gateway VAD reports silence."""
         return True
 
+    def set_async_response_sink(
+        self,
+        conversation_id: str,
+        response_sink: Callable[[Dict[str, Any]], bool],
+    ) -> None:
+        """Attach the active WxCC stream for autonomous CES output."""
+        with self.sessions_lock:
+            self.async_response_sinks[conversation_id] = response_sink
+            stream_session = self.streaming_sessions.get(conversation_id)
+        if stream_session is not None:
+            stream_session.set_async_response_sink(response_sink)
+
+    def clear_async_response_sink(
+        self,
+        conversation_id: str,
+        response_sink: Callable[[Dict[str, Any]], bool],
+    ) -> None:
+        """Detach a completed WxCC stream without clearing a newer stream."""
+        with self.sessions_lock:
+            current_sink = self.async_response_sinks.get(conversation_id)
+            if current_sink is response_sink:
+                self.async_response_sinks.pop(conversation_id, None)
+            stream_session = self.streaming_sessions.get(conversation_id)
+        if stream_session is not None:
+            stream_session.clear_async_response_sink(response_sink)
+
     def pause_speech_turn(self, conversation_id: str, silence_ms: int) -> None:
         """Hold a possible end and strip the silence that triggered gateway VAD."""
         with self.sessions_lock:
@@ -1634,6 +1775,10 @@ class GECXConnector(IVendorConnector):
         try:
             session_id = _make_ces_session_id()
             session_path = f"{self.app_path}/sessions/{session_id}"
+            with self.sessions_lock:
+                async_response_sink = self.async_response_sinks.get(
+                    conversation_id
+                )
 
             stream_session = GECXStreamingSession(
                 connector=self,
@@ -1641,11 +1786,16 @@ class GECXConnector(IVendorConnector):
                 session_path=session_path,
                 deployment_path=self.deployment_path,
                 initial_message=self.initial_message,
+                async_response_sink=async_response_sink,
             )
             stream_session.start()
 
             with self.sessions_lock:
                 self.streaming_sessions[conversation_id] = stream_session
+                latest_sink = self.async_response_sinks.get(conversation_id)
+
+            if latest_sink is not None and latest_sink is not async_response_sink:
+                stream_session.set_async_response_sink(latest_sink)
 
             yield from stream_session.iter_turn_responses(
                 timeout=self.turn_response_timeout_seconds,
@@ -1805,6 +1955,7 @@ class GECXConnector(IVendorConnector):
         with self.sessions_lock:
             stream_session = self.streaming_sessions.pop(conversation_id, None)
             self.detected_formats.pop(conversation_id, None)
+            self.async_response_sinks.pop(conversation_id, None)
 
         if stream_session:
             stream_session.stop(
