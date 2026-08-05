@@ -37,7 +37,10 @@ The sample includes:
 - Local audio, AWS Lex, and Google CX Agent Studio connectors
 - Immediate 8 kHz mu-law BYOVA `CHUNK` output for Google CX Agent Studio,
   with guarded suppression of anomalously long low-energy pre-roll and one
-  ordered `FINAL` per normal or terminal turn
+  ordered `FINAL` per completed normal or terminal turn
+- Direct delivery of autonomous CES no-input prompts to the active WxCC stream;
+  those prompts enable barge-in while caller-triggered replies retain ordered
+  gateway speech boundaries
 - gRPC and HTTP health checks
 - A development monitoring dashboard
 - Unit tests and local gRPC smoke-test utilities

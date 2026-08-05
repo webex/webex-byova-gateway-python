@@ -6,14 +6,13 @@ and generator responses from connectors, as well as proper audio input processin
 """
 
 import threading
+from unittest.mock import MagicMock, patch
 
 import grpc
 import pytest
-from unittest.mock import MagicMock, patch, Mock
-from typing import Iterator, Dict, Any
 
-from src.core.wxcc_gateway_server import ConversationProcessor, WxCCGatewayServer
 from src.core.virtual_agent_router import VirtualAgentRouter
+from src.core.wxcc_gateway_server import ConversationProcessor, WxCCGatewayServer
 from src.generated.byova_common_pb2 import EventInput
 from src.generated.voicevirtualagent_pb2 import (
     VoiceInput,
@@ -114,6 +113,41 @@ class TestConversationProcessor:
         assert len(responses) == 1
         assert responses[0].prompts[0].text == "Hello, how can I help you?"
         assert responses[0].prompts[0].audio_content == b"audio_response_bytes"
+
+    def test_async_connector_sink_converts_and_forwards_response(
+        self, processor, mock_router
+    ):
+        forwarded = []
+
+        def grpc_sink(response):
+            forwarded.append(response)
+            return True
+
+        processor.set_async_response_sink(grpc_sink)
+
+        connector_sink = mock_router.set_async_response_sink.call_args.args[2]
+        accepted = connector_sink(
+            {
+                "message_type": "audio",
+                "text": "",
+                "audio_content": b"autonomous prompt",
+                "barge_in_enabled": True,
+                "response_type": "chunk",
+            }
+        )
+
+        assert accepted is True
+        assert len(forwarded) == 1
+        assert forwarded[0].response_type == VoiceVAResponse.ResponseType.CHUNK
+        assert forwarded[0].prompts[0].audio_content == b"autonomous prompt"
+        assert forwarded[0].prompts[0].is_barge_in_enabled is True
+
+        processor.clear_async_response_sink(grpc_sink)
+        mock_router.clear_async_response_sink.assert_called_once_with(
+            "test_agent_456",
+            "test_conv_123",
+            connector_sink,
+        )
 
     def test_initial_escalation_streams_chunk_before_transfer_final(
         self, processor, mock_router

@@ -13,14 +13,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.connectors.gecx_connector import (
+    _AUDIO_END,
+    _STREAM_STOP,
     GECXConnector,
     GECXStreamingSession,
     GECXTerminalOutcome,
     GECXTerminalReason,
-    _AUDIO_END,
-    _STREAM_STOP,
-    _make_ces_session_id,
     _ces_audio_encoding,
+    _make_ces_session_id,
 )
 
 
@@ -375,6 +375,72 @@ class TestServerMessageMapping:
         remaining = list(stream)
 
         assert [response["response_type"] for response in remaining] == ["final"]
+
+    def test_autonomous_output_pushes_to_live_sink_with_barge_in(
+        self, connector
+    ):
+        delivered = []
+
+        def response_sink(response):
+            delivered.append(response)
+            return True
+
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-autonomous",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            async_response_sink=response_sink,
+        )
+
+        session._handle_server_message(
+            self._server_output(
+                b"no-input prompt audio",
+                text="I'm still here.",
+            )
+        )
+
+        assert session.drain_responses() == []
+        assert len(delivered) == 1
+        assert delivered[0]["response_type"] == "chunk"
+        assert delivered[0]["audio_content"] == b"no-input prompt audio"
+        assert delivered[0]["barge_in_enabled"] is True
+
+        session._handle_server_message(
+            self._server_output(b"", turn_completed=True)
+        )
+
+        assert [response["response_type"] for response in delivered] == [
+            "chunk",
+            "final",
+        ]
+
+    def test_caller_owned_output_stays_on_ordered_pull_path(self, connector):
+        delivered = []
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-caller-owned",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            async_response_sink=lambda response: not delivered.append(response),
+        )
+
+        session.begin_input_turn()
+        session._handle_server_message(
+            self._server_output(
+                b"caller reply audio",
+                text="Here is your answer.",
+                turn_completed=True,
+            )
+        )
+
+        assert delivered == []
+        responses = list(session.iter_turn_responses(timeout=0.1))
+        assert [response["response_type"] for response in responses] == [
+            "chunk",
+            "final",
+        ]
+        assert responses[0]["barge_in_enabled"] is False
 
     def test_caller_turn_suppresses_stale_no_input_prompt_until_ces_ack(
         self, connector

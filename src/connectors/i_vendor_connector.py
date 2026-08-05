@@ -7,9 +7,9 @@ to integrate with the Webex Contact Center BYOVA Gateway.
 
 import base64
 import logging
-import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Union, Iterator
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
 
 # Common event type constants for WxCC integration
 class EventTypes:
@@ -78,6 +78,28 @@ class IVendorConnector(ABC):
     def commit_speech_turn(self, conversation_id: str) -> None:
         """Commit a held caller turn before its response wait begins."""
         del conversation_id
+
+    def set_async_response_sink(
+        self,
+        conversation_id: str,
+        response_sink: Callable[[Dict[str, Any]], bool],
+    ) -> None:
+        """Attach a live sink for vendor output produced outside a request turn.
+
+        Most connectors only produce responses while handling a gateway request
+        and therefore do not need this hook. Full-duplex connectors may override
+        it to forward autonomous vendor output, such as no-input prompts, without
+        waiting for another caller frame to drain an internal queue.
+        """
+        del conversation_id, response_sink
+
+    def clear_async_response_sink(
+        self,
+        conversation_id: str,
+        response_sink: Callable[[Dict[str, Any]], bool],
+    ) -> None:
+        """Detach a previously registered autonomous-output sink."""
+        del conversation_id, response_sink
 
     def handle_speech_boundary(
         self, conversation_id: str, message_data: Dict[str, Any]

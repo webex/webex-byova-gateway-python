@@ -222,6 +222,22 @@ class VirtualAgentRouter:
             agent_id
         ).should_merge_speech_pauses()
 
+    def set_async_response_sink(
+        self, agent_id: str, conversation_id: str, response_sink
+    ) -> None:
+        """Attach a live gateway sink for autonomous connector responses."""
+        self.get_connector_for_agent(agent_id).set_async_response_sink(
+            conversation_id, response_sink
+        )
+
+    def clear_async_response_sink(
+        self, agent_id: str, conversation_id: str, response_sink
+    ) -> None:
+        """Detach a live gateway sink from an autonomous connector."""
+        self.get_connector_for_agent(agent_id).clear_async_response_sink(
+            conversation_id, response_sink
+        )
+
     def route_request(self, agent_id: str, method: str, *args, **kwargs) -> Any:
         """
         Route a request to the appropriate connector.

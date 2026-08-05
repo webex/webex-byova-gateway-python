@@ -80,6 +80,9 @@ class ConversationProcessor:
         self._async_response_sink: Optional[
             Callable[[VoiceVAResponse], bool]
         ] = None
+        self._connector_response_sink: Optional[
+            Callable[[Dict[str, Any]], bool]
+        ] = None
         self._speech_end_lock = threading.Lock()
         self._pending_speech_end_timer: Optional[threading.Timer] = None
         self._speech_response_pending = False
@@ -113,17 +116,55 @@ class ConversationProcessor:
     def set_async_response_sink(
         self, response_sink: Callable[[VoiceVAResponse], bool]
     ) -> None:
-        """Attach the bounded stream queue used by asynchronous boundary work."""
+        """Attach the bounded stream queue used by asynchronous connector work."""
+
+        def connector_response_sink(
+            connector_response: Dict[str, Any],
+        ) -> bool:
+            grpc_response = self._convert_connector_response_to_grpc(
+                connector_response
+            )
+            if grpc_response is None:
+                return True
+            accepted = response_sink(grpc_response)
+            if accepted:
+                self.logger.debug(
+                    "Forwarded asynchronous connector response to WxCC for "
+                    "conversation %s (response_type=%s, prompts=%d, events=%d)",
+                    self.conversation_id,
+                    grpc_response.response_type,
+                    len(grpc_response.prompts),
+                    len(grpc_response.output_events),
+                )
+            return accepted
+
         with self._speech_end_lock:
             self._async_response_sink = response_sink
+            self._connector_response_sink = connector_response_sink
+
+        self.router.set_async_response_sink(
+            self.virtual_agent_id,
+            self.conversation_id,
+            connector_response_sink,
+        )
 
     def clear_async_response_sink(
         self, response_sink: Callable[[VoiceVAResponse], bool]
     ) -> None:
         """Detach one completed stream without clearing a newer reconnect."""
+        connector_response_sink = None
         with self._speech_end_lock:
             if self._async_response_sink is response_sink:
                 self._async_response_sink = None
+                connector_response_sink = self._connector_response_sink
+                self._connector_response_sink = None
+
+        if connector_response_sink is not None:
+            self.router.clear_async_response_sink(
+                self.virtual_agent_id,
+                self.conversation_id,
+                connector_response_sink,
+            )
 
     def has_async_work(self) -> bool:
         """Return whether a delayed speech boundary is still being processed."""
