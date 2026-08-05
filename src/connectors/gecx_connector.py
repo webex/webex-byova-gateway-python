@@ -13,11 +13,13 @@ import os
 import queue
 import re
 import struct
+import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, Generator, Iterator, Optional, Tuple
 
 try:
@@ -29,8 +31,6 @@ except ImportError:
     audioop = None
 
 try:
-    import pickle
-
     from google.api_core import client_options as client_options_lib
     from google.api_core import exceptions as google_exceptions
     from google.auth.transport.requests import Request
@@ -926,7 +926,10 @@ class GECXStreamingSession:
             transcript = message.recognition_result.transcript.strip()
             if transcript:
                 self.logger.debug(
-                    f"[{conversation_id}] [GECX] STT: '{transcript}'"
+                    "gecx_recognition_received conversation_id=%s "
+                    "transcript_chars=%d",
+                    conversation_id,
+                    len(transcript),
                 )
 
         if message.interruption_signal:
@@ -970,7 +973,10 @@ class GECXStreamingSession:
                     self._mark_output_turn_started_locked()
                 if output.text:
                     self.logger.info(
-                        f"[{conversation_id}] [GECX] Agent: '{output.text}'"
+                        "gecx_agent_text_received conversation_id=%s "
+                        "agent_text_chars=%d",
+                        conversation_id,
+                        len(output.text),
                     )
                     self._buffer_active_text(output.text)
 
@@ -1578,7 +1584,7 @@ class GECXConnector(IVendorConnector):
         service_account_key_path = config.get("service_account_key")
         oauth_client_id = config.get("oauth_client_id")
         oauth_client_secret = config.get("oauth_client_secret")
-        oauth_token_file = config.get("oauth_token_file", "gecx_oauth_token.pickle")
+        oauth_token_file = config.get("oauth_token_file", "gecx_oauth_token.json")
 
         if access_token:
             from google.oauth2.credentials import Credentials
@@ -1607,11 +1613,13 @@ class GECXConnector(IVendorConnector):
     ) -> OAuth2Credentials:
         scopes = ["https://www.googleapis.com/auth/cloud-platform"]
         creds = None
+        token_path = Path(token_file).expanduser()
 
-        if os.path.exists(token_file):
+        if token_path.exists():
             try:
-                with open(token_file, "rb") as token:
-                    creds = pickle.load(token)
+                creds = OAuth2Credentials.from_authorized_user_file(
+                    str(token_path), scopes
+                )
             except Exception as exc:
                 self.logger.warning(f"GECX: failed to load OAuth token: {exc}")
 
@@ -1632,12 +1640,41 @@ class GECXConnector(IVendorConnector):
                 creds = flow.run_local_server(port=8090, open_browser=True)
 
             try:
-                with open(token_file, "wb") as token:
-                    pickle.dump(creds, token)
+                self._save_oauth_credentials(creds, token_path)
             except Exception as exc:
                 self.logger.warning(f"GECX: failed to save OAuth token: {exc}")
 
         return creds
+
+    @staticmethod
+    def _save_oauth_credentials(
+        credentials: OAuth2Credentials,
+        token_path: Path,
+    ) -> None:
+        """Atomically persist authorized-user JSON with owner-only access."""
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{token_path.name}.",
+            suffix=".tmp",
+            dir=token_path.parent,
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as token:
+                token.write(credentials.to_json())
+                token.write("\n")
+                token.flush()
+                os.fsync(token.fileno())
+            os.replace(temporary_path, token_path)
+            token_path.chmod(0o600)
+        except Exception:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            temporary_path.unlink(missing_ok=True)
+            raise
 
     def create_error_response(
         self, conversation_id: str, error_message: str

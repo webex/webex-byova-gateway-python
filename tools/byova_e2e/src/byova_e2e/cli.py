@@ -384,6 +384,7 @@ def _run(args: argparse.Namespace) -> None:
                             if is_final_step
                             else step.connected_observation_seconds
                         ),
+                        max_latency_seconds=step.max_latency_seconds,
                         name=step.name,
                     )
                 )

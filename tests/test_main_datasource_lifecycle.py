@@ -23,6 +23,7 @@ def test_datasource_is_ready_before_grpc_starts_and_stops_on_shutdown():
     gateway_server = Mock()
     grpc_server = Mock()
     grpc_server.start.side_effect = lambda: events.append("grpc")
+    streaming_executor = Mock()
     lifecycle = Mock()
     lifecycle.start.side_effect = lambda: events.append("datasource")
     lifecycle.data_source_id = "source-1"
@@ -41,6 +42,12 @@ def test_datasource_is_ready_before_grpc_starts_and_stops_on_shutdown():
             patch("main.create_data_source_lifecycle", return_value=lifecycle)
         )
         stack.enter_context(patch("main.grpc.server", return_value=grpc_server))
+        create_streaming_executor = stack.enter_context(
+            patch(
+                "main.create_streaming_executor",
+                return_value=streaming_executor,
+            )
+        )
         stack.enter_context(patch("main.add_VoiceVirtualAgentServicer_to_server"))
         stack.enter_context(patch("main.health_pb2_grpc.add_HealthServicer_to_server"))
         main.main()
@@ -49,3 +56,8 @@ def test_datasource_is_ready_before_grpc_starts_and_stops_on_shutdown():
     lifecycle.stop.assert_called_once_with()
     gateway_server.shutdown.assert_called_once_with()
     grpc_server.stop.assert_called_once_with(grace=5)
+    create_streaming_executor.assert_called_once_with(gateway_server, 100)
+    streaming_executor.shutdown.assert_called_once_with(
+        wait=False,
+        cancel_futures=True,
+    )

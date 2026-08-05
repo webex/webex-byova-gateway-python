@@ -150,6 +150,46 @@ def test_loads_response_start_gate_for_speaking_during_playback(
     )
 
 
+def test_loads_per_expectation_latency_target(tmp_path: Path) -> None:
+    path = _write_plan(
+        tmp_path,
+        steps=[
+            {"action": "speak", "text": "Hello"},
+            {
+                "expect": {
+                    "outcome": "response",
+                    "maxLatencySeconds": 6.0,
+                }
+            },
+        ],
+    )
+
+    selected_test = load_test("sample", path)
+
+    assert selected_test.steps[1] == ExpectStepDefinition(
+        outcome=ExpectedOutcome.RESPONSE,
+        max_latency_seconds=6.0,
+    )
+
+
+def test_rejects_nonpositive_latency_target(tmp_path: Path) -> None:
+    path = _write_plan(
+        tmp_path,
+        steps=[
+            {"action": "speak", "text": "Hello"},
+            {
+                "expect": {
+                    "outcome": "response",
+                    "maxLatencySeconds": 0,
+                }
+            },
+        ],
+    )
+
+    with pytest.raises(PlanError, match="maxLatencySeconds must be greater than zero"):
+        load_test("sample", path)
+
+
 def test_rejects_consecutive_actions_without_an_expectation(tmp_path: Path) -> None:
     path = _write_plan(
         tmp_path,

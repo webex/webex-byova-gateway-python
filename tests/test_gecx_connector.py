@@ -5,6 +5,7 @@ Tests for the GECX (CX Agent Studio / CES) connector.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from types import SimpleNamespace
@@ -114,6 +115,70 @@ class TestGECXConnectorInit:
                 match="CHUNK streaming currently requires",
             ):
                 GECXConnector(gecx_config)
+
+
+class TestOAuthCredentials:
+    def _connector_without_init(self):
+        connector = object.__new__(GECXConnector)
+        connector.logger = logging.getLogger("test-gecx-oauth")
+        return connector
+
+    def test_loads_authorized_user_json_without_executing_object_data(
+        self, tmp_path
+    ):
+        token_file = tmp_path / "gecx_oauth_token.json"
+        token_file.write_text("{}", encoding="utf-8")
+        credentials = MagicMock(valid=True)
+
+        with patch(
+            "src.connectors.gecx_connector.OAuth2Credentials."
+            "from_authorized_user_file",
+            return_value=credentials,
+        ) as load_credentials, patch(
+            "src.connectors.gecx_connector.InstalledAppFlow.from_client_config"
+        ) as create_flow:
+            loaded = self._connector_without_init()._get_oauth_credentials(
+                "client-id",
+                "client-secret",
+                str(token_file),
+            )
+
+        assert loaded is credentials
+        load_credentials.assert_called_once_with(
+            str(token_file),
+            ["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        create_flow.assert_not_called()
+
+    def test_refresh_saves_oauth_json_atomically_with_owner_only_permissions(
+        self, tmp_path
+    ):
+        token_file = tmp_path / "gecx_oauth_token.json"
+        token_file.write_text("{}", encoding="utf-8")
+        credentials = MagicMock(
+            valid=False,
+            expired=True,
+            refresh_token=object(),
+        )
+        credentials.to_json.return_value = '{"refresh_token":"rotated"}'
+
+        with patch(
+            "src.connectors.gecx_connector.OAuth2Credentials."
+            "from_authorized_user_file",
+            return_value=credentials,
+        ):
+            loaded = self._connector_without_init()._get_oauth_credentials(
+                "client-id",
+                "client-secret",
+                str(token_file),
+            )
+
+        assert loaded is credentials
+        credentials.refresh.assert_called_once()
+        assert token_file.read_text(encoding="utf-8") == (
+            '{"refresh_token":"rotated"}\n'
+        )
+        assert os.stat(token_file).st_mode & 0o777 == 0o600
 
 
 class TestRequestGenerator:
@@ -480,6 +545,50 @@ class TestServerMessageMapping:
             "final",
         ]
         assert responses[0]["barge_in_enabled"] is False
+
+    def test_agent_text_is_not_written_to_info_logs(self, connector, caplog):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-private-text",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        private_text = "My booking code is ZXCV-1234"
+        caplog.set_level(logging.INFO)
+
+        session._handle_server_message(
+            self._server_output(b"agent audio", text=private_text)
+        )
+
+        assert private_text not in caplog.text
+        assert "agent_text_chars=28" in caplog.text
+
+    def test_caller_transcript_is_not_written_to_debug_logs(
+        self, connector, caplog
+    ):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-private-transcript",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+        )
+        private_transcript = "My loyalty number is 24680"
+        caplog.set_level(logging.DEBUG)
+
+        session._handle_server_message(
+            SimpleNamespace(
+                recognition_result=SimpleNamespace(
+                    transcript=private_transcript
+                ),
+                interruption_signal=None,
+                end_session=None,
+                go_away=None,
+                session_output=None,
+            )
+        )
+
+        assert private_transcript not in caplog.text
+        assert "transcript_chars=26" in caplog.text
 
     def test_caller_turn_suppresses_stale_no_input_prompt_until_ces_ack(
         self, connector

@@ -142,6 +142,9 @@ connectors:
       terminal_response_grace_seconds: 3
       # Omit auth settings to use Application Default Credentials.
       # service_account_key: "/path/to/service-account.json"
+      # oauth_client_id: "..."
+      # oauth_client_secret: "..."
+      # oauth_token_file: "gecx_oauth_token.json"
       agents:
         - "My GECX Agent"
 ```
@@ -162,6 +165,9 @@ is pushed directly to the active WxCC stream instead of waiting for another
 caller frame to drain it. Those autonomous chunks set
 `is_barge_in_enabled` from the `barge_in_enabled` connector setting, which
 defaults to `false`; caller-triggered and greeting chunks always remain false.
+Interactive OAuth credentials are stored as authorized-user JSON, written
+atomically with owner-only permissions. Do not reuse the former pickle token
+format; delete any old `gecx_oauth_token.pickle` file and authenticate again.
 
 See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
 [GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and

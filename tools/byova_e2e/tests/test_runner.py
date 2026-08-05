@@ -260,6 +260,39 @@ def test_required_remote_response_records_latency_and_waits_for_quiet(
     ]
 
 
+def test_scenario_rejects_response_over_latency_target(tmp_path) -> None:
+    config = replace(
+        _config(tmp_path),
+        audio_assets=_audio_assets(tmp_path, 1),
+        steps=(
+            RunAction(0),
+            RunExpectation(
+                ExpectedOutcome.RESPONSE,
+                max_latency_seconds=2.0,
+            ),
+        ),
+        response_timeout_seconds=1,
+        remote_silence_seconds=0,
+    )
+    runner = BrowserRunner(tmp_path, config)
+    page = _CommandPage()
+    server = _EventServer(
+        [
+            RunEvent("remote_audio_active", 1.0),
+            RunEvent("remote_audio_inactive", 2.0),
+            RunEvent("injection_finished", 3.0, {"injectionIndex": 0}),
+            RunEvent("remote_audio_active", 5.5),
+            RunEvent("remote_audio_inactive", 6.0),
+        ]
+    )
+
+    with pytest.raises(
+        RunFailure,
+        match=r"response latency 2\.500s exceeded target 2\.000s",
+    ):
+        runner._execute_steps(server, page, time.monotonic() + 2)
+
+
 def test_transfer_requires_two_completed_announcements(tmp_path) -> None:
     config = replace(
         _config(tmp_path),

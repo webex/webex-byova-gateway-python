@@ -41,6 +41,7 @@ class RunExpectation:
     outcome: ExpectedOutcome
     response_prompts: int = 1
     connected_observation_seconds: float = 0.0
+    max_latency_seconds: float | None = None
     name: str | None = None
 
 

@@ -224,7 +224,8 @@ step. Test plans follow Playwright conventions: top-level `use` defaults, named
           "name": "Expect one complete response",
           "expect": {
             "outcome": "response",
-            "responsePrompts": 1
+            "responsePrompts": 1,
+            "maxLatencySeconds": 6.0
           }
         }
       ]
@@ -273,6 +274,13 @@ object to override those defaults. Explicit CLI options have final precedence,
 which is useful for a one-off timeout or headed debugging run. The loader
 rejects unsupported versions, duplicate test IDs, invalid step order, and
 unknown fields before it obtains a token or places a call.
+
+`maxLatencySeconds` is an optional per-expectation upper bound from the
+preceding `injection_finished` event to the first subsequent
+`remote_audio_active` event. A run fails when the measured response-start
+latency exceeds that bound. Successful runs retain the observed value in the
+step result and run artifact; failed runs include both the observed value and
+target in the artifact error.
 
 The completed artifact records the selected test, config path and SHA-256,
 expected outcome, completed remote-prompt count, Calling SDK disconnect
@@ -329,6 +337,12 @@ byova-e2e run --destination 9999 \
 Correlate each artifact window and config SHA-256 with gateway and CES evidence:
 
 - `normal-response`: one caller turn and no terminal output event.
+  It is also the canonical latency gate. Three runs against deployed commit
+  `0bd3be9` on August 5, 2026 measured 5.779, 4.581, and 5.212 seconds from
+  caller injection completion to first remote response audio (5.191-second
+  mean; 5.779-second maximum). The committed target is at most 6.0 seconds.
+  Re-run this named scenario after each runtime or endpointing change and retain
+  its config-hashed artifact before closing SE-1943.
 - `long-response`: multiple ordered raw audio chunks, first audio before CES
   turn completion, and exactly one normal `FINAL`. It uses a 2.5-second
   remote-silence threshold so a natural pause inside streamed playback is not
@@ -347,6 +361,13 @@ Correlate each artifact window and config SHA-256 with gateway and CES evidence:
 - `task-complete`: one `SESSION_END` output event before the remote disconnect.
 - `transfer`: one `TRANSFER_TO_AGENT` output event and both configured
   post-input announcement epochs.
+
+The latency target preserves the current evidence-backed endpointing tradeoff:
+gateway end-silence and speech-resume grace remain one second each, while GECX
+appends two seconds of codec-correct endpointing silence because one second left
+short CES turns open. The longer `remoteSilenceMs: 2500` used by long-response
+and multi-turn tests affects prompt-completion observation, not response-start
+latency.
 
 ## Safety boundaries
 
