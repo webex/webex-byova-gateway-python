@@ -101,6 +101,9 @@ connectors:
   #     output_speech_preroll_ms: 100
   #     initial_message: "Hello"
   #     enable_partial_responses: true
+  #     # Temporary safety switch. When false, no GECX prompt can be
+  #     # interrupted during playback. Default: false.
+  #     barge_in_enabled: false
   #     force_input_format: "wxcc"
   #     turn_response_timeout_seconds: 30
   #     # Trailing codec silence lets CES reliably endpoint short voice turns.
