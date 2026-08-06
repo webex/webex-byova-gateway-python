@@ -7,9 +7,9 @@ to integrate with the Webex Contact Center BYOVA Gateway.
 
 import base64
 import logging
-import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Union, Iterator
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
 
 # Common event type constants for WxCC integration
 class EventTypes:
@@ -41,6 +41,82 @@ class IVendorConnector(ABC):
         """Return whether gateway VAD should observe this conversation's frames."""
         del conversation_id
         return True
+
+    def should_cleanup_on_client_stream_end(self) -> bool:
+        """Return whether an abnormal WxCC stream end should clean up state.
+
+        Connectors opt in when their vendor session cannot safely remain open
+        after cancellation or a request-stream failure. A normal half-close is
+        a WxCC continuation boundary and never invokes this capability. The
+        default preserves existing behavior for current connectors.
+        """
+        return False
+
+    def should_coalesce_speech_end_with_response(self) -> bool:
+        """Return whether END_OF_INPUT should share the connector response.
+
+        The default keeps the existing two-response gateway behavior. Streaming
+        connectors may opt in when a standalone END_OF_INPUT response would
+        apply backpressure before their completed audio response can be sent.
+        """
+        return False
+
+    def should_merge_speech_pauses(self) -> bool:
+        """Return whether gateway VAD pauses may resume the active input turn."""
+        return False
+
+    def pause_speech_turn(
+        self, conversation_id: str, silence_ms: int
+    ) -> None:
+        """Pause an active caller turn before its final boundary is committed."""
+        del conversation_id, silence_ms
+
+    def resume_speech_turn(self, conversation_id: str) -> None:
+        """Resume a caller turn whose pending end boundary was cancelled."""
+        del conversation_id
+
+    def commit_speech_turn(self, conversation_id: str) -> None:
+        """Commit a held caller turn before its response wait begins."""
+        del conversation_id
+
+    def set_async_response_sink(
+        self,
+        conversation_id: str,
+        response_sink: Callable[[Dict[str, Any]], bool],
+    ) -> None:
+        """Attach a live sink for vendor output produced outside a request turn.
+
+        Most connectors only produce responses while handling a gateway request
+        and therefore do not need this hook. Full-duplex connectors may override
+        it to forward autonomous vendor output, such as no-input prompts, without
+        waiting for another caller frame to drain an internal queue.
+        """
+        del conversation_id, response_sink
+
+    def clear_async_response_sink(
+        self,
+        conversation_id: str,
+        response_sink: Callable[[Dict[str, Any]], bool],
+    ) -> None:
+        """Detach a previously registered autonomous-output sink."""
+        del conversation_id, response_sink
+
+    def handle_speech_boundary(
+        self, conversation_id: str, message_data: Dict[str, Any]
+    ) -> Optional[Iterator[Optional[Dict[str, Any]]]]:
+        """Handle a gateway-detected speech boundary.
+
+        Utterance-buffered connectors use the end boundary to submit their
+        accumulated caller audio. Streaming connectors may override this hook
+        to coordinate asynchronously produced vendor responses.
+        """
+        boundary_kind = message_data.get("speech_boundary", {}).get("kind")
+        if (
+            self.get_audio_delivery_mode() == "utterance_buffered"
+            and boundary_kind == "speech_ended"
+        ):
+            return self.send_message(conversation_id, message_data)
+        return None
 
     @abstractmethod
     def __init__(self, config: Dict[str, Any]) -> None:

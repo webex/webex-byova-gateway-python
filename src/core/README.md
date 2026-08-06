@@ -22,6 +22,10 @@ The router is responsible for:
 - **Agent Management**: Manages agent selection and availability
 - **Session Coordination**: Coordinates sessions across different connectors
 
+The current connector set includes local audio, AWS Lex, and Google CX Agent
+Studio (`GECXConnector`). The router discovers each implementation from
+`config/config.yaml`; no provider-specific import is required in the core.
+
 **Key Methods**:
 ```python
 class VirtualAgentRouter:
@@ -49,6 +53,10 @@ The gRPC server implements the `VoiceVirtualAgentServicer` interface:
 
 **Key Features**:
 - Bidirectional streaming for real-time voice communication
+- Independent bounded ingress/response queues and incremental connector
+  iterator consumption, including raw BYOVA `CHUNK` output
+- A connector response sink for autonomous full-duplex output produced after a
+  request-owned response iterator has completed
 - Session lifecycle tracking (start, message, end events)
 - Automatic session cleanup on stream termination
 - Error handling and logging
@@ -193,4 +201,4 @@ logging:
 
 ## License
 
-This code is licensed under the [Cisco Sample Code License v1.1](../LICENSE). See the main project README for details.
+This code is licensed under the [Cisco Sample Code License v1.1](../../LICENSE). See the main project README for details.

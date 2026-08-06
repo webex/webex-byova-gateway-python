@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
+from .gateway_events import GatewayEventError, GatewayEventObserver
 from .models import (
     ExpectedOutcome,
     RunAction,
@@ -51,6 +52,7 @@ class BrowserRunner:
         self.config = config
         self.events: list[RunEvent] = []
         self.browser_diagnostics: list[str] = []
+        self._gateway_events: GatewayEventObserver | None = None
 
     def run(self) -> dict[str, Any]:
         started_at_utc = datetime.now(timezone.utc).isoformat()
@@ -59,6 +61,7 @@ class BrowserRunner:
         server.start()
         final_reason = "unknown"
         try:
+            self._begin_gateway_observation()
             with sync_playwright() as playwright:
                 browser = None
                 context = None
@@ -150,6 +153,9 @@ class BrowserRunner:
                 "observed_remote_prompt_count"
             ],
             "disconnect": finish_result["disconnect"],
+            "gateway_terminal_event": finish_result.get(
+                "gateway_terminal_event"
+            ),
             "steps": finish_result.get("steps", []),
             "events": [
                 {
@@ -177,6 +183,20 @@ class BrowserRunner:
         if not (static_root / "index.html").is_file():
             raise RunFailure("Frontend build did not create web/dist/index.html")
         return static_root
+
+    def _begin_gateway_observation(self) -> None:
+        if not self.config.require_gateway_events:
+            return
+        if not self.config.gateway_events_url:
+            raise RunFailure("Gateway event assertions require a gateway events URL")
+        if self._gateway_events is None:
+            self._gateway_events = GatewayEventObserver(
+                self.config.gateway_events_url
+            )
+        try:
+            self._gateway_events.begin()
+        except GatewayEventError as error:
+            raise RunFailure(str(error), list(self.events)) from error
 
     def _wait_for_prompt_end(
         self,
@@ -296,6 +316,14 @@ class BrowserRunner:
                     ignore_current_prompt=prior_response_active,
                 )
                 prior_response_active = True
+                latency_seconds = max(
+                    0.0,
+                    response_start.timestamp - last_injection.timestamp,
+                )
+                self._assert_latency_target(
+                    latency_seconds,
+                    step.max_latency_seconds,
+                )
                 step_results.append(
                     {
                         "index": step_index,
@@ -303,10 +331,7 @@ class BrowserRunner:
                         "name": step.name,
                         "outcome": step.outcome.value,
                         "observed_timestamp": response_start.timestamp,
-                        "latency_seconds": max(
-                            0.0,
-                            response_start.timestamp - last_injection.timestamp,
-                        ),
+                        "latency_seconds": latency_seconds,
                     }
                 )
                 continue
@@ -323,6 +348,10 @@ class BrowserRunner:
                 ignore_current_prompt=prior_response_active,
             )
             prior_response_active = False
+            self._assert_latency_target(
+                observation.latency_seconds,
+                step.max_latency_seconds,
+            )
             observations.append(observation)
             step_results.append(
                 {
@@ -334,6 +363,15 @@ class BrowserRunner:
                     "latency_seconds": observation.latency_seconds,
                 }
             )
+            gateway_terminal_event = self._assert_gateway_outcome(
+                step.outcome,
+                self._gateway_timeout_seconds(
+                    step.outcome,
+                    call_deadline,
+                    wait_for_normal=step_index == len(self.config.steps) - 1,
+                ),
+            )
+            step_results[-1]["gateway_terminal_event"] = gateway_terminal_event
 
             if step.outcome == ExpectedOutcome.SESSION_END:
                 disconnect = observation.disconnect_event
@@ -364,6 +402,47 @@ class BrowserRunner:
             observations,
             disconnect,
             step_results,
+        )
+
+    @staticmethod
+    def _assert_latency_target(
+        observed_seconds: float,
+        maximum_seconds: float | None,
+    ) -> None:
+        if maximum_seconds is not None and observed_seconds > maximum_seconds:
+            raise RunFailure(
+                f"Remote response latency {observed_seconds:.3f}s exceeded "
+                f"target {maximum_seconds:.3f}s"
+            )
+
+    def _assert_gateway_outcome(
+        self,
+        expected: ExpectedOutcome,
+        timeout_seconds: float,
+    ) -> dict[str, Any] | None:
+        if self._gateway_events is None:
+            return None
+        try:
+            return self._gateway_events.assert_outcome(expected, timeout_seconds)
+        except GatewayEventError as error:
+            raise RunFailure(str(error), list(self.events)) from error
+
+    def _gateway_timeout_seconds(
+        self,
+        expected: ExpectedOutcome,
+        call_deadline: float,
+        *,
+        wait_for_normal: bool,
+    ) -> float:
+        if expected in {ExpectedOutcome.SESSION_END, ExpectedOutcome.TRANSFER}:
+            configured_timeout = self.config.response_timeout_seconds
+        elif wait_for_normal:
+            configured_timeout = self.config.post_audio_grace_seconds
+        else:
+            return 0.0
+        return min(
+            configured_timeout,
+            max(0.0, call_deadline - time.monotonic()),
         )
 
     def _wait_for_response_start(
@@ -443,6 +522,14 @@ class BrowserRunner:
         disconnect: RunEvent | None,
         step_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        gateway_terminal_event = next(
+            (
+                step["gateway_terminal_event"]
+                for step in reversed(step_results)
+                if step.get("gateway_terminal_event") is not None
+            ),
+            None,
+        )
         return {
             "completion_reason": completion_reason,
             "remote_response_observed": bool(observations),
@@ -453,6 +540,7 @@ class BrowserRunner:
                 observation.prompt_count for observation in observations
             ),
             "disconnect": disconnect.details if disconnect else None,
+            "gateway_terminal_event": gateway_terminal_event,
             "steps": step_results,
         }
 
@@ -482,12 +570,21 @@ class BrowserRunner:
             self.config.require_remote_response or expected_outcome is not None
         )
         observation: ResponseObservation | None = None
+        gateway_terminal_event: dict[str, Any] | None = None
         if require_response:
             observation = self._wait_for_remote_prompts(
                 server,
                 call_deadline,
                 injection_finished,
                 wait_for_disconnect=expected_outcome == ExpectedOutcome.SESSION_END,
+            )
+            gateway_terminal_event = self._assert_gateway_outcome(
+                expected_outcome or ExpectedOutcome.RESPONSE,
+                self._gateway_timeout_seconds(
+                    expected_outcome or ExpectedOutcome.RESPONSE,
+                    call_deadline,
+                    wait_for_normal=True,
+                ),
             )
             if expected_outcome == ExpectedOutcome.SESSION_END:
                 disconnect = observation.disconnect_event
@@ -502,6 +599,7 @@ class BrowserRunner:
                     "remote_response_latency_seconds": observation.latency_seconds,
                     "observed_remote_prompt_count": observation.prompt_count,
                     "disconnect": disconnect.details,
+                    "gateway_terminal_event": gateway_terminal_event,
                 }
             if expected_outcome == ExpectedOutcome.TRANSFER:
                 if self.config.connected_observation_seconds > 0:
@@ -527,6 +625,7 @@ class BrowserRunner:
                         "remote_response_latency_seconds": None,
                         "observed_remote_prompt_count": 0,
                         "disconnect": event.details,
+                        "gateway_terminal_event": None,
                     }
         completion_reason, disconnect = self._end_call_locally(
             server, page, call_deadline
@@ -541,6 +640,7 @@ class BrowserRunner:
                 observation.prompt_count if observation else 0
             ),
             "disconnect": disconnect.details if disconnect else None,
+            "gateway_terminal_event": gateway_terminal_event,
         }
 
     def _end_call_locally(

@@ -16,12 +16,17 @@ continue with [Production Readiness](docs/PRODUCTION_READINESS.md).
 
 If you want to validate the Webex-facing path before choosing a voice-agent provider, use
 the [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md) guide.
+For Google CX Agent Studio, use the
+[GECX Setup Guide](docs/guides/byova-gecx-setup.md).
 
 ## What the Gateway Does
 
 At runtime, WxCC opens a bidirectional gRPC stream to the registered gateway endpoint. The
 gateway validates the signed Webex token, routes the conversation to the configured
 connector, and translates audio and events between WxCC and the voice-agent provider.
+Caller ingestion, ordered connector processing, and response delivery use independent
+workers with bounded per-stream queues, so WxCC can continue sending caller frames while a
+connector is still producing output.
 
 The sample includes:
 
@@ -29,7 +34,13 @@ The sample includes:
 - JWT validation for the WxCC data plane
 - Optional BYODS datasource registration and pre-expiry JWS renewal
 - A configuration-driven connector router
-- Local audio and AWS Lex connectors
+- Local audio, AWS Lex, and Google CX Agent Studio connectors
+- Immediate 8 kHz mu-law BYOVA `CHUNK` output for Google CX Agent Studio,
+  with guarded suppression of anomalously long low-energy pre-roll and one
+  ordered `FINAL` per completed normal or terminal turn
+- Direct delivery of autonomous CES no-input prompts to the active WxCC stream;
+  barge-in is disabled by default and can be enabled only for those prompts,
+  while caller-triggered replies retain ordered gateway speech boundaries
 - gRPC and HTTP health checks
 - A development monitoring dashboard
 - Unit tests and local gRPC smoke-test utilities
@@ -42,8 +53,9 @@ The sample includes:
 > authorization, data-source registration, gateway configuration, and the Contact Center
 > call flow. If you have not selected a provider, use the
 > [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md) guide for a
-> vendor-neutral end-to-end validation. The abbreviated steps below only install and run
-> the gateway code.
+> vendor-neutral end-to-end validation. For Google CX Agent Studio, use the
+> [GECX Setup Guide](docs/guides/byova-gecx-setup.md). The abbreviated steps below only
+> install and run the gateway code.
 
 ### Webex Prerequisites for End-to-End Testing
 
@@ -166,6 +178,7 @@ endpoint testing, logs, and troubleshooting.
 | Configure the monitoring dashboard | [Monitoring Interface](src/monitoring/README.md) |
 | Add or configure connectors | [Connector Guide](src/connectors/README.md) |
 | Configure AWS Lex | [AWS Lex Configuration](docs/AWS_LEX_CONFIGURATION.md) |
+| Configure Google CX Agent Studio | [GECX Setup Guide](docs/guides/byova-gecx-setup.md) |
 | Configure TLS and network security | [Security Configuration](docs/Security-Configuration.md) |
 | Prepare a derivative for production | [Production Readiness](docs/PRODUCTION_READINESS.md) |
 
@@ -197,6 +210,10 @@ production without the controls described in the production guide.
 - **Local Audio**: Uses the included WAV files for local development and vendor-neutral
   end-to-end validation. See [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md).
 - **AWS Lex**: Connects to Amazon Lex V2 through the standard AWS SDK credential chain.
+- **Google CX Agent Studio**: Streams caller audio to Gemini Enterprise for Customer
+  Experience through CES `BidiRunSession`. Caller speech starts an isolated response turn,
+  so an overlapping CES no-input prompt cannot consume the caller's post-input reply. See the
+  [GECX Setup Guide](docs/guides/byova-gecx-setup.md).
 
 Connectors implement `IVendorConnector` and are loaded from `config/config.yaml`. See the
 [Connector Guide](src/connectors/README.md) for the interface contract and extension pattern.

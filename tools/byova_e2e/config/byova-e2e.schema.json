@@ -65,6 +65,9 @@
         "responseTimeoutSeconds": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "requireGatewayEvents": {
+          "type": "boolean"
         }
       }
     },
@@ -214,6 +217,10 @@
             },
             "responsePrompts": {
               "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "maxLatencySeconds": {
+              "type": "number",
               "exclusiveMinimum": 0
             },
             "connectedObservationSeconds": {

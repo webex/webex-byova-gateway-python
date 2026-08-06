@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from byova_e2e.gateway_events import GatewayEventError
 from byova_e2e.models import (
     AudioAsset,
     ExpectedOutcome,
@@ -110,6 +111,19 @@ class _CommandPage:
 
     def evaluate(self, _script: str, payload: dict[str, object]) -> None:
         self.commands.append(payload)
+
+
+class _GatewayObserver:
+    def __init__(self, result=None, error: GatewayEventError | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[ExpectedOutcome, float]] = []
+
+    def assert_outcome(self, expected, timeout_seconds):
+        self.calls.append((expected, timeout_seconds))
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 def _audio_assets(tmp_path: Path, count: int) -> tuple[AudioAsset, ...]:
@@ -260,6 +274,39 @@ def test_required_remote_response_records_latency_and_waits_for_quiet(
     ]
 
 
+def test_scenario_rejects_response_over_latency_target(tmp_path) -> None:
+    config = replace(
+        _config(tmp_path),
+        audio_assets=_audio_assets(tmp_path, 1),
+        steps=(
+            RunAction(0),
+            RunExpectation(
+                ExpectedOutcome.RESPONSE,
+                max_latency_seconds=2.0,
+            ),
+        ),
+        response_timeout_seconds=1,
+        remote_silence_seconds=0,
+    )
+    runner = BrowserRunner(tmp_path, config)
+    page = _CommandPage()
+    server = _EventServer(
+        [
+            RunEvent("remote_audio_active", 1.0),
+            RunEvent("remote_audio_inactive", 2.0),
+            RunEvent("injection_finished", 3.0, {"injectionIndex": 0}),
+            RunEvent("remote_audio_active", 5.5),
+            RunEvent("remote_audio_inactive", 6.0),
+        ]
+    )
+
+    with pytest.raises(
+        RunFailure,
+        match=r"response latency 2\.500s exceeded target 2\.000s",
+    ):
+        runner._execute_steps(server, page, time.monotonic() + 2)
+
+
 def test_transfer_requires_two_completed_announcements(tmp_path) -> None:
     config = replace(
         _config(tmp_path),
@@ -362,3 +409,55 @@ def test_transfer_rejects_disconnect_during_connected_observation(tmp_path) -> N
             time.monotonic() + 1,
             1,
         )
+
+
+def test_transfer_scenario_records_gateway_terminal_event(tmp_path) -> None:
+    config = replace(
+        _config(tmp_path),
+        audio_assets=_audio_assets(tmp_path, 1),
+        steps=(
+            RunAction(0),
+            RunExpectation(ExpectedOutcome.TRANSFER, response_prompts=2),
+        ),
+        response_timeout_seconds=1,
+        remote_silence_seconds=0,
+    )
+    runner = BrowserRunner(tmp_path, config)
+    gateway_event = {
+        "event_type": "terminal",
+        "conversation_id": "conversation-1",
+        "outcome": "TRANSFER_TO_AGENT",
+    }
+    observer = _GatewayObserver(result=gateway_event)
+    runner._gateway_events = observer
+    page = _CommandPage()
+    server = _EventServer(
+        [
+            RunEvent("remote_audio_active", 1.0),
+            RunEvent("remote_audio_inactive", 2.0),
+            RunEvent("injection_finished", 3.0, {"injectionIndex": 0}),
+            RunEvent("remote_audio_active", 4.0),
+            RunEvent("remote_audio_inactive", 5.0),
+            RunEvent("remote_audio_active", 6.0),
+            RunEvent("remote_audio_inactive", 7.0),
+            RunEvent("disconnect", 8.0, {"initiatedByCaller": True}),
+        ]
+    )
+
+    result = runner._execute_steps(server, page, time.monotonic() + 2)
+
+    assert observer.calls[0][0] == ExpectedOutcome.TRANSFER
+    assert result["gateway_terminal_event"] == gateway_event
+    assert result["steps"][-1]["gateway_terminal_event"] == gateway_event
+
+
+def test_gateway_event_mismatch_becomes_run_failure(tmp_path) -> None:
+    runner = BrowserRunner(tmp_path, _config(tmp_path))
+    runner._gateway_events = _GatewayObserver(
+        error=GatewayEventError(
+            "Gateway terminal outcome mismatch: expected transfer, observed SESSION_END"
+        )
+    )
+
+    with pytest.raises(RunFailure, match="terminal outcome mismatch"):
+        runner._assert_gateway_outcome(ExpectedOutcome.TRANSFER, 0)

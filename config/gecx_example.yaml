@@ -1,0 +1,99 @@
+# GECX (CX Agent Studio / CES) connector example
+# Copy relevant sections into config/config.yaml
+
+gecx_connector:
+  type: "gecx_connector"
+  class: "GECXConnector"
+  module: "connectors.gecx_connector"
+  config:
+    # Required: project, location, and the CES application (app) id.
+    # These come straight from the CX Agent Studio app URL:
+    #   https://ces.cloud.google.com/projects/PROJECT/locations/LOCATION/apps/APP_ID
+    project_id: "YOUR_PROJECT_ID"
+    location: "us"
+    application_id: "YOUR_APPLICATION_ID"
+
+    # deployment is OPTIONAL. If omitted, the session runs against the app's
+    # ROOT (draft) agent -- i.e. no published deployment is required. Provide a
+    # deployment only if you want to pin to a specific published version:
+    # deployment_id: "YOUR_DEPLOYMENT_ID"
+    # deployment: "projects/PROJECT/locations/us/apps/APP_ID/deployments/DEPLOYMENT_ID"
+
+    # entry_agent (optional): run against a specific sub-agent instead of root:
+    # entry_agent: "projects/PROJECT/locations/us/apps/APP_ID/agents/AGENT_ID"
+
+    # api_endpoint (optional): defaults to the regional CES runtime endpoint
+    # ces.<location>.rep.googleapis.com (e.g. ces.us.rep.googleapis.com), which
+    # is what serves the BidiRunSession streaming RPC. Only override if needed.
+    # api_endpoint: "ces.us.rep.googleapis.com"
+
+    language_code: "en-US"
+
+    # Input can be normalized from WxCC metadata. The current raw BYOVA CHUNK
+    # output path requires exactly 8 kHz MULAW; other output combinations fail
+    # connector initialization until explicit format support is added.
+    input_sample_rate_hertz: 8000
+    input_audio_encoding: "MULAW"
+    output_sample_rate_hertz: 8000
+    output_audio_encoding: "MULAW"
+
+    # Guard against a provider returning a multi-second low-energy audio asset
+    # before synthesized speech. Short CES frames remain on the direct path.
+    suppress_long_leading_audio: true
+    output_leading_audio_min_ms: 5000
+    output_speech_rms_threshold: 200
+    output_speech_start_frames: 2
+    output_speech_preroll_ms: 100
+
+    initial_message: "Hello"
+    enable_partial_responses: true
+    # Temporary safety switch. When false, no GECX prompt can be interrupted
+    # during playback. Only autonomous/no-input prompts are eligible when true.
+    barge_in_enabled: false
+    force_input_format: "wxcc"
+    turn_response_timeout_seconds: 30
+    # Queued after gateway VAD speech end so CES can endpoint short utterances.
+    # Keep margin above one second; an exact one-second tail can leave a CES
+    # audio turn open until the caller speaks again.
+    endpointing_silence_ms: 2000
+    # Buffer through gateway VAD end so CES receives one intact caller turn.
+    input_preroll_ms: 500
+    # Retain only bounded onset audio when speech resumes during end grace.
+    input_pause_preroll_ms: 250
+    # Some EndSession signals follow the final TTS frames.
+    terminal_response_grace_seconds: 3
+
+    # --- Escalation / human handoff -------------------------------------
+    # CES signals escalation as an EndSession carrying a metadata Struct. The
+    # connector logs that metadata ("EndSession metadata: {...}") so you can see
+    # exactly what your agent emits. If any of these metadata keys is truthy, the
+    # call is transferred to a human (WxCC TRANSFER_TO_AGENT). Defaults below --
+    # override to match what your CX Agent Studio agent actually sends.
+    # transfer_metadata_keys:
+    #   - "transfer"
+    #   - "transfer_to_agent"
+    #   - "transfer_to_human"
+    #   - "escalate"
+    #   - "escalation"
+    #   - "escalated"
+    #   - "session_escalated"
+    #   - "handoff"
+    #   - "human_handoff"
+    #   - "live_agent_handoff"
+    # A transfer is also triggered if a reason/type-style metadata value contains
+    # one of these substrings:
+    # transfer_reason_keywords: ["transfer", "escalat", "human", "live agent", "live_agent", "handoff"]
+    # transfer_reason_metadata_keys: ["reason", "end_reason", "type", "status", "intent", "action"]
+
+    # Authentication (choose one). If NONE are set, Application Default
+    # Credentials are used -- recommended on Google Cloud (Cloud Run/GKE/GCE),
+    # where the runtime service account needs role roles/ces.client
+    # (permission ces.sessions.bidiRunSession).
+    # service_account_key: "/path/to/ces-service-account.json"
+    # access_token: "ya29...."  # short-lived, not recommended for production
+    # oauth_client_id: "..."
+    # oauth_client_secret: "..."
+    # oauth_token_file: "gecx_oauth_token.json"
+
+    agents:
+      - "My GECX Agent"

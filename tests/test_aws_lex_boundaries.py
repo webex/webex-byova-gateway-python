@@ -22,5 +22,5 @@ def test_lex_appends_each_frame_and_flushes_only_on_central_end(connector):
         assert list(connector.send_message("conv", {"input_type": "audio", "audio_data": b"frame"})) == [None]
     append.assert_called_once_with(b"frame", "conv")
     with patch.object(connector, "_send_audio_to_lex", return_value=iter([{"message_type": "response"}])) as flush:
-        assert list(connector.send_message("conv", {"input_type": "speech_boundary", "speech_boundary": {"kind": "speech_ended"}})) == [{"message_type": "response"}]
+        assert list(connector.handle_speech_boundary("conv", {"input_type": "speech_boundary", "speech_boundary": {"kind": "speech_ended"}})) == [{"message_type": "response"}]
     flush.assert_called_once_with("conv")

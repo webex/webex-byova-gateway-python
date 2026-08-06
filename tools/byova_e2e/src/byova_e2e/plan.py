@@ -22,6 +22,7 @@ USE_FIELDS = {
     "callTimeoutSeconds",
     "postAudioGraceSeconds",
     "responseTimeoutSeconds",
+    "requireGatewayEvents",
 }
 
 
@@ -48,6 +49,7 @@ class ExpectStepDefinition:
     name: str | None = None
     response_prompts: int = 1
     connected_observation_seconds: float = 0.0
+    max_latency_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class TestDefinition:
     call_timeout_seconds: float | None = None
     post_audio_grace_seconds: float | None = None
     response_timeout_seconds: float | None = None
+    require_gateway_events: bool | None = None
     expected_outcome: ExpectedOutcome = ExpectedOutcome.RESPONSE
     expected_response_prompts: int = 1
     connected_observation_seconds: float = 0.0
@@ -226,6 +229,7 @@ def _parse_test(
         call_timeout_seconds=merged_use.get("callTimeoutSeconds"),
         post_audio_grace_seconds=merged_use.get("postAudioGraceSeconds"),
         response_timeout_seconds=merged_use.get("responseTimeoutSeconds"),
+        require_gateway_events=merged_use.get("requireGatewayEvents"),
         expected_outcome=final_expectation.outcome,
         expected_response_prompts=final_expectation.response_prompts,
         connected_observation_seconds=(
@@ -299,7 +303,12 @@ def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:
     expect = _object(step.get("expect"), f"{location}.expect")
     _reject_unknown(
         expect,
-        {"outcome", "responsePrompts", "connectedObservationSeconds"},
+        {
+            "outcome",
+            "responsePrompts",
+            "connectedObservationSeconds",
+            "maxLatencySeconds",
+        },
         f"{location}.expect",
     )
     outcome_value = _nonempty_string(
@@ -321,6 +330,14 @@ def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:
         expect.get("connectedObservationSeconds", 0),
         f"{location}.expect.connectedObservationSeconds",
     )
+    max_latency_seconds = (
+        _positive_number(
+            expect["maxLatencySeconds"],
+            f"{location}.expect.maxLatencySeconds",
+        )
+        if "maxLatencySeconds" in expect
+        else None
+    )
     if (
         connected_observation_seconds > 0
         and expected_outcome != ExpectedOutcome.TRANSFER
@@ -334,6 +351,7 @@ def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:
         outcome=expected_outcome,
         response_prompts=expected_response_prompts,
         connected_observation_seconds=connected_observation_seconds,
+        max_latency_seconds=max_latency_seconds,
     )
 
 
@@ -345,7 +363,7 @@ def _parse_use(raw: Any, location: str) -> dict[str, Any]:
         field_location = f"{location}.{field}"
         if field == "voice":
             parsed[field] = _nonempty_string(raw_value, field_location)
-        elif field == "headless":
+        elif field in {"headless", "requireGatewayEvents"}:
             if not isinstance(raw_value, bool):
                 raise TestPlanError(f"{field_location} must be a boolean")
             parsed[field] = raw_value

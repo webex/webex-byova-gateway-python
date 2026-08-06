@@ -4,6 +4,16 @@
 gateway:
   host: "0.0.0.0"
   port: 50051
+  # Long-lived caller streams use a dedicated executor so they cannot starve
+  # health and unary RPCs on the shared gRPC worker pool.
+  streaming_max_workers: 100
+  # Bound per-stream buffering while request ingestion, connector processing,
+  # and response delivery run independently.
+  request_queue_maxsize: 100
+  response_queue_maxsize: 100
+  # Safety ceiling for legacy complete-WAV prompt responses. GECX raw CHUNK
+  # streaming preserves order without this playback delay.
+  max_terminal_playback_seconds: 30
 
 # Voice activity detection controls. The configured detector implementation is internal.
 voice_activity_detection:
@@ -12,6 +22,10 @@ voice_activity_detection:
   # One second balances natural pauses with responsive turn-taking for
   # utterance-buffered connectors such as AWS Lex.
   end_silence_ms: 1000
+  # GECX can merge speech that resumes within one second after an apparent
+  # turn end. Combined with end_silence_ms, this creates a two-second bounded
+  # natural-pause window without holding every completed turn indefinitely.
+  speech_end_grace_ms: 1000
   # Used only when WxCC omits the mandatory audio_input.sample_rate_hertz field.
   fallback_sample_rate_hertz: 8000
 
@@ -61,6 +75,48 @@ connectors:
         channels: 1
         encoding: "ulaw"
       agents: []
+
+  # Google CX Agent Studio (GECX / CES BidiRunSession)
+  # gecx_connector:
+  #   type: "gecx_connector"
+  #   class: "GECXConnector"
+  #   module: "connectors.gecx_connector"
+  #   config:
+  #     project_id: "YOUR_PROJECT_ID"
+  #     location: "us"
+  #     application_id: "YOUR_APPLICATION_ID"
+  #     # deployment_id is optional; omit it to use the app's root/draft agent.
+  #     # deployment_id: "YOUR_DEPLOYMENT_ID"
+  #     language_code: "en-US"
+  #     input_sample_rate_hertz: 8000
+  #     input_audio_encoding: "MULAW"
+  #     output_sample_rate_hertz: 8000
+  #     output_audio_encoding: "MULAW"
+  #     # Suppress only anomalously long low-energy CES pre-roll while retaining
+  #     # 100ms before detected prompt speech. Normal short frames pass through.
+  #     suppress_long_leading_audio: true
+  #     output_leading_audio_min_ms: 5000
+  #     output_speech_rms_threshold: 200
+  #     output_speech_start_frames: 2
+  #     output_speech_preroll_ms: 100
+  #     initial_message: "Hello"
+  #     enable_partial_responses: true
+  #     # Temporary safety switch. When false, no GECX prompt can be
+  #     # interrupted during playback. Default: false.
+  #     barge_in_enabled: false
+  #     force_input_format: "wxcc"
+  #     turn_response_timeout_seconds: 30
+  #     # Trailing codec silence lets CES reliably endpoint short voice turns.
+  #     endpointing_silence_ms: 2000
+  #     # Preserve speech before VAD start, merge bounded resumed-speech onset,
+  #     # and catch delayed EndSession after TTS.
+  #     input_preroll_ms: 500
+  #     input_pause_preroll_ms: 250
+  #     terminal_response_grace_seconds: 3
+  #     # Omit auth settings to use Application Default Credentials.
+  #     # service_account_key: "/path/to/service-account.json"
+  #     agents:
+  #       - "My GECX Agent"
 
 # Monitoring interface
 monitoring:

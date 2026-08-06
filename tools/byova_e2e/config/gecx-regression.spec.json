@@ -1,0 +1,185 @@
+{
+  "$schema": "./byova-e2e.schema.json",
+  "version": 1,
+  "use": {
+    "headless": true,
+    "voice": "Samantha",
+    "remotePromptOccurrence": 2,
+    "remoteSilenceMs": 750,
+    "initialSilenceFallbackSeconds": 10,
+    "promptTimeoutSeconds": 60,
+    "callTimeoutSeconds": 120,
+    "postAudioGraceSeconds": 5,
+    "responseTimeoutSeconds": 30,
+    "requireGatewayEvents": true
+  },
+  "tests": [
+    {
+      "id": "normal-response",
+      "title": "responds to a normal hotel request",
+      "description": "A short request receives a complete virtual-agent response.",
+      "steps": [
+        {
+          "name": "Speak the hotel request",
+          "action": "speak",
+          "text": "I need a hotel."
+        },
+        {
+          "name": "Expect one complete virtual-agent response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1,
+            "maxLatencySeconds": 6.0
+          }
+        }
+      ]
+    },
+    {
+      "id": "long-response",
+      "title": "streams one detailed hotel response",
+      "description": "A detailed answer exercises multiple ordered BYOVA audio chunks before one final response.",
+      "use": {
+        "remoteSilenceMs": 2500
+      },
+      "steps": [
+        {
+          "name": "Request a detailed hotel description",
+          "action": "speak",
+          "text": "Please give me a detailed description of all available hotel room types and amenities."
+        },
+        {
+          "name": "Expect one complete streamed response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "natural-pause",
+      "title": "keeps a bounded natural pause in one caller turn",
+      "description": "Two speech segments separated by a bounded pause remain one caller turn.",
+      "steps": [
+        {
+          "name": "Speak one request with a bounded pause",
+          "action": "speak",
+          "segments": [
+            "I'd like to book",
+            "a room in San Jose"
+          ],
+          "pauseMs": 1800
+        },
+        {
+          "name": "Expect one complete virtual-agent response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "multi-turn-response",
+      "title": "continues a hotel request across two caller turns",
+      "description": "The gateway continues ingesting caller audio after delivering a complete GECX response.",
+      "use": {
+        "remoteSilenceMs": 2500
+      },
+      "steps": [
+        {
+          "name": "Start a hotel request",
+          "action": "speak",
+          "text": "I'd like to book a hotel."
+        },
+        {
+          "name": "Expect the first complete virtual-agent response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        },
+        {
+          "name": "Continue with a room preference",
+          "action": "speak",
+          "text": "I need a queen room."
+        },
+        {
+          "name": "Expect the second complete virtual-agent response",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "speak-during-playback",
+      "title": "probes caller injection while GECX audio is playing",
+      "description": "Audio-plane probe only: the browser injects during playback and verifies the call remains healthy. Because streamed GECX chunks keep barge-in disabled until Phase 4, a green runner result does not prove that CES received the second utterance; correlate the CES transcript.",
+      "steps": [
+        {
+          "name": "Request a detailed hotel description",
+          "action": "speak",
+          "text": "Please describe all of the available hotel room types and amenities."
+        },
+        {
+          "name": "Wait only for the virtual-agent response to start",
+          "expect": {
+            "outcome": "response-start"
+          }
+        },
+        {
+          "name": "Speak a new preference during playback",
+          "action": "speak",
+          "text": "Actually, I only need a queen room."
+        },
+        {
+          "name": "Observe remote audio completion without a call failure",
+          "expect": {
+            "outcome": "response",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "task-complete",
+      "title": "ends a successfully completed task",
+      "description": "The virtual agent closes a completed interaction and WxCC disconnects the caller.",
+      "steps": [
+        {
+          "name": "Tell the virtual agent the task is complete",
+          "action": "speak",
+          "text": "Thank you, goodbye."
+        },
+        {
+          "name": "Expect WxCC to end the call",
+          "expect": {
+            "outcome": "session-end",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "transfer",
+      "title": "transfers the caller to a human agent",
+      "description": "The caller hears the CES and WxCC transfer announcement epochs.",
+      "steps": [
+        {
+          "name": "Request a human agent",
+          "action": "speak",
+          "text": "Please transfer me to a human agent."
+        },
+        {
+          "name": "Expect the CES and WxCC transfer announcements",
+          "expect": {
+            "outcome": "transfer",
+            "responsePrompts": 2
+          }
+        }
+      ]
+    }
+  ]
+}

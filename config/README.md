@@ -14,14 +14,25 @@ AWS credential chain.
 gateway:
   host: "0.0.0.0"
   port: 50051
+  streaming_max_workers: 100
+  request_queue_maxsize: 100
+  response_queue_maxsize: 100
+  max_terminal_playback_seconds: 30
 ```
 
 `host` and `port` control the insecure application listener. Production deployments should
 place it behind an approved TLS boundary or add an appropriate secure listener. See
 [Security Configuration](../docs/Security-Configuration.md).
 
-The gRPC worker count, maximum message sizes, and concurrent-stream option are currently set
-in `main.py`; values elsewhere in YAML are not production capacity controls.
+`streaming_max_workers` sizes the method-specific executor for long-lived caller streams.
+`request_queue_maxsize` and `response_queue_maxsize` bound the number of protobuf messages
+buffered per stream while caller ingestion, ordered connector processing, and WxCC response
+delivery run independently. Both queue sizes must be greater than zero. The queues bound
+memory and apply backpressure; they are not production throughput targets.
+
+`max_terminal_playback_seconds` is a safety ceiling for legacy complete-WAV
+announcement responses. GECX raw CHUNK streaming does not use this delay.
+Maximum gRPC message sizes and the concurrent-stream option remain set in `main.py`.
 
 ## Voice Activity Detection
 
@@ -63,7 +74,10 @@ Available connector documentation:
 - [Connector interface and development](../src/connectors/README.md)
 - [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
 - [AWS Lex configuration](../docs/AWS_LEX_CONFIGURATION.md)
+- [Google CX Agent Studio configuration](../docs/guides/byova-gecx-setup.md)
 - `config/aws_lex_example.yaml`
+- `config/gecx_example.yaml`
+- `config/config.cloudrun.yaml`
 
 ### Local Audio Connector
 
@@ -89,6 +103,75 @@ connectors:
 Use `agent_id`, not an `agents` list, to change the advertised local agent name. See
 [Local Audio Connector Configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md) for the local
 and end-to-end sandbox test paths.
+
+### GECX / CX Agent Studio Connector
+
+The GECX connector streams WxCC caller audio to Google CX Agent Studio through the CES
+`BidiRunSession` API. CES 8 kHz mu-law output frames are forwarded immediately
+as raw BYOVA `CHUNK` responses, followed by exactly one normal or terminal
+`FINAL`.
+
+```yaml
+connectors:
+  gecx_connector:
+    type: "gecx_connector"
+    class: "GECXConnector"
+    module: "connectors.gecx_connector"
+    config:
+      project_id: "YOUR_PROJECT_ID"
+      location: "us"
+      application_id: "YOUR_APPLICATION_ID"
+      language_code: "en-US"
+      input_sample_rate_hertz: 8000
+      input_audio_encoding: "MULAW"
+      output_sample_rate_hertz: 8000
+      output_audio_encoding: "MULAW"
+      suppress_long_leading_audio: true
+      output_leading_audio_min_ms: 5000
+      output_speech_rms_threshold: 200
+      output_speech_start_frames: 2
+      output_speech_preroll_ms: 100
+      # Keep GECX prompt interruption disabled while barge-in is under review.
+      barge_in_enabled: false
+      force_input_format: "wxcc"
+      turn_response_timeout_seconds: 30
+      # Trailing codec silence for reliable CES audio endpoint detection.
+      endpointing_silence_ms: 2000
+      input_preroll_ms: 500
+      input_pause_preroll_ms: 250
+      terminal_response_grace_seconds: 3
+      # Omit auth settings to use Application Default Credentials.
+      # service_account_key: "/path/to/service-account.json"
+      # oauth_client_id: "..."
+      # oauth_client_secret: "..."
+      # oauth_token_file: "gecx_oauth_token.json"
+      agents:
+        - "My GECX Agent"
+```
+
+GECX CHUNK output currently requires `output_sample_rate_hertz: 8000` and
+`output_audio_encoding: "MULAW"`. Unsupported output combinations fail during
+connector initialization; broader output formats are not silently mislabeled.
+The leading-audio guard activates only when the first CES frame is at least
+`output_leading_audio_min_ms` and contains no sustained speech. It then retains
+`output_speech_preroll_ms` before the first detected speech frames.
+When the gateway detects caller speech, it also isolates the next response turn
+until CES sends a recognition result. An interruption signal alone does not
+open the gate because CES can send the stale turn completion immediately after
+that signal. Any autonomous no-input prompt that overlaps the caller turn is
+suppressed, allowing the post-input CES answer to remain attached to the active
+WxCC response stream. Outside a caller-owned turn, autonomous CES prompt audio
+is pushed directly to the active WxCC stream instead of waiting for another
+caller frame to drain it. Those autonomous chunks set
+`is_barge_in_enabled` from the `barge_in_enabled` connector setting, which
+defaults to `false`; caller-triggered and greeting chunks always remain false.
+Interactive OAuth credentials are stored as authorized-user JSON, written
+atomically with owner-only permissions. Do not reuse the former pickle token
+format; delete any old `gecx_oauth_token.pickle` file and authenticate again.
+
+See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
+[GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and
+Webex Contact Center configuration.
 
 ### AWS Credentials
 
@@ -261,6 +344,7 @@ Common checks:
 - [Local development](../docs/LOCAL_DEVELOPMENT.md)
 - [Local audio configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md)
 - [BYODS datasource lifecycle](#byods-datasource-lifecycle)
+- [GECX setup](../docs/guides/byova-gecx-setup.md)
 - [JWT authentication](../docs/JWT_AUTHENTICATION.md)
 - [Testing](../docs/TESTING.md)
 - [Return to the project README](../README.md)

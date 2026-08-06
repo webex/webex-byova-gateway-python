@@ -11,6 +11,8 @@ code, not a managed connector or a production-ready service.
   Current Webex concepts, Service App, data-source, and onboarding guidance.
 - [BYOVA with AWS Lex](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex):
   Complete Webex Contact Center and AWS Lex walkthrough.
+- [BYOVA with Google CX Agent Studio](guides/byova-gecx-setup.md): Configure the GECX
+  connector, CES `BidiRunSession`, authentication, deployment, and human transfer.
 
 ## Develop and Test
 
@@ -41,6 +43,8 @@ code, not a managed connector or a production-ready service.
 
 - [AWS Lex Configuration](AWS_LEX_CONFIGURATION.md): AWS credentials and Lex connector
   settings.
+- [GECX Setup Guide](guides/byova-gecx-setup.md): Google CX Agent Studio connector,
+  authentication, deployment, and transfer configuration.
 - [Audio Files](../audio/README.md): Local audio formats and sample media.
 - [Protocol Definitions](../proto/README.md): BYOVA and gRPC schema information.
 

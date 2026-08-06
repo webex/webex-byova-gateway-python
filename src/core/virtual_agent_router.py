@@ -204,6 +204,40 @@ class VirtualAgentRouter:
             agent_id
         ).should_observe_speech_boundaries(conversation_id)
 
+    def should_cleanup_on_client_stream_end(self, agent_id: str) -> bool:
+        """Return whether the connector opts into stream-end cleanup."""
+        return self.get_connector_for_agent(
+            agent_id
+        ).should_cleanup_on_client_stream_end()
+
+    def should_coalesce_speech_end_with_response(self, agent_id: str) -> bool:
+        """Return whether END_OF_INPUT should share the connector response."""
+        return self.get_connector_for_agent(
+            agent_id
+        ).should_coalesce_speech_end_with_response()
+
+    def should_merge_speech_pauses(self, agent_id: str) -> bool:
+        """Return whether the connector merges resumptions before turn flush."""
+        return self.get_connector_for_agent(
+            agent_id
+        ).should_merge_speech_pauses()
+
+    def set_async_response_sink(
+        self, agent_id: str, conversation_id: str, response_sink
+    ) -> None:
+        """Attach a live gateway sink for autonomous connector responses."""
+        self.get_connector_for_agent(agent_id).set_async_response_sink(
+            conversation_id, response_sink
+        )
+
+    def clear_async_response_sink(
+        self, agent_id: str, conversation_id: str, response_sink
+    ) -> None:
+        """Detach a live gateway sink from an autonomous connector."""
+        self.get_connector_for_agent(agent_id).clear_async_response_sink(
+            conversation_id, response_sink
+        )
+
     def route_request(self, agent_id: str, method: str, *args, **kwargs) -> Any:
         """
         Route a request to the appropriate connector.

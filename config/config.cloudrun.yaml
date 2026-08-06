@@ -1,0 +1,95 @@
+# Cloud Run deployment configuration for the BYOVA Gateway.
+#
+# This config is selected at runtime via the GATEWAY_CONFIG env var. It connects
+# to Google CX Agent Studio (CES) via the gecx_connector.
+#
+# Authentication: no key file is set, so the connector uses Application Default
+# Credentials -- on Cloud Run that is the service's runtime service account,
+# which must have permission to run CES sessions (ces.sessions.bidiRunSession).
+#
+# Notes for Cloud Run:
+# - The listen port is taken from the $PORT env var (injected by Cloud Run),
+#   so the gateway.port below is only a local fallback.
+# - Monitoring is disabled because Cloud Run exposes a single port, which is
+#   used for the WxCC gRPC endpoint.
+
+gateway:
+  host: "0.0.0.0"
+  port: 50051
+  request_queue_maxsize: 100
+  response_queue_maxsize: 100
+
+# Gateway-owned speech boundaries sent to Webex Contact Center. GECX still
+# receives each caller-audio frame immediately through BidiRunSession.
+voice_activity_detection:
+  threshold: 0.5
+  start_debounce_ms: 96
+  end_silence_ms: 1000
+  # Combined with end_silence_ms, this accepts natural pauses up to two
+  # seconds while keeping completed-turn latency bounded.
+  speech_end_grace_ms: 1000
+  fallback_sample_rate_hertz: 8000
+
+connectors:
+  gecx_connector:
+    type: "gecx_connector"
+    class: "GECXConnector"
+    module: "connectors.gecx_connector"
+    config:
+      project_id: "YOUR_PROJECT_ID"
+      location: "us"
+      application_id: "YOUR_APPLICATION_ID"
+      # Optional: uncomment to pin to a published deployment. The regional CES
+      # endpoint (ces.us.rep.googleapis.com) is auto-derived from location.
+      # deployment_id: "YOUR_DEPLOYMENT_ID"
+      language_code: "en-US"
+      input_sample_rate_hertz: 8000
+      input_audio_encoding: "MULAW"
+      # Required by the current raw BYOVA CHUNK output path.
+      output_sample_rate_hertz: 8000
+      output_audio_encoding: "MULAW"
+      suppress_long_leading_audio: true
+      output_leading_audio_min_ms: 5000
+      output_speech_rms_threshold: 200
+      output_speech_start_frames: 2
+      output_speech_preroll_ms: 100
+      initial_message: "Hello"
+      enable_partial_responses: true
+      force_input_format: "wxcc"
+      turn_response_timeout_seconds: 30
+      endpointing_silence_ms: 2000
+      input_preroll_ms: 500
+      input_pause_preroll_ms: 250
+      terminal_response_grace_seconds: 3
+      agents:
+        - "My GECX Agent"
+
+# Single port on Cloud Run is reserved for the gRPC endpoint.
+monitoring:
+  enabled: false
+
+logging:
+  gateway:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    # Empty file => stdout only (Cloud Run captures stdout in Cloud Logging).
+    file: ""
+
+  web:
+    level: "WARNING"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: ""
+
+sessions:
+  timeout: 600
+  max_sessions: 1000
+  cleanup_interval: 60
+  enable_auto_cleanup: true
+  max_session_duration: 3600
+
+audio:
+  supported_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "ogg"

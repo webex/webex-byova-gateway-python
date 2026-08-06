@@ -6,6 +6,7 @@ This directory contains the comprehensive test suite for the Webex BYOVA Gateway
 
 The test suite covers all major components of the system including:
 - **AWS Lex Connector** - Tests for AWS Lex integration functionality
+- **GECX Connector** - Tests for CES session streaming, audio wrapping, and transfer handling
 - **Audio Processing** - Tests for audio format conversion and processing
 - **Message Handling** - Tests for message routing and processing
 - **Core Functionality** - Tests for the main gateway functionality
@@ -16,6 +17,7 @@ The test suite covers all major components of the system including:
 tests/
 ├── conftest.py                    # Pytest configuration and shared fixtures
 ├── test_aws_lex_connector.py     # AWS Lex connector unit tests
+├── test_gecx_connector.py        # GECX connector unit tests
 ├── test_audio_extraction.py      # Audio processing unit tests
 ├── test_message_handling.py      # Message handling unit tests
 └── README.md                     # This file
@@ -52,6 +54,9 @@ pytest tests/
 ```bash
 # Run AWS Lex connector tests only
 python run_tests.py tests/test_aws_lex_connector.py
+
+# Run GECX connector tests only
+python run_tests.py tests/test_gecx_connector.py
 
 # Run audio processing tests only
 python run_tests.py tests/test_audio_extraction.py
@@ -152,6 +157,19 @@ The `test_aws_lex_connector.py` file provides comprehensive coverage of:
   - WxCC compatibility
   - Fallback mechanisms
 
+### GECX Connector Tests
+
+The `test_gecx_connector.py` file covers:
+
+- CES session and deployment resource construction
+- `BidiRunSession` request ordering and initial text
+- Immediate raw mu-law `CHUNK` mapping before CES turn completion
+- Exactly one normal or terminal `FINAL` after ordered audio chunks
+- Initial-greeting, transfer-announcement, and session-end streaming order
+- WxCC encoding and sample-rate metadata handling
+- Normal `EndSession` and human-transfer metadata
+- CES stream half-close behavior after `EndSession`
+
 ### Audio Processing Tests
 The `test_audio_extraction.py` file covers:
 
@@ -180,6 +198,7 @@ The test suite uses extensive mocking to ensure:
 
 - **boto3.Session**: Mocked to avoid real AWS connections
 - **AWS Lex Clients**: Mocked to return predictable responses
+- **Google CES SessionServiceClient**: Mocked so GECX tests make no network calls
 - **Audio Streams**: Mocked to simulate audio data
 - **Loggers**: Mocked to avoid log output during tests
 

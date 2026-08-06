@@ -208,7 +208,8 @@ step. Test plans follow Playwright conventions: top-level `use` defaults, named
   "version": 1,
   "use": {
     "headless": true,
-    "responseTimeoutSeconds": 30
+    "responseTimeoutSeconds": 30,
+    "requireGatewayEvents": true
   },
   "tests": [
     {
@@ -224,7 +225,8 @@ step. Test plans follow Playwright conventions: top-level `use` defaults, named
           "name": "Expect one complete response",
           "expect": {
             "outcome": "response",
-            "responsePrompts": 1
+            "responsePrompts": 1,
+            "maxLatencySeconds": 6.0
           }
         }
       ]
@@ -274,16 +276,120 @@ which is useful for a one-off timeout or headed debugging run. The loader
 rejects unsupported versions, duplicate test IDs, invalid step order, and
 unknown fields before it obtains a token or places a call.
 
+`maxLatencySeconds` is an optional per-expectation upper bound from the
+preceding `injection_finished` event to the first subsequent
+`remote_audio_active` event. A run fails when the measured response-start
+latency exceeds that bound. Successful runs retain the observed value in the
+step result and run artifact; failed runs include both the observed value and
+target in the artifact error.
+
 The completed artifact records the selected test, config path and SHA-256,
 expected outcome, completed remote-prompt count, Calling SDK disconnect
-cause/code, whether the caller requested that disconnect, and the exact UTC
-event window. The config hash ties live evidence to the exact plan contents.
+cause/code, whether the caller requested that disconnect, the correlated gateway
+terminal event, and the exact UTC event window. The config hash ties live
+evidence to the exact plan contents.
+
+When `requireGatewayEvents` is enabled, provide the gateway monitoring base URL
+or its `/api/connections` endpoint. The runner snapshots existing diagnostic
+events before dialing, binds the one new gateway conversation to the run, and
+asserts its exact `SESSION_END` or `TRANSFER_TO_AGENT` event. A normal response
+fails if either terminal event appears.
+
+```bash
+export BYOVA_E2E_GATEWAY_EVENTS_URL=http://127.0.0.1:8080
+```
+
+`--gateway-events-url` overrides the environment for one run. Keep the
+development monitoring interface on a restricted or securely forwarded path;
+do not expose it publicly for E2E access.
 
 For custom fixtures, `--expect-outcome response|session-end|transfer` enables
 the same assertions without using a named test. Flows that guarantee a
 minimum connected interval after transfer can add
 `--connected-observation-seconds`; it is disabled by default because queue and
 agent-availability behavior differs after WxCC accepts the transfer event.
+
+## Run the GECX regression plan
+
+The GECX feature branch includes `config/gecx-regression.spec.json`. Validate
+and inspect it without placing a call:
+
+```bash
+byova-e2e validate --config config/gecx-regression.spec.json --list
+```
+
+The plan requires correlated gateway events. Before running it, set
+`BYOVA_E2E_GATEWAY_EVENTS_URL` to the restricted monitoring endpoint for the
+same gateway deployment being called.
+
+Run one test at a time against the dedicated non-production entry point:
+
+```bash
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test normal-response
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test long-response
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test natural-pause
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test multi-turn-response
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test speak-during-playback
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test task-complete
+
+byova-e2e run --destination 9999 \
+  --config config/gecx-regression.spec.json \
+  --test transfer
+```
+
+Correlate each artifact window and config SHA-256 with gateway and CES evidence:
+
+- `normal-response`: one caller turn and an explicit assertion that the
+  correlated gateway conversation emitted no terminal output event.
+  It is also the canonical latency gate. Three runs against deployed commit
+  `0bd3be9` on August 5, 2026 measured 5.779, 4.581, and 5.212 seconds from
+  caller injection completion to first remote response audio (5.191-second
+  mean; 5.779-second maximum). The committed target is at most 6.0 seconds.
+  Re-run this named scenario after each runtime or endpointing change and retain
+  its config-hashed artifact before closing SE-1943.
+- `long-response`: multiple ordered raw audio chunks, first audio before CES
+  turn completion, and exactly one normal `FINAL`. It uses a 2.5-second
+  remote-silence threshold so a natural pause inside streamed playback is not
+  mistaken for the end of the prompt.
+- `natural-pause`: one outward `START_OF_INPUT`, one merged resume, one outward
+  `END_OF_INPUT`, and one complete CES transcript.
+- `multi-turn-response`: two caller injections, two complete GECX responses,
+  and no terminal output event. It uses the same 2.5-second streamed-prompt
+  completion threshold before injecting turn two.
+- `speak-during-playback`: an audio-plane probe. The second caller
+  injection begins after the first GECX response starts and the call remains
+  healthy through remote-audio completion. Streamed GECX chunks keep barge-in
+  disabled until Phase 4, so a green runner result does **not** prove CES
+  received the second utterance; correlate the CES transcript and record that
+  live semantic gap explicitly.
+- `task-complete`: one correlated gateway `SESSION_END` output event before the
+  remote disconnect.
+- `transfer`: one correlated gateway `TRANSFER_TO_AGENT` output event and both
+  configured post-input announcement epochs.
+
+The latency target preserves the current evidence-backed endpointing tradeoff:
+gateway end-silence and speech-resume grace remain one second each, while GECX
+appends two seconds of codec-correct endpointing silence because one second left
+short CES turns open. The longer `remoteSilenceMs: 2500` used by long-response
+and multi-turn tests affects prompt-completion observation, not response-start
+latency.
 
 ## Safety boundaries
 

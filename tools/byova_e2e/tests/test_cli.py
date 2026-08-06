@@ -165,3 +165,88 @@ def test_named_multi_turn_test_prepares_every_action(
         RunAction(1),
         RunExpectation(ExpectedOutcome.RESPONSE),
     )
+
+
+def test_gateway_event_plan_requires_monitoring_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_file = tmp_path / "connector.spec.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "use": {"requireGatewayEvents": True},
+                "tests": [
+                    {
+                        "id": "normal-response",
+                        "title": "receives one response",
+                        "steps": [
+                            {"action": "speak", "text": "Hello"},
+                            {"expect": {"outcome": "response"}},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BYOVA_E2E_GATEWAY_EVENTS_URL", raising=False)
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--destination",
+            "9999",
+            "--config",
+            str(config_file),
+            "--test",
+            "normal-response",
+        ]
+    )
+
+    with pytest.raises(CLIError, match="Gateway event assertions require"):
+        _run(args)
+
+
+def test_gateway_event_url_enables_exact_outcome_assertions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured_config = None
+
+    def fake_render_text(text, _voice, output_path):
+        output_path.write_bytes(text.encode())
+        return PreparedAudio(output_path, "1" * 64, 1)
+
+    class FakeRunner:
+        def __init__(self, _tool_root, config):
+            nonlocal captured_config
+            captured_config = config
+
+        def run(self):
+            return {}
+
+    monkeypatch.setattr("byova_e2e.cli.render_text", fake_render_text)
+    monkeypatch.setattr("byova_e2e.cli.access_token_for_run", lambda _store: "token")
+    monkeypatch.setattr("byova_e2e.cli.BrowserRunner", FakeRunner)
+    monkeypatch.setattr(
+        "byova_e2e.cli.write_artifact",
+        lambda _directory, _payload: tmp_path / "artifact.json",
+    )
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--destination",
+            "9999",
+            "--text",
+            "Hello",
+            "--expect-outcome",
+            "response",
+            "--gateway-events-url",
+            "http://127.0.0.1:8080",
+        ]
+    )
+
+    _run(args)
+
+    assert captured_config is not None
+    assert captured_config.require_gateway_events is True
+    assert captured_config.gateway_events_url == "http://127.0.0.1:8080"
