@@ -65,6 +65,8 @@ class RunConfig:
     expected_outcome: ExpectedOutcome | None = None
     expected_response_prompts: int = 1
     connected_observation_seconds: float = 0.0
+    gateway_events_url: str | None = None
+    require_gateway_events: bool = False
     headless: bool = False
     audio_assets: tuple[AudioAsset, ...] = ()
     steps: tuple[RunAction | RunExpectation, ...] = ()

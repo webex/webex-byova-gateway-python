@@ -65,6 +65,9 @@
         "responseTimeoutSeconds": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "requireGatewayEvents": {
+          "type": "boolean"
         }
       }
     },

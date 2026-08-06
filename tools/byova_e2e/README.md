@@ -208,7 +208,8 @@ step. Test plans follow Playwright conventions: top-level `use` defaults, named
   "version": 1,
   "use": {
     "headless": true,
-    "responseTimeoutSeconds": 30
+    "responseTimeoutSeconds": 30,
+    "requireGatewayEvents": true
   },
   "tests": [
     {
@@ -284,8 +285,23 @@ target in the artifact error.
 
 The completed artifact records the selected test, config path and SHA-256,
 expected outcome, completed remote-prompt count, Calling SDK disconnect
-cause/code, whether the caller requested that disconnect, and the exact UTC
-event window. The config hash ties live evidence to the exact plan contents.
+cause/code, whether the caller requested that disconnect, the correlated gateway
+terminal event, and the exact UTC event window. The config hash ties live
+evidence to the exact plan contents.
+
+When `requireGatewayEvents` is enabled, provide the gateway monitoring base URL
+or its `/api/connections` endpoint. The runner snapshots existing diagnostic
+events before dialing, binds the one new gateway conversation to the run, and
+asserts its exact `SESSION_END` or `TRANSFER_TO_AGENT` event. A normal response
+fails if either terminal event appears.
+
+```bash
+export BYOVA_E2E_GATEWAY_EVENTS_URL=http://127.0.0.1:8080
+```
+
+`--gateway-events-url` overrides the environment for one run. Keep the
+development monitoring interface on a restricted or securely forwarded path;
+do not expose it publicly for E2E access.
 
 For custom fixtures, `--expect-outcome response|session-end|transfer` enables
 the same assertions without using a named test. Flows that guarantee a
@@ -301,6 +317,10 @@ and inspect it without placing a call:
 ```bash
 byova-e2e validate --config config/gecx-regression.spec.json --list
 ```
+
+The plan requires correlated gateway events. Before running it, set
+`BYOVA_E2E_GATEWAY_EVENTS_URL` to the restricted monitoring endpoint for the
+same gateway deployment being called.
 
 Run one test at a time against the dedicated non-production entry point:
 
@@ -336,7 +356,8 @@ byova-e2e run --destination 9999 \
 
 Correlate each artifact window and config SHA-256 with gateway and CES evidence:
 
-- `normal-response`: one caller turn and no terminal output event.
+- `normal-response`: one caller turn and an explicit assertion that the
+  correlated gateway conversation emitted no terminal output event.
   It is also the canonical latency gate. Three runs against deployed commit
   `0bd3be9` on August 5, 2026 measured 5.779, 4.581, and 5.212 seconds from
   caller injection completion to first remote response audio (5.191-second
@@ -358,9 +379,10 @@ Correlate each artifact window and config SHA-256 with gateway and CES evidence:
   disabled until Phase 4, so a green runner result does **not** prove CES
   received the second utterance; correlate the CES transcript and record that
   live semantic gap explicitly.
-- `task-complete`: one `SESSION_END` output event before the remote disconnect.
-- `transfer`: one `TRANSFER_TO_AGENT` output event and both configured
-  post-input announcement epochs.
+- `task-complete`: one correlated gateway `SESSION_END` output event before the
+  remote disconnect.
+- `transfer`: one correlated gateway `TRANSFER_TO_AGENT` output event and both
+  configured post-input announcement epochs.
 
 The latency target preserves the current evidence-backed endpointing tradeoff:
 gateway end-silence and speech-resume grace remain one second each, while GECX

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import tempfile
@@ -128,6 +129,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fail unless remote audio responds after caller audio finishes",
     )
     run.add_argument("--response-timeout-seconds", type=float, default=None)
+    run.add_argument(
+        "--gateway-events-url",
+        default=None,
+        help=(
+            "Gateway monitoring base URL or /api/connections endpoint used to "
+            "assert terminal output events"
+        ),
+    )
+    run.add_argument(
+        "--require-gateway-events",
+        action="store_true",
+        help="Fail unless the expected outcome is proven by gateway diagnostics",
+    )
     run.add_argument(
         "--expect-outcome",
         choices=[
@@ -295,6 +309,14 @@ def _run(args: argparse.Namespace) -> None:
         if args.expect_outcome
         else (selected_test.expected_outcome if selected_test else None)
     )
+    gateway_events_url = args.gateway_events_url or os.getenv(
+        "BYOVA_E2E_GATEWAY_EVENTS_URL"
+    )
+    require_gateway_events = bool(
+        args.require_gateway_events
+        or gateway_events_url
+        or (selected_test and selected_test.require_gateway_events)
+    )
     expected_response_prompts = (
         args.expected_response_prompts
         if args.expected_response_prompts is not None
@@ -330,6 +352,19 @@ def _run(args: argparse.Namespace) -> None:
         raise CLIError("--connected-observation-seconds cannot be negative")
     if expected_response_prompts <= 0:
         raise CLIError("--expected-response-prompts must be greater than zero")
+    if require_gateway_events and not gateway_events_url:
+        raise CLIError(
+            "Gateway event assertions require --gateway-events-url or "
+            "BYOVA_E2E_GATEWAY_EVENTS_URL"
+        )
+    if require_gateway_events and expected_outcome is None:
+        raise CLIError(
+            "Gateway event assertions require --expect-outcome or a named test"
+        )
+    if gateway_events_url and not gateway_events_url.startswith(
+        ("http://", "https://")
+    ):
+        raise CLIError("--gateway-events-url must use http:// or https://")
     if text_segments is not None:
         if len(text_segments) < 2:
             raise CLIError("Repeat --text-segment at least twice")
@@ -430,6 +465,8 @@ def _run(args: argparse.Namespace) -> None:
             expected_outcome=expected_outcome,
             expected_response_prompts=expected_response_prompts,
             connected_observation_seconds=connected_observation_seconds,
+            gateway_events_url=gateway_events_url,
+            require_gateway_events=require_gateway_events,
             headless=headless,
             audio_assets=tuple(audio_assets),
             steps=tuple(run_steps),
@@ -459,6 +496,9 @@ def _run(args: argparse.Namespace) -> None:
                 "remote_silence_ms": round(config.remote_silence_seconds * 1000),
             },
             "browser_profile": {"headless": config.headless},
+            "gateway_event_profile": {
+                "required": config.require_gateway_events,
+            },
             "test": selected_test.test_id if selected_test else None,
             "test_title": selected_test.title if selected_test else None,
             "config_file": (str(selected_test.source_file) if selected_test else None),

@@ -28,6 +28,7 @@ def _write_plan(
             "headless": True,
             "voice": "Alex",
             "remotePromptOccurrence": 2,
+            "requireGatewayEvents": True,
         },
         "tests": [
             {
@@ -82,6 +83,7 @@ def test_loads_playwright_shaped_defaults_and_test_override(tmp_path: Path) -> N
     assert selected_test.headless
     assert selected_test.remote_prompt_occurrence == 2
     assert selected_test.response_timeout_seconds == 45
+    assert selected_test.require_gateway_events is True
     assert selected_test.expected_outcome == ExpectedOutcome.RESPONSE
 
 

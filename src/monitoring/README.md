@@ -294,14 +294,25 @@ When disabled, the dashboard is accessible without login. **Never disable authen
   "connection_events": [
     {
       "event_type": "start",
-      "session_id": "session_123",
+      "conversation_id": "conversation_123",
       "agent_id": "Local Playback",
-      "timestamp": 1705312200.0,
-      "customer_org_id": "org_456"
+      "timestamp": 1705312200.0
+    },
+    {
+      "event_type": "terminal",
+      "conversation_id": "conversation_123",
+      "agent_id": "Local Playback",
+      "timestamp": 1705312210.0,
+      "outcome": "TRANSFER_TO_AGENT",
+      "name": "transfer_requested"
     }
   ]
 }
 ```
+
+Terminal events are recorded when the gateway emits `SESSION_END` or
+`TRANSFER_TO_AGENT` in its gRPC response. They intentionally include only the
+event name and outcome, not connector metadata values or transcript content.
 
 ## Installation and Setup
 
