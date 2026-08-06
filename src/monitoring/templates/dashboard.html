@@ -542,9 +542,11 @@
                 data.connection_events.slice(-5).forEach(event => {
                     const eventType = event.event_type || 'unknown';
                     const badgeClass = eventType === 'start' ? 'bg-success' :
-                                     eventType === 'end' ? 'bg-danger' : 'bg-info';
+                                     eventType === 'end' ? 'bg-danger' :
+                                     eventType === 'terminal' ? 'bg-warning text-dark' : 'bg-info';
                     const eventText = eventType === 'start' ? 'Started' :
-                                    eventType === 'end' ? 'Ended' : 'Message';
+                                    eventType === 'end' ? 'Ended' :
+                                    eventType === 'terminal' ? `Terminal: ${event.outcome || 'Unknown'}` : 'Message';
 
                     html += `
                         <div class="connection-item connection-history">

@@ -1713,16 +1713,40 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     )
                     break
 
-                yield response
-                terminal_event = any(
-                    event.event_type
+                terminal_events = [
+                    event
+                    for event in response.output_events
+                    if event.event_type
                     in {
                         OutputEvent.EventType.SESSION_END,
                         OutputEvent.EventType.TRANSFER_TO_AGENT,
                     }
-                    for event in response.output_events
-                )
-                if terminal_event:
+                ]
+                for terminal_event in terminal_events:
+                    outcome = (
+                        "SESSION_END"
+                        if terminal_event.event_type
+                        == OutputEvent.EventType.SESSION_END
+                        else "TRANSFER_TO_AGENT"
+                    )
+                    self.add_connection_event(
+                        "terminal",
+                        conversation_id,
+                        agent_id,
+                        outcome=outcome,
+                        name=terminal_event.name,
+                    )
+                    self.logger.info(
+                        "wxcc_terminal_output conversation_id=%s agent_id=%s "
+                        "outcome=%s name=%s",
+                        conversation_id,
+                        agent_id,
+                        outcome,
+                        terminal_event.name,
+                    )
+
+                yield response
+                if terminal_events:
                     set_stream_end_reason("server_terminal")
                     self.logger.info(
                         "Completing WxCC response stream after terminal response "

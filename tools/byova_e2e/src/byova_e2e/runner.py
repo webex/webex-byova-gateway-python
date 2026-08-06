@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
+from .gateway_events import GatewayEventError, GatewayEventObserver
 from .models import (
     ExpectedOutcome,
     RunAction,
@@ -51,6 +52,7 @@ class BrowserRunner:
         self.config = config
         self.events: list[RunEvent] = []
         self.browser_diagnostics: list[str] = []
+        self._gateway_events: GatewayEventObserver | None = None
 
     def run(self) -> dict[str, Any]:
         started_at_utc = datetime.now(timezone.utc).isoformat()
@@ -59,6 +61,19 @@ class BrowserRunner:
         server.start()
         final_reason = "unknown"
         try:
+            if self.config.require_gateway_events:
+                if not self.config.gateway_events_url:
+                    raise RunFailure(
+                        "Gateway event assertions require a gateway events URL"
+                    )
+                if self._gateway_events is None:
+                    self._gateway_events = GatewayEventObserver(
+                        self.config.gateway_events_url
+                    )
+                try:
+                    self._gateway_events.begin()
+                except GatewayEventError as error:
+                    raise RunFailure(str(error), list(self.events)) from error
             with sync_playwright() as playwright:
                 browser = None
                 context = None
@@ -150,6 +165,9 @@ class BrowserRunner:
                 "observed_remote_prompt_count"
             ],
             "disconnect": finish_result["disconnect"],
+            "gateway_terminal_event": finish_result.get(
+                "gateway_terminal_event"
+            ),
             "steps": finish_result.get("steps", []),
             "events": [
                 {
@@ -343,6 +361,22 @@ class BrowserRunner:
                     "latency_seconds": observation.latency_seconds,
                 }
             )
+            gateway_timeout_seconds = 0.0
+            if step.outcome in {
+                ExpectedOutcome.SESSION_END,
+                ExpectedOutcome.TRANSFER,
+            }:
+                gateway_timeout_seconds = self.config.response_timeout_seconds
+            elif step_index == len(self.config.steps) - 1:
+                gateway_timeout_seconds = self.config.post_audio_grace_seconds
+            gateway_terminal_event = self._assert_gateway_outcome(
+                step.outcome,
+                min(
+                    gateway_timeout_seconds,
+                    max(0.0, call_deadline - time.monotonic()),
+                ),
+            )
+            step_results[-1]["gateway_terminal_event"] = gateway_terminal_event
 
             if step.outcome == ExpectedOutcome.SESSION_END:
                 disconnect = observation.disconnect_event
@@ -385,6 +419,18 @@ class BrowserRunner:
                 f"Remote response latency {observed_seconds:.3f}s exceeded "
                 f"target {maximum_seconds:.3f}s"
             )
+
+    def _assert_gateway_outcome(
+        self,
+        expected: ExpectedOutcome,
+        timeout_seconds: float,
+    ) -> dict[str, Any] | None:
+        if self._gateway_events is None:
+            return None
+        try:
+            return self._gateway_events.assert_outcome(expected, timeout_seconds)
+        except GatewayEventError as error:
+            raise RunFailure(str(error), list(self.events)) from error
 
     def _wait_for_response_start(
         self,
@@ -463,6 +509,11 @@ class BrowserRunner:
         disconnect: RunEvent | None,
         step_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        gateway_terminal_events = [
+            step["gateway_terminal_event"]
+            for step in step_results
+            if step.get("gateway_terminal_event") is not None
+        ]
         return {
             "completion_reason": completion_reason,
             "remote_response_observed": bool(observations),
@@ -473,6 +524,9 @@ class BrowserRunner:
                 observation.prompt_count for observation in observations
             ),
             "disconnect": disconnect.details if disconnect else None,
+            "gateway_terminal_event": (
+                gateway_terminal_events[-1] if gateway_terminal_events else None
+            ),
             "steps": step_results,
         }
 
@@ -509,6 +563,18 @@ class BrowserRunner:
                 injection_finished,
                 wait_for_disconnect=expected_outcome == ExpectedOutcome.SESSION_END,
             )
+            gateway_terminal_event = self._assert_gateway_outcome(
+                expected_outcome or ExpectedOutcome.RESPONSE,
+                min(
+                    (
+                        self.config.response_timeout_seconds
+                        if expected_outcome
+                        in {ExpectedOutcome.SESSION_END, ExpectedOutcome.TRANSFER}
+                        else self.config.post_audio_grace_seconds
+                    ),
+                    max(0.0, call_deadline - time.monotonic()),
+                ),
+            )
             if expected_outcome == ExpectedOutcome.SESSION_END:
                 disconnect = observation.disconnect_event
                 if disconnect is None:
@@ -522,6 +588,7 @@ class BrowserRunner:
                     "remote_response_latency_seconds": observation.latency_seconds,
                     "observed_remote_prompt_count": observation.prompt_count,
                     "disconnect": disconnect.details,
+                    "gateway_terminal_event": gateway_terminal_event,
                 }
             if expected_outcome == ExpectedOutcome.TRANSFER:
                 if self.config.connected_observation_seconds > 0:
@@ -547,6 +614,7 @@ class BrowserRunner:
                         "remote_response_latency_seconds": None,
                         "observed_remote_prompt_count": 0,
                         "disconnect": event.details,
+                        "gateway_terminal_event": None,
                     }
         completion_reason, disconnect = self._end_call_locally(
             server, page, call_deadline
@@ -561,6 +629,9 @@ class BrowserRunner:
                 observation.prompt_count if observation else 0
             ),
             "disconnect": disconnect.details if disconnect else None,
+            "gateway_terminal_event": (
+                gateway_terminal_event if require_response else None
+            ),
         }
 
     def _end_call_locally(

@@ -10,7 +10,8 @@
     "promptTimeoutSeconds": 60,
     "callTimeoutSeconds": 120,
     "postAudioGraceSeconds": 5,
-    "responseTimeoutSeconds": 30
+    "responseTimeoutSeconds": 30,
+    "requireGatewayEvents": true
   },
   "tests": [
     {
