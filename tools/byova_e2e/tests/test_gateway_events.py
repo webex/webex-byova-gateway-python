@@ -34,6 +34,15 @@ def _terminal(outcome: str) -> dict[str, object]:
     }
 
 
+def _message(timestamp: float = 11.0) -> dict[str, object]:
+    return {
+        "event_type": "message",
+        "conversation_id": "conversation-1",
+        "agent_id": "GECX Agent",
+        "timestamp": timestamp,
+    }
+
+
 def test_normal_response_rejects_unexpected_gateway_terminal_event() -> None:
     snapshots = _Snapshots([], [_start(), _terminal("TRANSFER_TO_AGENT")])
     observer = GatewayEventObserver(
@@ -125,6 +134,18 @@ def test_terminal_assertion_requires_one_new_gateway_conversation() -> None:
 
 def test_normal_response_without_terminal_event_is_proven() -> None:
     snapshots = _Snapshots([], [_start()])
+    observer = GatewayEventObserver(
+        "http://127.0.0.1:8080",
+        poll_interval_seconds=0,
+        fetch_events=snapshots,
+    )
+    observer.begin()
+
+    assert observer.assert_outcome(ExpectedOutcome.RESPONSE, 0) is None
+
+
+def test_normal_response_binds_after_start_event_is_evicted() -> None:
+    snapshots = _Snapshots([], [_message()])
     observer = GatewayEventObserver(
         "http://127.0.0.1:8080",
         poll_interval_seconds=0,

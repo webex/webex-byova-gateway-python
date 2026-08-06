@@ -112,7 +112,7 @@ class GatewayEventObserver:
 
         if self._conversation_id is None:
             raise GatewayEventError(
-                "Gateway diagnostics did not expose the E2E conversation start event"
+                "Gateway diagnostics did not expose the E2E conversation"
             )
         if expected in {ExpectedOutcome.SESSION_END, ExpectedOutcome.TRANSFER}:
             raise GatewayEventError(
@@ -124,10 +124,13 @@ class GatewayEventObserver:
     def _bind_conversation(self, events: list[dict[str, Any]]) -> None:
         if self._conversation_id is not None:
             return
+        # The monitoring endpoint is a bounded event ring. Long streamed prompts can
+        # evict the initial ``start`` event before the expectation is evaluated, so
+        # correlate from every unique new event rather than requiring that one event.
         conversation_ids = {
             str(event["conversation_id"])
             for event in events
-            if event.get("event_type") == "start" and event.get("conversation_id")
+            if event.get("conversation_id")
         }
         if len(conversation_ids) > 1:
             raise GatewayEventError(
