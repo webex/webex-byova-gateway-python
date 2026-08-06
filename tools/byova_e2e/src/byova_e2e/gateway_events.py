@@ -70,36 +70,9 @@ class GatewayEventObserver:
                 if self._event_key(event) not in self._baseline
             ]
             self._bind_conversation(new_events)
-            if self._conversation_id is not None:
-                terminal_events = [
-                    event
-                    for event in new_events
-                    if event.get("event_type") == "terminal"
-                    and event.get("conversation_id") == self._conversation_id
-                ]
-                if len(terminal_events) > 1:
-                    outcomes = ", ".join(
-                        str(event.get("outcome", "unknown"))
-                        for event in terminal_events
-                    )
-                    raise GatewayEventError(
-                        "Gateway emitted multiple terminal events for conversation "
-                        f"{self._conversation_id}: {outcomes}"
-                    )
-                if terminal_events:
-                    event = terminal_events[0]
-                    actual = _GATEWAY_OUTCOMES.get(str(event.get("outcome", "")))
-                    if expected == ExpectedOutcome.RESPONSE:
-                        raise GatewayEventError(
-                            "Gateway emitted unexpected terminal outcome "
-                            f"{event.get('outcome')} for a normal response"
-                        )
-                    if actual != expected:
-                        raise GatewayEventError(
-                            "Gateway terminal outcome mismatch: expected "
-                            f"{expected.value}, observed {event.get('outcome')}"
-                        )
-                    return self._artifact_event(event)
+            terminal_event = self._terminal_event(new_events)
+            if terminal_event is not None:
+                return self._assert_terminal_outcome(expected, terminal_event)
 
             if time.monotonic() >= deadline:
                 break
@@ -139,6 +112,45 @@ class GatewayEventObserver:
             )
         if conversation_ids:
             self._conversation_id = conversation_ids.pop()
+
+    def _terminal_event(
+        self, events: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        if self._conversation_id is None:
+            return None
+        terminal_events = [
+            event
+            for event in events
+            if event.get("event_type") == "terminal"
+            and event.get("conversation_id") == self._conversation_id
+        ]
+        if len(terminal_events) > 1:
+            outcomes = ", ".join(
+                str(event.get("outcome", "unknown")) for event in terminal_events
+            )
+            raise GatewayEventError(
+                "Gateway emitted multiple terminal events for conversation "
+                f"{self._conversation_id}: {outcomes}"
+            )
+        return terminal_events[0] if terminal_events else None
+
+    def _assert_terminal_outcome(
+        self,
+        expected: ExpectedOutcome,
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        outcome = str(event.get("outcome", ""))
+        if expected == ExpectedOutcome.RESPONSE:
+            raise GatewayEventError(
+                f"Gateway emitted unexpected terminal outcome {outcome} "
+                "for a normal response"
+            )
+        if _GATEWAY_OUTCOMES.get(outcome) != expected:
+            raise GatewayEventError(
+                "Gateway terminal outcome mismatch: expected "
+                f"{expected.value}, observed {outcome}"
+            )
+        return self._artifact_event(event)
 
     def _fetch_events(self) -> list[dict[str, Any]]:
         events: Any

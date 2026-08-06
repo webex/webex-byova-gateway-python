@@ -1516,14 +1516,19 @@ class TestClientStreamEndCleanup:
         )
 
     @pytest.mark.parametrize(
-        ("message_type", "expected_event_type", "expected_outcome"),
+        (
+            "message_type",
+            "expected_event_type",
+            "expected_outcome",
+            "expected_name",
+        ),
         [
-            ("session_end", 1, "SESSION_END"),
-            ("transfer", 2, "TRANSFER_TO_AGENT"),
+            ("session_end", 1, "SESSION_END", "session_ended"),
+            ("transfer", 2, "TRANSFER_TO_AGENT", "transfer_requested"),
         ],
     )
     def test_server_terminal_response_completes_stream(
-        self, message_type, expected_event_type, expected_outcome
+        self, message_type, expected_event_type, expected_outcome, expected_name
     ):
         router = MagicMock(spec=VirtualAgentRouter)
 
@@ -1565,11 +1570,7 @@ class TestClientStreamEndCleanup:
             "agent_id": "GECX Agent",
             "timestamp": terminal_events[0]["timestamp"],
             "outcome": expected_outcome,
-            "name": (
-                "session_ended"
-                if expected_outcome == "SESSION_END"
-                else "transfer_requested"
-            ),
+            "name": expected_name,
         }
         assert [
             call.args[1] for call in router.route_request.call_args_list
