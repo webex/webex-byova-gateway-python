@@ -432,12 +432,25 @@ class ConversationProcessor:
             )
             for signal in self.speech_boundary_observer.observe(frame):
                 event_type = "START_OF_INPUT" if signal.kind == "speech_started" else "END_OF_INPUT"
-                self.logger.info(
-                    "Silero VAD emitted %s (%s) for conversation %s",
-                    signal.kind,
-                    event_type,
-                    self.conversation_id,
-                )
+                if signal.kind == "speech_started":
+                    self.logger.info(
+                        "gateway_caller_speech_start_detected "
+                        "conversation_id=%s sample_rate_hertz=%d event_type=%s",
+                        self.conversation_id,
+                        signal.sample_rate_hertz,
+                        event_type,
+                    )
+                else:
+                    self.logger.info(
+                        "gateway_caller_speech_end_detected "
+                        "conversation_id=%s sample_rate_hertz=%d event_type=%s "
+                        "vad_end_silence_ms=%d speech_end_grace_ms=%d",
+                        self.conversation_id,
+                        signal.sample_rate_hertz,
+                        event_type,
+                        self.speech_boundary_observer.end_silence_ms,
+                        self.speech_end_grace_ms,
+                    )
                 merges_speech_pauses = (
                     self._async_response_sink is not None
                     and self.speech_end_grace_ms > 0

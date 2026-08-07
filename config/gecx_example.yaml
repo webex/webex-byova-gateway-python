@@ -52,14 +52,26 @@ gecx_connector:
     barge_in_enabled: false
     force_input_format: "wxcc"
     turn_response_timeout_seconds: 30
-    # Queued after gateway VAD speech end so CES can endpoint short utterances.
+    # Queued after the progressively streamed caller tail so CES can reliably
+    # endpoint short utterances. This is codec-correct synthetic silence, not a
+    # separate CES end-of-audio control.
     # Keep margin above one second; an exact one-second tail can leave a CES
     # audio turn open until the caller speaks again.
     endpointing_silence_ms: 2000
-    # Buffer through gateway VAD end so CES receives one intact caller turn.
+    # Retain only bounded audio before gateway VAD detects speech so the first
+    # word is not clipped, then stream active audio progressively.
     input_preroll_ms: 500
+    # Keep only a small unsent tail. This lets a natural pause resume without
+    # trying to retract audio already delivered to CES.
+    input_holdback_ms: 250
     # Retain only bounded onset audio when speech resumes during end grace.
     input_pause_preroll_ms: 250
+    # Cap individual CES caller-audio messages and the total pending queue.
+    # A full queue waits briefly, then terminates explicitly instead of growing
+    # latency or silently dropping caller audio.
+    input_stream_chunk_ms: 100
+    input_queue_max_chunks: 20
+    input_queue_put_timeout_ms: 50
     # Some EndSession signals follow the final TTS frames.
     terminal_response_grace_seconds: 3
 
