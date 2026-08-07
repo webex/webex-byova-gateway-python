@@ -108,10 +108,14 @@ connectors:
   #     turn_response_timeout_seconds: 30
   #     # Trailing codec silence lets CES reliably endpoint short voice turns.
   #     endpointing_silence_ms: 2000
-  #     # Preserve speech before VAD start, merge bounded resumed-speech onset,
-  #     # and catch delayed EndSession after TTS.
+  #     # Preserve speech before VAD start, stream with a bounded 250ms tail,
+  #     # merge bounded resumed-speech onset, and cap CES input backpressure.
   #     input_preroll_ms: 500
+  #     input_holdback_ms: 250
   #     input_pause_preroll_ms: 250
+  #     input_stream_chunk_ms: 100
+  #     input_queue_max_chunks: 20
+  #     input_queue_put_timeout_ms: 50
   #     terminal_response_grace_seconds: 3
   #     # Omit auth settings to use Application Default Credentials.
   #     # service_account_key: "/path/to/service-account.json"

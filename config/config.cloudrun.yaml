@@ -20,7 +20,8 @@ gateway:
   response_queue_maxsize: 100
 
 # Gateway-owned speech boundaries sent to Webex Contact Center. GECX still
-# receives each caller-audio frame immediately through BidiRunSession.
+# receives caller audio progressively through BidiRunSession with a bounded
+# tail holdback for natural-pause handling.
 voice_activity_detection:
   threshold: 0.5
   start_debounce_ms: 96
@@ -59,7 +60,11 @@ connectors:
       turn_response_timeout_seconds: 30
       endpointing_silence_ms: 2000
       input_preroll_ms: 500
+      input_holdback_ms: 250
       input_pause_preroll_ms: 250
+      input_stream_chunk_ms: 100
+      input_queue_max_chunks: 20
+      input_queue_put_timeout_ms: 50
       terminal_response_grace_seconds: 3
       agents:
         - "My GECX Agent"

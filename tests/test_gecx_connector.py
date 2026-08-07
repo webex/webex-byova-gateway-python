@@ -85,6 +85,15 @@ class TestGECXConnectorInit:
 
         assert connector.endpointing_silence_ms == 2000
 
+    def test_default_input_streaming_bounds_are_explicit(self, gecx_config):
+        with patch("src.connectors.gecx_connector.ces_v1.SessionServiceClient"):
+            connector = GECXConnector(gecx_config)
+
+        assert connector.input_holdback_ms == 250
+        assert connector.input_stream_chunk_ms == 100
+        assert connector.input_queue_max_chunks == 20
+        assert connector.input_queue_put_timeout_ms == 50
+
     def test_barge_in_is_disabled_by_default(self, gecx_config):
         with patch("src.connectors.gecx_connector.ces_v1.SessionServiceClient"):
             connector = GECXConnector(gecx_config)
@@ -254,8 +263,9 @@ class TestRequestGenerator:
             for message in endpointing_messages
         )
 
-    def test_gateway_vad_flushes_one_intact_buffered_audio_turn(self, connector):
+    def test_caller_audio_reaches_ces_generator_before_end_turn(self, connector):
         connector.input_preroll_ms = 1
+        connector.input_holdback_ms = 1
         connector.endpointing_silence_ms = 100
         session = GECXStreamingSession(
             connector=connector,
@@ -267,22 +277,77 @@ class TestRequestGenerator:
 
         session.enqueue_audio(b"0123456789")
         session.begin_input_turn()
-        session.enqueue_audio(b"ABCD")
-        session.end_audio_turn()
-        session.inbound_queue.put(_STREAM_STOP)
-
         generator = session._request_generator()
         next(generator)  # config
-        audio_messages = [
-            message.realtime_input.audio for message in generator
+
+        # START_OF_INPUT immediately flushes bounded pre-roll.
+        assert next(generator).realtime_input.audio == b"23456789"
+
+        session.enqueue_audio(b"abcdefghijklmnop")
+
+        # Active speech is available while the turn is still open; only the
+        # configured 8-byte tail remains held back.
+        assert next(generator).realtime_input.audio == b"abcdefgh"
+        assert session.inbound_queue.empty()
+        assert session._input_audio_buffer == b"ijklmnop"
+
+    def test_end_turn_queues_only_tail_and_endpoint_not_full_utterance(
+        self, connector
+    ):
+        connector.input_preroll_ms = 0
+        connector.input_holdback_ms = 1
+        connector.endpointing_silence_ms = 100
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+        generator = session._request_generator()
+        next(generator)  # config
+
+        session.begin_input_turn()
+        session.enqueue_audio(b"abcdefghijklmnop")
+        assert next(generator).realtime_input.audio == b"abcdefgh"
+
+        session.end_audio_turn()
+
+        # The progressive prefix was already consumed. Turn end adds only the
+        # held 8-byte tail and one endpoint marker, never the utterance again.
+        assert session.inbound_queue.qsize() == 2
+        session.inbound_queue.put(_STREAM_STOP)
+        assert [message.realtime_input.audio for message in generator] == [
+            b"ijklmnop",
+            b"\xff" * 800,
         ]
 
-        assert audio_messages == [b"23456789ABCD", b"\xff" * 800]
+    def test_speech_start_flushes_only_bounded_preroll(self, connector):
+        connector.input_preroll_ms = 1
+        connector.input_holdback_ms = 0
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-1",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
 
-    def test_gateway_vad_compacts_pause_and_merges_resume_preroll(
+        session.enqueue_audio(b"clipped--first")
+        session.begin_input_turn()
+        session.inbound_queue.put(_STREAM_STOP)
+        generator = session._request_generator()
+        next(generator)  # config
+
+        assert [message.realtime_input.audio for message in generator] == [
+            b"d--first"
+        ]
+
+    def test_gateway_vad_pause_resume_keeps_one_turn_and_one_endpoint(
         self, connector
     ):
         connector.input_preroll_ms = 1
+        connector.input_holdback_ms = 1
         connector.input_pause_preroll_ms = 1
         connector.endpointing_silence_ms = 100
         session = GECXStreamingSession(
@@ -295,11 +360,13 @@ class TestRequestGenerator:
 
         session.enqueue_audio(b"0123456789")
         session.begin_input_turn()
-        session.enqueue_audio(b"abcdefgh")
+        session.enqueue_audio(b"abcdefghijklmnop")
         assert session.pause_input_turn(silence_ms=1) is True
         session.enqueue_audio(b"ABCDEFGHIJKL")
         assert session.resume_input_turn() is True
-        session.end_audio_turn()
+        session.enqueue_audio(b"mnopqrstuvwx")
+        assert session.end_audio_turn() is True
+        assert session.end_audio_turn() is False
         session.inbound_queue.put(_STREAM_STOP)
 
         generator = session._request_generator()
@@ -308,12 +375,22 @@ class TestRequestGenerator:
             message.realtime_input.audio for message in generator
         ]
 
-        assert audio_messages == [b"23456789EFGHIJKL", b"\xff" * 800]
+        assert audio_messages == [
+            b"23456789",
+            b"abcdefgh",
+            b"EFGHIJKL",
+            b"mnop",
+            b"qrstuvwx",
+            b"\xff" * 800,
+        ]
+        assert audio_messages.count(b"\xff" * 800) == 1
+        assert session._input_turn == 1
 
     def test_committed_pause_preserves_resumed_onset_for_next_turn(
         self, connector
     ):
         connector.input_preroll_ms = 1
+        connector.input_holdback_ms = 1
         connector.input_pause_preroll_ms = 1
         connector.endpointing_silence_ms = 1
         session = GECXStreamingSession(
@@ -343,10 +420,66 @@ class TestRequestGenerator:
 
         assert audio_messages == [
             b"23456789",
+            b"abcdefgh",
             b"\xff" * 8,
-            b"EFGHIJKLmnopqrst",
+            b"EFGHIJKL",
+            b"mnopqrst",
             b"\xff" * 8,
         ]
+
+    def test_input_queue_backpressure_is_bounded_and_terminal(self, connector):
+        connector.input_preroll_ms = 0
+        connector.input_holdback_ms = 0
+        connector.input_queue_max_chunks = 2
+        connector.input_queue_put_timeout_ms = 0
+        connector.input_queue_put_timeout_seconds = 0
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-backpressure",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+
+        assert session.inbound_queue.maxsize == 2
+        assert session.begin_input_turn() is True
+        assert session.enqueue_audio(b"a" * 1600) is True
+        assert session.enqueue_audio(b"overflow") is False
+
+        assert session.inbound_queue.qsize() == 2
+        assert session.terminal_decision.reason == GECXTerminalReason.STREAM_ERROR
+        assert session.terminal_decision.source == "input_queue_backpressure"
+
+    def test_input_timing_logs_use_counts_without_audio_content(
+        self, connector, caplog
+    ):
+        connector.input_preroll_ms = 0
+        connector.input_holdback_ms = 0
+        connector.endpointing_silence_ms = 0
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-diagnostics",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+        private_audio = b"private caller audio"
+        caplog.set_level(logging.INFO)
+
+        session.begin_input_turn(expect_recognition=True)
+        session.enqueue_audio(private_audio)
+        session.end_audio_turn()
+        session.inbound_queue.put(_STREAM_STOP)
+        generator = session._request_generator()
+        next(generator)  # config
+        list(generator)
+
+        assert "gecx_caller_speech_start" in caplog.text
+        assert "gecx_first_caller_audio_sent" in caplog.text
+        assert "gecx_caller_endpoint_queued" in caplog.text
+        assert "gecx_caller_endpoint_committed" in caplog.text
+        assert f"caller_audio_bytes={len(private_audio)}" in caplog.text
+        assert private_audio.decode() not in caplog.text
 
 
 class TestServerMessageMapping:
@@ -406,7 +539,7 @@ class TestServerMessageMapping:
         assert responses[1]["audio_content"] == b""
 
     def test_first_audio_chunk_is_available_before_ces_turn_completion(
-        self, connector
+        self, connector, caplog
     ):
         session = GECXStreamingSession(
             connector=connector,
@@ -416,6 +549,7 @@ class TestServerMessageMapping:
         )
         session.begin_input_turn()
         stream = session.iter_turn_responses(timeout=1.0)
+        caplog.set_level(logging.INFO)
 
         session._handle_server_message(
             SimpleNamespace(
@@ -436,6 +570,9 @@ class TestServerMessageMapping:
         first_response = next(stream)
         assert first_response["response_type"] == "chunk"
         assert first_response["audio_content"] == b"first frame"
+        assert "gecx_first_response_audio" in caplog.text
+        assert "speech_start_elapsed_seconds=" in caplog.text
+        assert "first frame" not in caplog.text
 
         session._handle_server_message(
             SimpleNamespace(
@@ -588,6 +725,7 @@ class TestServerMessageMapping:
         )
 
         assert private_transcript not in caplog.text
+        assert "gecx_recognition_received" in caplog.text
         assert "transcript_chars=26" in caplog.text
 
     def test_caller_turn_suppresses_stale_no_input_prompt_until_ces_ack(
@@ -1201,7 +1339,7 @@ class TestSendMessage:
         stream_session = MagicMock()
         stream_session.is_terminal = False
         stream_session.enqueue_audio.return_value = True
-        stream_session.drain_responses.return_value = [
+        stream_session.drain_audio_responses.return_value = [
             connector.create_response(
                 conversation_id="conv-1",
                 message_type="agent_response",
@@ -1220,6 +1358,37 @@ class TestSendMessage:
 
         stream_session.enqueue_audio.assert_called_once()
         assert responses[0]["text"] == "OK"
+
+    def test_send_message_holds_ces_output_until_input_endpoint(self, connector):
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-ordered",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            initial_message=None,
+        )
+        queued_response = connector.create_response(
+            conversation_id="conv-ordered",
+            message_type="audio",
+            audio_content=b"response audio",
+            response_type="chunk",
+        )
+        session.begin_input_turn()
+        session.outbound_queue.put(queued_response)
+
+        with patch.object(
+            connector, "streaming_sessions", {"conv-ordered": session}
+        ):
+            responses = list(
+                connector.send_message(
+                    "conv-ordered",
+                    {"input_type": "audio", "audio_data": b"\xff" * 640},
+                )
+            )
+
+        assert responses == []
+        assert session.end_audio_turn() is True
+        assert session.drain_audio_responses() == [queued_response]
 
 
 class TestSpeechBoundaries:

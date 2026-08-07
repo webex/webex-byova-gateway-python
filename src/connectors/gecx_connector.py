@@ -92,6 +92,27 @@ class GECXTerminalDecision:
     decided_at: float
 
 
+@dataclass(frozen=True)
+class _QueuedAudioFrame:
+    """One bounded caller-audio frame waiting for the CES request stream."""
+
+    audio: bytes
+    input_turn: int
+    source: str
+    started_at: float
+
+
+@dataclass(frozen=True)
+class _QueuedAudioEndpoint:
+    """Marks the ordered end of one progressively streamed caller turn."""
+
+    input_turn: int
+    started_at: float
+    queued_frames: int
+    queued_bytes: int
+    trailing_bytes: int
+
+
 def _make_ces_session_id() -> str:
     """Return a CES-valid session id."""
     session_id = str(uuid.uuid4()).replace("-", "")
@@ -133,7 +154,9 @@ class GECXStreamingSession:
         self.initial_message = initial_message
         self.logger = logging.getLogger(__name__)
 
-        self.inbound_queue: queue.Queue = queue.Queue()
+        self.inbound_queue: queue.Queue = queue.Queue(
+            maxsize=connector.input_queue_max_chunks
+        )
         self.outbound_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
         self._stream_started = threading.Event()
@@ -172,10 +195,20 @@ class GECXStreamingSession:
         self._output_audio_gate_seen_bytes = 0
         self._output_audio_gate_buffer = bytearray()
         self._input_lock = threading.Lock()
+        # Before speech starts this is bounded pre-roll. During active speech it
+        # becomes the small unsent tail holdback; the rest is queued to CES as
+        # frames arrive rather than retained until END_OF_INPUT.
         self._input_audio_buffer = bytearray()
         self._input_resume_buffer = bytearray()
         self._input_turn_active = False
         self._input_turn_paused = False
+        self._input_turn = 0
+        self._input_turn_started_at = time.monotonic()
+        self._input_turn_queued_frames = 0
+        self._input_turn_queued_bytes = 0
+        self._input_sent_by_turn: Dict[int, Tuple[int, int]] = {}
+        self._last_input_endpoint_turn = 0
+        self._last_input_endpoint_committed_at: Optional[float] = None
         # CES can autonomously start a no-input prompt immediately before the
         # gateway detects caller speech. Keep that stale output isolated until
         # CES acknowledges the committed caller audio with recognition or an
@@ -265,7 +298,7 @@ class GECXStreamingSession:
                 )
 
     def enqueue_audio(self, audio_chunk: bytes) -> bool:
-        """Buffer caller audio until gateway VAD closes the complete turn."""
+        """Retain bounded pre-roll or progressively queue active caller audio."""
         if not audio_chunk:
             return False
         with self._lifecycle_lock:
@@ -283,9 +316,23 @@ class GECXStreamingSession:
                             del self._input_resume_buffer[:-resume_preroll_bytes]
                         else:
                             self._input_resume_buffer.clear()
+                    stream_audio = b""
+                    input_turn = self._input_turn
+                elif self._input_turn_active:
+                    self._input_audio_buffer.extend(audio_chunk)
+                    holdback_bytes = self.connector.input_audio_bytes_for_ms(
+                        self.connector.input_holdback_ms
+                    )
+                    stream_bytes = max(
+                        0, len(self._input_audio_buffer) - holdback_bytes
+                    )
+                    sample_width = self.connector.input_audio_sample_width
+                    stream_bytes -= stream_bytes % sample_width
+                    stream_audio = bytes(self._input_audio_buffer[:stream_bytes])
+                    del self._input_audio_buffer[:stream_bytes]
+                    input_turn = self._input_turn
                 else:
                     self._input_audio_buffer.extend(audio_chunk)
-                if not self._input_turn_active and not self._input_turn_paused:
                     pre_roll_bytes = self.connector.input_audio_bytes_for_ms(
                         self.connector.input_preroll_ms
                     )
@@ -294,28 +341,46 @@ class GECXStreamingSession:
                             del self._input_audio_buffer[:-pre_roll_bytes]
                         else:
                             self._input_audio_buffer.clear()
+                    stream_audio = b""
+                    input_turn = self._input_turn
+
+            if stream_audio and not self._queue_audio_locked(
+                stream_audio,
+                input_turn=input_turn,
+                source="stream",
+            ):
+                return False
         return True
 
     def pause_input_turn(self, silence_ms: int) -> bool:
-        """Hold a possible turn end and remove its endpoint-triggering silence."""
+        """Hold a possible turn end without retracting already-streamed audio."""
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 self._log_late_input("speech_pause")
                 return False
             with self._input_lock:
-                if not self._input_turn_active:
+                if not self._input_turn_active or self._input_turn_paused:
                     return False
-                silence_bytes = self.connector.input_audio_bytes_for_ms(silence_ms)
-                if silence_bytes:
-                    del self._input_audio_buffer[
-                        -min(silence_bytes, len(self._input_audio_buffer)) :
-                    ]
                 self._input_resume_buffer.clear()
                 self._input_turn_paused = True
+                self._input_turn_active = False
+                held_tail_bytes = len(self._input_audio_buffer)
+                input_turn = self._input_turn
+
+        self.logger.info(
+            "gecx_caller_speech_end_detected conversation_id=%s session=%s "
+            "input_turn=%d vad_silence_ms=%d held_tail_bytes=%d queue_depth=%d",
+            self.conversation_id,
+            self.session_path,
+            input_turn,
+            silence_ms,
+            held_tail_bytes,
+            self.inbound_queue.qsize(),
+        )
         return True
 
     def resume_input_turn(self) -> bool:
-        """Merge bounded pre-roll from a resumed speech segment into this turn."""
+        """Continue one turn with bounded resumed onset and no duplicate endpoint."""
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 self._log_late_input("speech_resume")
@@ -323,10 +388,36 @@ class GECXStreamingSession:
             with self._input_lock:
                 if not self._input_turn_paused:
                     return False
-                self._input_audio_buffer.extend(self._input_resume_buffer)
+                resume_audio = bytes(self._input_resume_buffer)
+                discarded_pause_tail_bytes = len(self._input_audio_buffer)
+                self._input_audio_buffer.clear()
                 self._input_resume_buffer.clear()
                 self._input_turn_paused = False
                 self._input_turn_active = True
+                input_turn = self._input_turn
+
+            discarded = self._reset_output_for_caller_input_locked(
+                expect_recognition=True
+            )
+            if resume_audio and not self._queue_audio_locked(
+                resume_audio,
+                input_turn=input_turn,
+                source="resume_preroll",
+            ):
+                return False
+
+        self._log_discarded_output(discarded)
+        self.logger.info(
+            "gecx_caller_speech_resumed conversation_id=%s session=%s "
+            "input_turn=%d resume_preroll_bytes=%d discarded_pause_tail_bytes=%d "
+            "queue_depth=%d",
+            self.conversation_id,
+            self.session_path,
+            input_turn,
+            len(resume_audio),
+            discarded_pause_tail_bytes,
+            self.inbound_queue.qsize(),
+        )
         return True
 
     def enqueue_text(self, text: str) -> bool:
@@ -337,8 +428,7 @@ class GECXStreamingSession:
             if self._terminal_decision is not None:
                 self._log_late_input("text")
                 return False
-            self.inbound_queue.put(("text", text))
-        return True
+            return self._queue_inbound_item_locked(("text", text), "text")
 
     def enqueue_event(self, event_name: str) -> bool:
         """Queue an event for the CES stream."""
@@ -348,31 +438,125 @@ class GECXStreamingSession:
             if self._terminal_decision is not None:
                 self._log_late_input("event")
                 return False
-            self.inbound_queue.put(("event", event_name))
-        return True
+            return self._queue_inbound_item_locked(("event", event_name), "event")
 
     def end_audio_turn(self) -> bool:
-        """Flush one gateway-delimited caller turn and endpointing silence."""
+        """Queue only the held tail and codec silence for CES endpointing."""
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 self._log_late_input("audio_end")
                 return False
             with self._input_lock:
-                turn_audio = bytes(self._input_audio_buffer)
+                if not self._input_turn_active and not self._input_turn_paused:
+                    return False
+                trailing_audio = bytes(self._input_audio_buffer)
                 resume_audio = bytes(self._input_resume_buffer)
                 self._input_audio_buffer.clear()
                 self._input_audio_buffer.extend(resume_audio)
                 self._input_resume_buffer.clear()
                 self._input_turn_active = False
                 self._input_turn_paused = False
+                input_turn = self._input_turn
+                started_at = self._input_turn_started_at
 
-            chunk_bytes = self.connector.input_audio_bytes_for_ms(100)
-            if chunk_bytes <= 0:
-                chunk_bytes = len(turn_audio) or 1
-            for offset in range(0, len(turn_audio), chunk_bytes):
-                self.inbound_queue.put(turn_audio[offset : offset + chunk_bytes])
-            self.inbound_queue.put(_AUDIO_END)
+            if trailing_audio and not self._queue_audio_locked(
+                trailing_audio,
+                input_turn=input_turn,
+                source="trailing_holdback",
+            ):
+                return False
+            with self._input_lock:
+                endpoint = _QueuedAudioEndpoint(
+                    input_turn=input_turn,
+                    started_at=started_at,
+                    queued_frames=self._input_turn_queued_frames,
+                    queued_bytes=self._input_turn_queued_bytes,
+                    trailing_bytes=len(trailing_audio),
+                )
+            if not self._queue_inbound_item_locked(endpoint, "audio_endpoint"):
+                return False
+
+        self.logger.info(
+            "gecx_caller_endpoint_queued conversation_id=%s session=%s "
+            "input_turn=%d caller_audio_frames=%d caller_audio_bytes=%d "
+            "trailing_bytes=%d endpointing_silence_ms=%d queue_depth=%d",
+            self.conversation_id,
+            self.session_path,
+            endpoint.input_turn,
+            endpoint.queued_frames,
+            endpoint.queued_bytes,
+            endpoint.trailing_bytes,
+            self.connector.endpointing_silence_ms,
+            self.inbound_queue.qsize(),
+        )
         return True
+
+    def _queue_audio_locked(
+        self,
+        audio: bytes,
+        *,
+        input_turn: int,
+        source: str,
+    ) -> bool:
+        """Split caller audio into bounded frames and queue it in order."""
+        if not audio:
+            return True
+        chunk_bytes = self.connector.input_audio_bytes_for_ms(
+            self.connector.input_stream_chunk_ms
+        )
+        if chunk_bytes <= 0:
+            chunk_bytes = len(audio)
+        sample_width = self.connector.input_audio_sample_width
+        chunk_bytes = max(sample_width, chunk_bytes - (chunk_bytes % sample_width))
+        with self._input_lock:
+            started_at = self._input_turn_started_at
+
+        for offset in range(0, len(audio), chunk_bytes):
+            chunk = audio[offset : offset + chunk_bytes]
+            frame = _QueuedAudioFrame(
+                audio=chunk,
+                input_turn=input_turn,
+                source=source,
+                started_at=started_at,
+            )
+            if not self._queue_inbound_item_locked(frame, "audio"):
+                return False
+            with self._input_lock:
+                if input_turn == self._input_turn:
+                    self._input_turn_queued_frames += 1
+                    self._input_turn_queued_bytes += len(chunk)
+        return True
+
+    def _queue_inbound_item_locked(self, item: Any, item_type: str) -> bool:
+        """Apply bounded backpressure to the CES request queue."""
+        try:
+            self.inbound_queue.put(
+                item,
+                timeout=self.connector.input_queue_put_timeout_seconds,
+            )
+            return True
+        except queue.Full:
+            self.logger.error(
+                "gecx_input_queue_backpressure conversation_id=%s session=%s "
+                "item_type=%s queue_depth=%d queue_max_chunks=%d "
+                "put_timeout_ms=%d",
+                self.conversation_id,
+                self.session_path,
+                item_type,
+                self.inbound_queue.qsize(),
+                self.connector.input_queue_max_chunks,
+                self.connector.input_queue_put_timeout_ms,
+            )
+            self.terminate(
+                reason=GECXTerminalReason.STREAM_ERROR,
+                outcome=GECXTerminalOutcome.SESSION_END,
+                source="input_queue_backpressure",
+                metadata={
+                    "queue_max_chunks": self.connector.input_queue_max_chunks,
+                    "put_timeout_ms": self.connector.input_queue_put_timeout_ms,
+                },
+            )
+            return False
 
     def _log_late_input(self, input_type: str) -> None:
         decision = self._terminal_decision
@@ -395,6 +579,15 @@ class GECXStreamingSession:
             except queue.Empty:
                 break
         return responses
+
+    def drain_audio_responses(self) -> list[Dict[str, Any]]:
+        """Keep caller-owned CES output ordered behind committed END_OF_INPUT."""
+        with self._lifecycle_lock:
+            with self._input_lock:
+                input_open = self._input_turn_active or self._input_turn_paused
+            if input_open and self._terminal_decision is None:
+                return []
+            return self.drain_responses()
 
     def _publish_response_locked(self, response: Dict[str, Any]) -> bool:
         """Deliver a response to its active turn waiter or live WxCC stream."""
@@ -420,58 +613,110 @@ class GECXStreamingSession:
         self._turn_started_at = time.monotonic()
 
     def begin_input_turn(self, *, expect_recognition: bool = False) -> bool:
-        """Isolate the response turn when gateway VAD detects caller speech."""
+        """Flush speech pre-roll and isolate the matching CES response turn."""
         with self._lifecycle_lock:
             if self._terminal_decision is not None:
                 self._log_late_input("speech_boundary")
                 return False
             with self._input_lock:
+                if self._input_turn_active and not self._input_turn_paused:
+                    self.logger.debug(
+                        "gecx_duplicate_speech_start_suppressed "
+                        "conversation_id=%s input_turn=%d",
+                        self.conversation_id,
+                        self._input_turn,
+                    )
+                    return True
+                pre_roll = bytes(self._input_audio_buffer)
+                self._input_audio_buffer.clear()
                 self._input_turn_active = True
                 self._input_turn_paused = False
                 self._input_resume_buffer.clear()
-            with self._lock:
-                discarded_chunks = self._turn_audio_chunk_count
-                discarded_audio_bytes = self._turn_audio_bytes
-                discarded_text_chars = sum(map(len, self._text_buffer))
-                self._text_buffer = []
-                self._turn_audio_emitted = False
-                self._turn_audio_chunk_count = 0
-                self._turn_audio_bytes = 0
-                self._reset_output_audio_gate()
-            discarded_responses = 0
-            while True:
-                try:
-                    self.outbound_queue.get_nowait()
-                    discarded_responses += 1
-                except queue.Empty:
-                    break
-            self._turn_started_at = time.monotonic()
-            self._turn_completed.clear()
-            self._caller_response_expected = True
-            self._output_turn_active = False
-            self._awaiting_input_ack = expect_recognition
-            self._suppressed_pre_input_messages = 0
-            self._suppressed_pre_input_audio_bytes = 0
-            self._suppressed_pre_input_text_chars = 0
+                self._input_turn += 1
+                input_turn = self._input_turn
+                self._input_turn_started_at = time.monotonic()
+                self._input_turn_queued_frames = 0
+                self._input_turn_queued_bytes = 0
 
-        if any(
-            (
-                discarded_chunks,
-                discarded_audio_bytes,
-                discarded_text_chars,
-                discarded_responses,
+            discarded = self._reset_output_for_caller_input_locked(
+                expect_recognition=expect_recognition
             )
-        ):
             self.logger.info(
-                "gecx_output_discarded_on_caller_start conversation_id=%s "
-                "chunks=%d audio_bytes=%d text_chars=%d queued_responses=%d",
+                "gecx_caller_speech_start conversation_id=%s session=%s "
+                "input_turn=%d preroll_bytes=%d holdback_ms=%d queue_depth=%d",
                 self.conversation_id,
-                discarded_chunks,
-                discarded_audio_bytes,
-                discarded_text_chars,
-                discarded_responses,
+                self.session_path,
+                input_turn,
+                len(pre_roll),
+                self.connector.input_holdback_ms,
+                self.inbound_queue.qsize(),
             )
+            if pre_roll and not self._queue_audio_locked(
+                pre_roll,
+                input_turn=input_turn,
+                source="speech_preroll",
+            ):
+                return False
+
+        self._log_discarded_output(discarded)
         return True
+
+    def _reset_output_for_caller_input_locked(
+        self, *, expect_recognition: bool
+    ) -> Tuple[int, int, int, int]:
+        """Discard stale output and arm response ordering for caller speech."""
+        with self._lock:
+            discarded_chunks = self._turn_audio_chunk_count
+            discarded_audio_bytes = self._turn_audio_bytes
+            discarded_text_chars = sum(map(len, self._text_buffer))
+            self._text_buffer = []
+            self._turn_audio_emitted = False
+            self._turn_audio_chunk_count = 0
+            self._turn_audio_bytes = 0
+            self._reset_output_audio_gate()
+        discarded_responses = 0
+        while True:
+            try:
+                self.outbound_queue.get_nowait()
+                discarded_responses += 1
+            except queue.Empty:
+                break
+        self._turn_started_at = time.monotonic()
+        self._turn_completed.clear()
+        self._caller_response_expected = True
+        self._output_turn_active = False
+        self._awaiting_input_ack = expect_recognition
+        self._suppressed_pre_input_messages = 0
+        self._suppressed_pre_input_audio_bytes = 0
+        self._suppressed_pre_input_text_chars = 0
+        return (
+            discarded_chunks,
+            discarded_audio_bytes,
+            discarded_text_chars,
+            discarded_responses,
+        )
+
+    def _log_discarded_output(
+        self, discarded: Tuple[int, int, int, int]
+    ) -> None:
+        """Log only aggregate stale-output diagnostics, never content."""
+        if not any(discarded):
+            return
+        (
+            discarded_chunks,
+            discarded_audio_bytes,
+            discarded_text_chars,
+            discarded_responses,
+        ) = discarded
+        self.logger.info(
+            "gecx_output_discarded_on_caller_start conversation_id=%s "
+            "chunks=%d audio_bytes=%d text_chars=%d queued_responses=%d",
+            self.conversation_id,
+            discarded_chunks,
+            discarded_audio_bytes,
+            discarded_text_chars,
+            discarded_responses,
+        )
 
     def _acknowledge_caller_input_locked(self, source: str) -> None:
         """Open the post-input response turn after CES accepts caller audio."""
@@ -718,10 +963,21 @@ class GECXStreamingSession:
                 self._output_turn_active = False
                 self._caller_response_expected = False
 
-            # Queue the stop sentinel exactly once. The request generator also
-            # checks terminal state after dequeuing to close the final race where
-            # it already pulled caller audio as termination was decided.
-            self.inbound_queue.put(_STREAM_STOP)
+            # Wake a blocked request generator when capacity remains. If the
+            # bounded queue is full, the stop event still closes it after the
+            # item currently being yielded; never block terminal cleanup behind
+            # a stalled CES consumer.
+            try:
+                self.inbound_queue.put_nowait(_STREAM_STOP)
+            except queue.Full:
+                self.logger.warning(
+                    "gecx_stream_stop_queue_full conversation_id=%s session=%s "
+                    "queue_depth=%d queue_max_chunks=%d",
+                    self.conversation_id,
+                    self.session_path,
+                    self.inbound_queue.qsize(),
+                    self.connector.input_queue_max_chunks,
+                )
 
             terminal_response = self._create_terminal_response(
                 decision,
@@ -830,13 +1086,79 @@ class GECXStreamingSession:
                 break
             if self.is_terminal:
                 break
-            if item is _AUDIO_END:
+            if item is _AUDIO_END or isinstance(item, _QueuedAudioEndpoint):
+                if isinstance(item, _QueuedAudioEndpoint):
+                    committed_at = time.monotonic()
+                    with self._input_lock:
+                        streamed_frames, streamed_bytes = self._input_sent_by_turn.pop(
+                            item.input_turn, (0, 0)
+                        )
+                        self._last_input_endpoint_turn = item.input_turn
+                        self._last_input_endpoint_committed_at = committed_at
+                    self.logger.info(
+                        "gecx_caller_endpoint_committed conversation_id=%s "
+                        "session=%s input_turn=%d caller_audio_frames=%d "
+                        "caller_audio_bytes=%d trailing_bytes=%d "
+                        "endpointing_silence_ms=%d elapsed_seconds=%.3f "
+                        "queue_depth=%d",
+                        self.conversation_id,
+                        self.session_path,
+                        item.input_turn,
+                        streamed_frames,
+                        streamed_bytes,
+                        item.trailing_bytes,
+                        self.connector.endpointing_silence_ms,
+                        committed_at - item.started_at,
+                        self.inbound_queue.qsize(),
+                    )
                 for audio_chunk in self.connector.endpointing_silence_chunks():
                     if self.is_terminal:
                         break
                     yield ces_v1.BidiSessionClientMessage(
                         realtime_input=ces_v1.SessionInput(audio=audio_chunk)
                     )
+                continue
+
+            if isinstance(item, _QueuedAudioFrame):
+                with self._input_lock:
+                    previous_frames, previous_bytes = self._input_sent_by_turn.get(
+                        item.input_turn, (0, 0)
+                    )
+                    streamed_frames = previous_frames + 1
+                    streamed_bytes = previous_bytes + len(item.audio)
+                    self._input_sent_by_turn[item.input_turn] = (
+                        streamed_frames,
+                        streamed_bytes,
+                    )
+                if streamed_frames == 1:
+                    self.logger.info(
+                        "gecx_first_caller_audio_sent conversation_id=%s "
+                        "session=%s input_turn=%d source=%s frame_bytes=%d "
+                        "elapsed_seconds=%.3f queue_depth=%d",
+                        self.conversation_id,
+                        self.session_path,
+                        item.input_turn,
+                        item.source,
+                        len(item.audio),
+                        time.monotonic() - item.started_at,
+                        self.inbound_queue.qsize(),
+                    )
+                else:
+                    self.logger.debug(
+                        "gecx_caller_audio_streamed conversation_id=%s "
+                        "input_turn=%d frames=%d bytes=%d frame_bytes=%d "
+                        "source=%s queue_depth=%d",
+                        self.conversation_id,
+                        item.input_turn,
+                        streamed_frames,
+                        streamed_bytes,
+                        len(item.audio),
+                        item.source,
+                        self.inbound_queue.qsize(),
+                    )
+                yield ces_v1.BidiSessionClientMessage(
+                    realtime_input=ces_v1.SessionInput(audio=item.audio)
+                )
                 continue
             if isinstance(item, tuple):
                 kind, payload = item
@@ -924,13 +1246,18 @@ class GECXStreamingSession:
         if message.recognition_result:
             self._acknowledge_caller_input_locked("recognition_result")
             transcript = message.recognition_result.transcript.strip()
-            if transcript:
-                self.logger.debug(
-                    "gecx_recognition_received conversation_id=%s "
-                    "transcript_chars=%d",
-                    conversation_id,
-                    len(transcript),
-                )
+            with self._input_lock:
+                input_turn = self._input_turn
+                input_turn_started_at = self._input_turn_started_at
+            self.logger.info(
+                "gecx_recognition_received conversation_id=%s session=%s "
+                "input_turn=%d transcript_chars=%d elapsed_seconds=%.3f",
+                conversation_id,
+                self.session_path,
+                input_turn,
+                len(transcript),
+                time.monotonic() - input_turn_started_at,
+            )
 
         if message.interruption_signal:
             self.logger.info(f"[{conversation_id}] [GECX] Barge-in interruption signal")
@@ -1176,13 +1503,37 @@ class GECXStreamingSession:
             self._publish_response_locked(response)
 
         if chunk_index == 1:
+            response_audio_at = time.monotonic()
+            with self._input_lock:
+                input_turn = self._input_turn
+                speech_start_elapsed_seconds = (
+                    -1.0
+                    if autonomous_output
+                    else response_audio_at - self._input_turn_started_at
+                )
+                endpoint_committed = (
+                    not autonomous_output
+                    and self._last_input_endpoint_turn == input_turn
+                    and self._last_input_endpoint_committed_at is not None
+                )
+                endpoint_elapsed_seconds = (
+                    response_audio_at - self._last_input_endpoint_committed_at
+                    if endpoint_committed
+                    else -1.0
+                )
             self.logger.info(
-                "gecx_first_audio_chunk conversation_id=%s bytes=%d "
-                "elapsed_seconds=%.3f delivery_mode=%s "
+                "gecx_first_response_audio conversation_id=%s input_turn=%d "
+                "bytes=%d speech_start_elapsed_seconds=%.3f "
+                "endpoint_committed=%s endpoint_elapsed_seconds=%.3f "
+                "output_turn_elapsed_seconds=%.3f delivery_mode=%s "
                 "barge_in_enabled=%s",
                 self.conversation_id,
+                input_turn,
                 len(audio_bytes),
-                time.monotonic() - self._turn_started_at,
+                speech_start_elapsed_seconds,
+                endpoint_committed,
+                endpoint_elapsed_seconds,
+                response_audio_at - self._turn_started_at,
                 "async" if autonomous_output else "turn",
                 barge_in_enabled,
             )
@@ -1414,6 +1765,11 @@ class GECXConnector(IVendorConnector):
         self.output_sample_rate_hertz = config.get("output_sample_rate_hertz", 8000)
         self.input_audio_encoding = config.get("input_audio_encoding", "MULAW")
         self.output_audio_encoding = config.get("output_audio_encoding", "MULAW")
+        self.input_audio_sample_width = (
+            2
+            if self._normalize_encoding_name(self.input_audio_encoding) == "LINEAR_16"
+            else 1
+        )
         normalized_output_encoding = (
             str(self.output_audio_encoding)
             .upper()
@@ -1477,8 +1833,24 @@ class GECXConnector(IVendorConnector):
         self.input_preroll_ms = min(
             2000, max(0, int(config.get("input_preroll_ms", 500)))
         )
+        self.input_holdback_ms = min(
+            500, max(0, int(config.get("input_holdback_ms", 250)))
+        )
         self.input_pause_preroll_ms = min(
             1000, max(0, int(config.get("input_pause_preroll_ms", 250)))
+        )
+        self.input_stream_chunk_ms = min(
+            100, max(20, int(config.get("input_stream_chunk_ms", 100)))
+        )
+        self.input_queue_max_chunks = min(
+            200, max(1, int(config.get("input_queue_max_chunks", 20)))
+        )
+        self.input_queue_put_timeout_ms = min(
+            1000,
+            max(0, int(config.get("input_queue_put_timeout_ms", 50))),
+        )
+        self.input_queue_put_timeout_seconds = (
+            self.input_queue_put_timeout_ms / 1000.0
         )
         self.terminal_response_grace_seconds = min(
             10.0,
@@ -1731,12 +2103,13 @@ class GECXConnector(IVendorConnector):
             stream_session.clear_async_response_sink(response_sink)
 
     def pause_speech_turn(self, conversation_id: str, silence_ms: int) -> None:
-        """Hold a possible end and strip the silence that triggered gateway VAD."""
+        """Hold a possible end without retracting audio already sent to CES."""
         with self.sessions_lock:
             stream_session = self.streaming_sessions.get(conversation_id)
         if stream_session and stream_session.pause_input_turn(silence_ms):
             self.logger.info(
-                "[%s] [GECX] Holding speech end; removed %dms trailing silence",
+                "[%s] [GECX] Holding speech end after %dms VAD silence; "
+                "already-streamed caller audio remains committed",
                 conversation_id,
                 silence_ms,
             )
@@ -1781,7 +2154,8 @@ class GECXConnector(IVendorConnector):
 
         boundary_kind = message_data.get("speech_boundary", {}).get("kind")
         if boundary_kind == "speech_started":
-            stream_session.begin_input_turn(expect_recognition=True)
+            if not stream_session.begin_input_turn(expect_recognition=True):
+                yield from stream_session.drain_responses()
             return
 
         if boundary_kind != "speech_ended":
@@ -1933,8 +2307,7 @@ class GECXConnector(IVendorConnector):
             yield from stream_session.drain_responses()
             return
 
-        for response in stream_session.drain_responses():
-            yield response
+        yield from stream_session.drain_audio_responses()
 
     def _handle_text_input(
         self,

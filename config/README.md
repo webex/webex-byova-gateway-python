@@ -138,7 +138,11 @@ connectors:
       # Trailing codec silence for reliable CES audio endpoint detection.
       endpointing_silence_ms: 2000
       input_preroll_ms: 500
+      input_holdback_ms: 250
       input_pause_preroll_ms: 250
+      input_stream_chunk_ms: 100
+      input_queue_max_chunks: 20
+      input_queue_put_timeout_ms: 50
       terminal_response_grace_seconds: 3
       # Omit auth settings to use Application Default Credentials.
       # service_account_key: "/path/to/service-account.json"
@@ -155,6 +159,11 @@ connector initialization; broader output formats are not silently mislabeled.
 The leading-audio guard activates only when the first CES frame is at least
 `output_leading_audio_min_ms` and contains no sustained speech. It then retains
 `output_speech_preroll_ms` before the first detected speech frames.
+Caller input follows a separate progressive path: bounded pre-roll is flushed
+at speech start, active normalized audio is queued as it arrives, and only the
+configured `input_holdback_ms` tail waits for a committed speech end. The CES
+input queue is bounded; sustained backpressure ends the session explicitly
+instead of accumulating latency or silently dropping caller audio.
 When the gateway detects caller speech, it also isolates the next response turn
 until CES sends a recognition result. An interruption signal alone does not
 open the gate because CES can send the stale turn completion immediately after

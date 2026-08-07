@@ -101,6 +101,13 @@ gecx_connector:
     barge_in_enabled: false
     force_input_format: "wxcc"
     turn_response_timeout_seconds: 30
+    endpointing_silence_ms: 2000
+    input_preroll_ms: 500
+    input_holdback_ms: 250
+    input_pause_preroll_ms: 250
+    input_stream_chunk_ms: 100
+    input_queue_max_chunks: 20
+    input_queue_put_timeout_ms: 50
     # Omit auth entirely to use Application Default Credentials (recommended on
     # Google Cloud; the runtime service account needs roles/ces.client).
     # service_account_key: "C:/path/to/ces-service-account.json"
@@ -181,12 +188,21 @@ are worth understanding if you fork this connector.
 ### Real-time streaming bridge
 
 `GECXStreamingSession` runs a background thread per conversation that holds one
-CES `BidiRunSession` open. WxCC caller audio is pushed onto an inbound queue and
-forwarded to CES; CES server messages (STT, agent text, TTS audio,
-interruption, and end-of-session) are mapped to BYOVA responses on an outbound
-queue. After the gateway emits `END_OF_INPUT`, it consumes that queue
-incrementally instead of materializing the complete turn. The first CES audio
-frame can therefore reach WxCC before CES emits `turn_completed`.
+CES `BidiRunSession` open. Before speech, it retains only bounded pre-roll. At
+`START_OF_INPUT`, it queues that pre-roll immediately; while speech is active,
+it forwards normalized caller audio as frames arrive while retaining only a
+small `input_holdback_ms` tail. `END_OF_INPUT` never requeues the complete
+utterance: it adds the unsent tail and codec-correct endpointing silence. CES
+server messages (recognition, agent text, TTS audio, interruption, and
+end-of-session) are mapped to BYOVA responses on an outbound queue.
+
+The CES input queue is bounded by `input_queue_max_chunks`, and each audio item
+is at most `input_stream_chunk_ms`. A full queue applies the configured short
+put timeout and then terminates explicitly; it does not grow memory, silently
+drop audio, or accumulate unbounded latency. CES may recognize caller audio
+before gateway VAD commits `END_OF_INPUT`, but caller-owned output remains
+queued until that boundary so WxCC response ordering is preserved. The first
+CES response-audio frame can then reach WxCC before CES emits `turn_completed`.
 
 CES can also produce an autonomous no-input prompt after the preceding
 caller-owned response has already reached `FINAL`. The connector publishes
@@ -198,7 +214,7 @@ validated end to end. When enabled, WxCC continues forwarding caller audio
 while CES waits for an interruption or a reply.
 
 When gateway VAD emits `START_OF_INPUT`, the connector opens an isolated caller
-turn and waits for CES to acknowledge the committed audio with a recognition
+turn and waits for CES to acknowledge the streaming audio with a recognition
 result. An interruption signal does not open the gate because CES can complete
 the interrupted no-input turn immediately afterward. CES output produced before
 recognition belongs to that overlapping autonomous turn and is suppressed. The
@@ -235,10 +251,12 @@ caller-audio frame is ingested while CES responses are being produced.
 At an apparent speech end, the gateway holds `END_OF_INPUT` for
 `speech_end_grace_ms` (default: `1000`, maximum: `2000`). With the default
 `end_silence_ms` value, this creates a bounded two-second natural-pause window.
-If speech resumes in that window, GECX removes the endpoint-triggering pause,
-merges up to `input_pause_preroll_ms` of the resumed onset, and keeps one CES
-input turn. Otherwise it commits the boundary normally. Configure the observer
-under the top-level `voice_activity_detection` block in `config/config.yaml`.
+If speech resumes in that window, GECX discards only its unsent tail, forwards
+up to `input_pause_preroll_ms` of resumed onset, and keeps one CES input turn
+without emitting a duplicate endpoint. Audio already streamed to CES is never
+retracted. Otherwise it commits the boundary by forwarding the held tail and
+configured endpointing silence. Configure the observer under the top-level
+`voice_activity_detection` block in `config/config.yaml`.
 
 ### Output audio: raw 8 kHz mu-law BYOVA chunks
 
@@ -400,9 +418,13 @@ window for an `EndSession` that follows the final TTS frames.
 | `output_speech_preroll_ms` | No | Audio retained immediately before detected speech (default: `100`) |
 | `force_input_format` | No | `wxcc` forces 8 kHz MULAW when input metadata is unavailable |
 | `turn_response_timeout_seconds` | No | Maximum wait after gateway speech end for CES to complete the agent turn (default: `30`) |
-| `endpointing_silence_ms` | No | Codec-correct silence appended to each buffered caller turn for CES endpoint detection (default: `2000`; one second may leave a turn open until more audio arrives) |
+| `endpointing_silence_ms` | No | Codec-correct silence appended after the progressively streamed caller tail for CES endpoint detection (default: `2000`; one second may leave a turn open until more audio arrives) |
 | `input_preroll_ms` | No | Bounded caller audio retained before gateway speech start to avoid clipping (default: `500`) |
+| `input_holdback_ms` | No | Small unsent active-audio tail used for pause/resume and committed endpointing (default: `250`, maximum: `500`) |
 | `input_pause_preroll_ms` | No | Maximum onset audio retained while a possible speech end is held, then merged if the caller resumes (default: `250`) |
+| `input_stream_chunk_ms` | No | Maximum duration of each queued CES caller-audio item (default: `100`, range: `20`-`100`) |
+| `input_queue_max_chunks` | No | Maximum pending CES input items before explicit backpressure failure (default: `20`, range: `1`-`200`) |
+| `input_queue_put_timeout_ms` | No | Maximum wait for CES input queue capacity before terminating the session (default: `50`, maximum: `1000`) |
 | `terminal_response_grace_seconds` | No | Wait for delayed `EndSession` after a terminal-sounding TTS turn (default: `3`) |
 | `transfer_metadata_keys` | No | EndSession metadata keys that, when truthy, trigger a human transfer (see [Escalation](#escalation-to-a-human-agent)) |
 | `transfer_reason_keywords` | No | Substrings that, if found in a reason/type metadata value, trigger a transfer |
@@ -433,11 +455,12 @@ create the JSON cache.
 | Stream fails on start | `roles/ces.client`, API enabled, correct `location` |
 | `404` / `UNIMPLEMENTED` on BidiRunSession | Wrong endpoint — must be regional `ces.<location>.rep.googleapis.com` (auto-derived from `location`) |
 | `429 Resource exhausted` | CES per-app session quota; retry/backoff or request more quota |
-| No audio to caller (silence) | Confirm `gecx_first_audio_chunk` appears, the next response is a BYOVA `CHUNK`, and output remains `MULAW` / `8000`. See [Output audio](#output-audio-raw-8-khz-mu-law-byova-chunks). |
+| No audio to caller (silence) | Confirm `gecx_first_response_audio` appears, the next response is a BYOVA `CHUNK`, and output remains `MULAW` / `8000`. See [Output audio](#output-audio-raw-8-khz-mu-law-byova-chunks). |
 | Long static/noise before a prompt | Look for `gecx_long_leading_audio_detected` followed by `gecx_leading_audio_suppressed`; tune the guarded output settings only with captured CES evidence. |
 | Garbled speech | Confirm the gateway logs the declared WxCC encoding/sample rate; use `force_input_format: "wxcc"` only when the client omits metadata |
-| Agent recognizes the caller but its reply is not audible | Confirm `gecx_pre_input_output_suppressed` is followed by `gecx_caller_input_acknowledged`, `gecx_first_audio_chunk`, and `gecx_streamed_turn_complete` for the same conversation. |
-| CES logs a no-input prompt but the caller does not hear it | Confirm `gecx_first_audio_chunk` reports `delivery_mode=async`; its `barge_in_enabled` value should match connector configuration. Verify the active WxCC stream did not cancel before that timestamp. |
+| Agent recognizes the caller but its reply is not audible | Confirm `gecx_pre_input_output_suppressed` is followed by `gecx_caller_input_acknowledged`, `gecx_first_response_audio`, and `gecx_streamed_turn_complete` for the same conversation. |
+| CES logs a no-input prompt but the caller does not hear it | Confirm `gecx_first_response_audio` reports `delivery_mode=async`; its `barge_in_enabled` value should match connector configuration. Verify the active WxCC stream did not cancel before that timestamp. |
+| Session ends with input backpressure | Correlate `gecx_input_queue_backpressure` with CES/network health. Increase `input_queue_max_chunks` only after measuring frame cadence and acceptable latency; do not mask a stalled CES stream with an unbounded queue. |
 | No response after `END_OF_INPUT` | Check for `turn_completed` or a turn-completion timeout in `[GECX]` logs; increase `turn_response_timeout_seconds` if the agent regularly needs more than 30 seconds |
 | `GoAway` from CES | The connector intentionally emits one `SESSION_END` and half-closes CES; it does not reconnect in the current implementation |
 | Import error | `pip install google-cloud-ces` |
@@ -447,10 +470,22 @@ create the JSON cache.
 Search gateway logs for `[GECX]`:
 
 - `Starting conversation` — session created
-- `STT` — recognition results from CES
+- `gateway_caller_speech_start_detected` / `gecx_caller_speech_start` — gateway
+  VAD speech start and the pre-roll queued for the CES input turn
+- `gecx_first_caller_audio_sent` — first caller-audio frame yielded to CES,
+  including source, frame size, queue depth, and latency from speech start
+- `gecx_caller_audio_streamed` — DEBUG cumulative caller-audio frame/byte counts
+- `gateway_caller_speech_end_detected` / `gecx_caller_speech_end_detected` —
+  gateway VAD speech end, grace configuration, and the bounded unsent tail
+- `gecx_caller_endpoint_queued` / `gecx_caller_endpoint_committed` — only the
+  held tail and configured codec silence were ordered after streamed audio
+- `gecx_recognition_received` — recognition timing and transcript length only;
+  transcript content is never logged
 - `Agent` — text responses
-- `gecx_first_audio_chunk` — first raw CES frame published for WxCC, including
+- `gecx_first_response_audio` — first raw CES frame published for WxCC, including
   first-frame latency, `async`/`turn` delivery mode, and barge-in state
+- `gecx_input_queue_backpressure` — the bounded CES input queue remained full
+  past its put timeout and the session was terminated explicitly
 - `gecx_long_leading_audio_detected` — an anomalously long low-energy CES
   prefix activated the guarded speech gate
 - `gecx_leading_audio_suppressed` — the gate opened on sustained speech and
