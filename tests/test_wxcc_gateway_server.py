@@ -458,9 +458,7 @@ class TestConversationProcessor:
             lambda response: not async_responses.append(response)
         )
 
-        with patch(
-            "src.core.wxcc_gateway_server.threading.Timer", FakeTimer
-        ):
+        with patch("src.core.wxcc_gateway_server.threading.Timer", FakeTimer):
             first = list(processor._process_audio_input(mock_audio_input))
             held_end = list(processor._process_audio_input(mock_audio_input))
             resumed = list(processor._process_audio_input(mock_audio_input))
@@ -515,6 +513,143 @@ class TestConversationProcessor:
         )
 
         assert processor.speech_end_grace_ms == expected_grace_ms
+
+    @pytest.mark.parametrize(
+        ("configured_grace_ms", "expected_grace_ms"),
+        [
+            (None, 200),
+            (-1, 0),
+            (2500, 1000),
+        ],
+    )
+    def test_gateway_bounds_recognition_assisted_grace(
+        self,
+        mock_router,
+        configured_grace_ms,
+        expected_grace_ms,
+    ):
+        vad_config = {
+            "recognition_assisted_endpointing_enabled": True,
+        }
+        if configured_grace_ms is not None:
+            vad_config["recognition_assisted_grace_ms"] = configured_grace_ms
+
+        processor = ConversationProcessor(
+            conversation_id="test_conv_123",
+            virtual_agent_id="test_agent_456",
+            router=mock_router,
+            vad_config=vad_config,
+        )
+
+        assert processor.recognition_assisted_endpointing_enabled is True
+        assert processor.recognition_assisted_grace_ms == expected_grace_ms
+
+    def test_recognition_before_vad_pause_uses_short_cancellable_grace(
+        self, mock_router
+    ):
+        class FakeTimer:
+            instances = []
+
+            def __init__(self, interval, callback):
+                self.interval = interval
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                self.__class__.instances.append(self)
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        processor = ConversationProcessor(
+            conversation_id="test_conv_123",
+            virtual_agent_id="test_agent_456",
+            router=mock_router,
+            vad_config={
+                "speech_end_grace_ms": 1000,
+                "recognition_assisted_endpointing_enabled": True,
+                "recognition_assisted_grace_ms": 200,
+            },
+        )
+        processor.speech_boundary_observer = MagicMock(end_silence_ms=1000)
+        processor.set_async_response_sink(lambda _response: True)
+        acknowledgement_sink = (
+            mock_router.set_input_acknowledgement_sink.call_args.args[2]
+        )
+
+        with patch("src.core.wxcc_gateway_server.threading.Timer", FakeTimer):
+            acknowledgement_sink("recognition_result")
+            processor._schedule_speech_end(8000)
+
+            assert [timer.interval for timer in FakeTimer.instances] == [0.2]
+            assert processor._resume_pending_speech_end() is True
+            assert FakeTimer.instances[0].cancelled is True
+
+            processor._schedule_speech_end(8000)
+
+        assert [timer.interval for timer in FakeTimer.instances] == [0.2, 1.0]
+
+    def test_recognition_during_full_grace_replaces_pending_timer(self, mock_router):
+        class FakeTimer:
+            instances = []
+
+            def __init__(self, interval, callback):
+                self.interval = interval
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                self.__class__.instances.append(self)
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        processor = ConversationProcessor(
+            conversation_id="test_conv_123",
+            virtual_agent_id="test_agent_456",
+            router=mock_router,
+            vad_config={
+                "speech_end_grace_ms": 1000,
+                "recognition_assisted_endpointing_enabled": True,
+                "recognition_assisted_grace_ms": 200,
+            },
+        )
+        processor.speech_boundary_observer = MagicMock(end_silence_ms=1000)
+        processor.set_async_response_sink(lambda _response: True)
+        acknowledgement_sink = (
+            mock_router.set_input_acknowledgement_sink.call_args.args[2]
+        )
+
+        with patch("src.core.wxcc_gateway_server.threading.Timer", FakeTimer):
+            processor._schedule_speech_end(8000)
+            acknowledgement_sink("recognition_result")
+
+            assert [timer.interval for timer in FakeTimer.instances] == [1.0, 0.2]
+            assert FakeTimer.instances[0].cancelled is True
+            assert processor.has_async_work() is True
+
+            # A cancelled timer racing with its replacement cannot steal the
+            # replacement's async-work ownership or commit the caller turn.
+            FakeTimer.instances[0].callback()
+            assert processor.has_async_work() is True
+
+            FakeTimer.instances[1].callback()
+
+        assert processor.has_async_work() is False
+        operations = [call.args[1] for call in mock_router.route_request.call_args_list]
+        assert operations.count("commit_speech_turn") == 1
+
+    def test_recognition_assisted_endpointing_is_disabled_by_default(
+        self, processor, mock_router
+    ):
+        processor.set_async_response_sink(lambda _response: True)
+
+        assert processor.recognition_assisted_endpointing_enabled is False
+        mock_router.set_input_acknowledgement_sink.assert_not_called()
 
     def test_gateway_suppresses_overlapping_boundaries_while_response_pending(
         self, processor, mock_router, mock_audio_input

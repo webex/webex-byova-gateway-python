@@ -41,6 +41,9 @@ The sample includes:
 - Direct delivery of autonomous CES no-input prompts to the active WxCC stream;
   barge-in is disabled by default and can be enabled only for those prompts,
   while caller-triggered replies retain ordered gateway speech boundaries
+- Optional recognition-assisted GECX endpointing that keeps caller audio
+  streaming, preserves local VAD as the boundary owner, and shortens only the
+  cancellable post-pause grace when CES has recognized the current turn
 - gRPC and HTTP health checks
 - A development monitoring dashboard
 - Unit tests and local gRPC smoke-test utilities

@@ -83,8 +83,14 @@ class ConversationProcessor:
         self._connector_response_sink: Optional[
             Callable[[Dict[str, Any]], bool]
         ] = None
+        self._connector_input_acknowledgement_sink: Callable[[str], None] = (
+            self._handle_input_acknowledgement
+        )
         self._speech_end_lock = threading.Lock()
         self._pending_speech_end_timer: Optional[threading.Timer] = None
+        self._pending_speech_end_sample_rate_hertz: Optional[int] = None
+        self._pending_speech_end_uses_recognition_grace = False
+        self._caller_input_acknowledged = False
         self._speech_response_pending = False
         self._async_task_count = 0
         vad_settings = dict(vad_config or {})
@@ -95,13 +101,28 @@ class ConversationProcessor:
             2000,
             max(0, int(vad_settings.get("speech_end_grace_ms", 1000))),
         )
+        self.recognition_assisted_endpointing_enabled = (
+            vad_settings.get("recognition_assisted_endpointing_enabled", False) is True
+        )
+        self.recognition_assisted_grace_ms = min(
+            self.speech_end_grace_ms,
+            max(
+                0,
+                int(vad_settings.get("recognition_assisted_grace_ms", 200)),
+            ),
+        )
         self.speech_boundary_observer = SileroSpeechBoundaryObserver(
             conversation_id,
             **{
                 key: value
                 for key, value in vad_settings.items()
                 if key
-                not in {"fallback_sample_rate_hertz", "speech_end_grace_ms"}
+                not in {
+                    "fallback_sample_rate_hertz",
+                    "speech_end_grace_ms",
+                    "recognition_assisted_endpointing_enabled",
+                    "recognition_assisted_grace_ms",
+                }
             },
         )
 
@@ -147,6 +168,12 @@ class ConversationProcessor:
             self.conversation_id,
             connector_response_sink,
         )
+        if self.recognition_assisted_endpointing_enabled:
+            self.router.set_input_acknowledgement_sink(
+                self.virtual_agent_id,
+                self.conversation_id,
+                self._connector_input_acknowledgement_sink,
+            )
 
     def clear_async_response_sink(
         self, response_sink: Callable[[VoiceVAResponse], bool]
@@ -158,6 +185,7 @@ class ConversationProcessor:
                 self._async_response_sink = None
                 connector_response_sink = self._connector_response_sink
                 self._connector_response_sink = None
+                self._caller_input_acknowledged = False
 
         if connector_response_sink is not None:
             self.router.clear_async_response_sink(
@@ -165,6 +193,12 @@ class ConversationProcessor:
                 self.conversation_id,
                 connector_response_sink,
             )
+            if self.recognition_assisted_endpointing_enabled:
+                self.router.clear_input_acknowledgement_sink(
+                    self.virtual_agent_id,
+                    self.conversation_id,
+                    self._connector_input_acknowledgement_sink,
+                )
 
     def has_async_work(self) -> bool:
         """Return whether a delayed speech boundary is still being processed."""
@@ -178,6 +212,9 @@ class ConversationProcessor:
             if timer is None:
                 return False
             self._pending_speech_end_timer = None
+            self._pending_speech_end_sample_rate_hertz = None
+            self._pending_speech_end_uses_recognition_grace = False
+            self._caller_input_acknowledged = False
             self._async_task_count = max(0, self._async_task_count - 1)
             timer.cancel()
 
@@ -193,32 +230,33 @@ class ConversationProcessor:
         )
         return True
 
-    def _schedule_speech_end(self, sample_rate_hertz: int) -> None:
-        """Hold a speech end so a natural pause can resume the same turn."""
-        self.router.route_request(
-            self.virtual_agent_id,
-            "pause_speech_turn",
-            self.conversation_id,
-            self.speech_boundary_observer.end_silence_ms,
-        )
-
+    def _build_speech_end_timer(
+        self, sample_rate_hertz: int, grace_ms: int
+    ) -> threading.Timer:
+        """Build a cancellable delayed commit for one pause-qualified turn."""
         timer: threading.Timer
 
         def finalize() -> None:
+            owns_timer = False
             owns_response_wait = False
             try:
                 with self._speech_end_lock:
                     if self._pending_speech_end_timer is not timer:
                         return
-                    self.router.route_request(
-                        self.virtual_agent_id,
-                        "commit_speech_turn",
-                        self.conversation_id,
-                    )
+                    owns_timer = True
                     self._pending_speech_end_timer = None
+                    self._pending_speech_end_sample_rate_hertz = None
+                    self._pending_speech_end_uses_recognition_grace = False
+                    self._caller_input_acknowledged = False
                     if not self._speech_response_pending:
                         self._speech_response_pending = True
                         owns_response_wait = True
+
+                self.router.route_request(
+                    self.virtual_agent_id,
+                    "commit_speech_turn",
+                    self.conversation_id,
+                )
 
                 if not owns_response_wait:
                     self.logger.info(
@@ -241,24 +279,97 @@ class ConversationProcessor:
                     if sink is None or not sink(response):
                         break
             finally:
-                with self._speech_end_lock:
-                    if owns_response_wait:
-                        self._speech_response_pending = False
-                    self._async_task_count = max(0, self._async_task_count - 1)
+                if owns_timer:
+                    with self._speech_end_lock:
+                        if owns_response_wait:
+                            self._speech_response_pending = False
+                        self._async_task_count = max(0, self._async_task_count - 1)
 
-        timer = threading.Timer(self.speech_end_grace_ms / 1000.0, finalize)
+        timer = threading.Timer(grace_ms / 1000.0, finalize)
         timer.daemon = True
+        return timer
+
+    def _handle_input_acknowledgement(self, source: str) -> None:
+        """Shorten a pending VAD grace after CES accepts the caller turn."""
+        replacement_timer = None
+        waiting_for_pause = False
         with self._speech_end_lock:
+            if (
+                not self.recognition_assisted_endpointing_enabled
+                or self._async_response_sink is None
+                or self._speech_response_pending
+            ):
+                return
+
+            self._caller_input_acknowledged = True
+            pending_timer = self._pending_speech_end_timer
+            sample_rate_hertz = self._pending_speech_end_sample_rate_hertz
+            if pending_timer is None or sample_rate_hertz is None:
+                waiting_for_pause = True
+            elif self._pending_speech_end_uses_recognition_grace:
+                return
+            else:
+                pending_timer.cancel()
+                replacement_timer = self._build_speech_end_timer(
+                    sample_rate_hertz,
+                    self.recognition_assisted_grace_ms,
+                )
+                self._pending_speech_end_timer = replacement_timer
+                self._pending_speech_end_uses_recognition_grace = True
+
+        if waiting_for_pause:
+            self.logger.info(
+                "gateway_input_acknowledged_before_vad_pause "
+                "conversation_id=%s source=%s recognition_grace_ms=%d",
+                self.conversation_id,
+                source,
+                self.recognition_assisted_grace_ms,
+            )
+        elif replacement_timer is not None:
+            self.logger.info(
+                "gateway_recognition_assisted_endpointing "
+                "conversation_id=%s source=%s fallback_grace_ms=%d "
+                "recognition_grace_ms=%d",
+                self.conversation_id,
+                source,
+                self.speech_end_grace_ms,
+                self.recognition_assisted_grace_ms,
+            )
+            replacement_timer.start()
+
+    def _schedule_speech_end(self, sample_rate_hertz: int) -> None:
+        """Hold a speech end so a natural pause can resume the same turn."""
+        self.router.route_request(
+            self.virtual_agent_id,
+            "pause_speech_turn",
+            self.conversation_id,
+            self.speech_boundary_observer.end_silence_ms,
+        )
+        with self._speech_end_lock:
+            uses_recognition_grace = (
+                self.recognition_assisted_endpointing_enabled
+                and self._caller_input_acknowledged
+            )
+            grace_ms = (
+                self.recognition_assisted_grace_ms
+                if uses_recognition_grace
+                else self.speech_end_grace_ms
+            )
+            timer = self._build_speech_end_timer(sample_rate_hertz, grace_ms)
             previous = self._pending_speech_end_timer
             if previous is not None:
                 previous.cancel()
                 self._async_task_count = max(0, self._async_task_count - 1)
             self._pending_speech_end_timer = timer
+            self._pending_speech_end_sample_rate_hertz = sample_rate_hertz
+            self._pending_speech_end_uses_recognition_grace = uses_recognition_grace
             self._async_task_count += 1
         self.logger.info(
-            "Holding END_OF_INPUT for %dms speech-resume grace in conversation %s",
-            self.speech_end_grace_ms,
+            "Holding END_OF_INPUT for %dms speech-resume grace in conversation "
+            "%s (recognition_assisted=%s)",
+            grace_ms,
             self.conversation_id,
+            uses_recognition_grace,
         )
         timer.start()
 
@@ -267,17 +378,18 @@ class ConversationProcessor:
         with self._speech_end_lock:
             if not self._speech_response_pending:
                 return False
-            self.router.route_request(
-                self.virtual_agent_id,
-                "handle_speech_boundary",
-                self.conversation_id,
-                {
-                    "conversation_id": self.conversation_id,
-                    "virtual_agent_id": self.virtual_agent_id,
-                    "input_type": "speech_boundary",
-                    "speech_boundary": {"kind": "speech_started"},
-                },
-            )
+            self._caller_input_acknowledged = False
+        self.router.route_request(
+            self.virtual_agent_id,
+            "handle_speech_boundary",
+            self.conversation_id,
+            {
+                "conversation_id": self.conversation_id,
+                "virtual_agent_id": self.virtual_agent_id,
+                "input_type": "speech_boundary",
+                "speech_boundary": {"kind": "speech_started"},
+            },
+        )
         self.logger.info(
             "Continued caller speech while the CES response was pending; "
             "suppressed duplicate WxCC START_OF_INPUT for conversation %s",
@@ -470,6 +582,9 @@ class ConversationProcessor:
                     and self._continue_pending_speech_turn()
                 ):
                     continue
+                if signal.kind == "speech_started":
+                    with self._speech_end_lock:
+                        self._caller_input_acknowledged = False
                 if merges_speech_pauses and signal.kind == "speech_ended":
                     self._schedule_speech_end(signal.sample_rate_hertz)
                     continue
@@ -1230,6 +1345,9 @@ class ConversationProcessor:
         with self._speech_end_lock:
             timer = self._pending_speech_end_timer
             self._pending_speech_end_timer = None
+            self._pending_speech_end_sample_rate_hertz = None
+            self._pending_speech_end_uses_recognition_grace = False
+            self._caller_input_acknowledged = False
             self._speech_response_pending = False
             self._async_task_count = 0
         if timer is not None:

@@ -143,9 +143,8 @@ class GECXStreamingSession:
         session_path: str,
         deployment_path: str,
         initial_message: Optional[str] = None,
-        async_response_sink: Optional[
-            Callable[[Dict[str, Any]], bool]
-        ] = None,
+        async_response_sink: Optional[Callable[[Dict[str, Any]], bool]] = None,
+        input_acknowledgement_sink: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.connector = connector
         self.conversation_id = conversation_id
@@ -172,6 +171,7 @@ class GECXStreamingSession:
         self._join_attempted = False
         self._started_at = time.monotonic()
         self._async_response_sink = async_response_sink
+        self._input_acknowledgement_sink = input_acknowledgement_sink
         self._turn_response_waiters = 0
         # Reserve the greeting for start_conversation's pull iterator even if
         # CES emits it before that generator begins iterating.
@@ -243,6 +243,21 @@ class GECXStreamingSession:
         with self._lifecycle_lock:
             if self._async_response_sink is response_sink:
                 self._async_response_sink = None
+
+    def set_input_acknowledgement_sink(
+        self, acknowledgement_sink: Callable[[str], None]
+    ) -> None:
+        """Attach the gateway observer for accepted caller input."""
+        with self._lifecycle_lock:
+            self._input_acknowledgement_sink = acknowledgement_sink
+
+    def clear_input_acknowledgement_sink(
+        self, acknowledgement_sink: Callable[[str], None]
+    ) -> None:
+        """Detach only the gateway observer that currently owns the session."""
+        with self._lifecycle_lock:
+            if self._input_acknowledgement_sink is acknowledgement_sink:
+                self._input_acknowledgement_sink = None
 
     def start(self) -> None:
         """Start the background bidi stream thread."""
@@ -1224,7 +1239,26 @@ class GECXStreamingSession:
     def _handle_server_message(self, message: Any) -> None:
         """Map one CES message atomically against gateway turn boundaries."""
         with self._lifecycle_lock:
+            awaiting_input_ack = self._awaiting_input_ack
             self._handle_server_message_locked(message)
+            if (
+                getattr(message, "recognition_result", None)
+                and awaiting_input_ack
+                and not self._awaiting_input_ack
+            ):
+                acknowledgement_sink = self._input_acknowledgement_sink
+                if acknowledgement_sink is not None:
+                    try:
+                        # Keep acknowledgement ordered with begin/resume under
+                        # the session lifecycle lock. The gateway callback only
+                        # updates its timer state and never re-enters CES.
+                        acknowledgement_sink("recognition_result")
+                    except Exception:
+                        self.logger.exception(
+                            "gecx_input_acknowledgement_sink_failed "
+                            "conversation_id=%s source=recognition_result",
+                            self.conversation_id,
+                        )
 
     def _handle_server_message_locked(self, message: Any) -> None:
         """Map a CES server message while holding the lifecycle lock."""
@@ -1906,9 +1940,8 @@ class GECXConnector(IVendorConnector):
 
         self.detected_formats: Dict[str, Tuple[int, str]] = {}
         self.streaming_sessions: Dict[str, GECXStreamingSession] = {}
-        self.async_response_sinks: Dict[
-            str, Callable[[Dict[str, Any]], bool]
-        ] = {}
+        self.async_response_sinks: Dict[str, Callable[[Dict[str, Any]], bool]] = {}
+        self.input_acknowledgement_sinks: Dict[str, Callable[[str], None]] = {}
         self.sessions_lock = threading.Lock()
 
         credentials = self._load_credentials(config)
@@ -2102,6 +2135,32 @@ class GECXConnector(IVendorConnector):
         if stream_session is not None:
             stream_session.clear_async_response_sink(response_sink)
 
+    def set_input_acknowledgement_sink(
+        self,
+        conversation_id: str,
+        acknowledgement_sink: Callable[[str], None],
+    ) -> None:
+        """Attach the gateway observer for CES caller recognition."""
+        with self.sessions_lock:
+            self.input_acknowledgement_sinks[conversation_id] = acknowledgement_sink
+            stream_session = self.streaming_sessions.get(conversation_id)
+        if stream_session is not None:
+            stream_session.set_input_acknowledgement_sink(acknowledgement_sink)
+
+    def clear_input_acknowledgement_sink(
+        self,
+        conversation_id: str,
+        acknowledgement_sink: Callable[[str], None],
+    ) -> None:
+        """Detach a completed recognition observer without clearing a newer one."""
+        with self.sessions_lock:
+            current_sink = self.input_acknowledgement_sinks.get(conversation_id)
+            if current_sink is acknowledgement_sink:
+                self.input_acknowledgement_sinks.pop(conversation_id, None)
+            stream_session = self.streaming_sessions.get(conversation_id)
+        if stream_session is not None:
+            stream_session.clear_input_acknowledgement_sink(acknowledgement_sink)
+
     def pause_speech_turn(self, conversation_id: str, silence_ms: int) -> None:
         """Hold a possible end without retracting audio already sent to CES."""
         with self.sessions_lock:
@@ -2195,7 +2254,8 @@ class GECXConnector(IVendorConnector):
             session_id = _make_ces_session_id()
             session_path = f"{self.app_path}/sessions/{session_id}"
             with self.sessions_lock:
-                async_response_sink = self.async_response_sinks.get(
+                async_response_sink = self.async_response_sinks.get(conversation_id)
+                input_acknowledgement_sink = self.input_acknowledgement_sinks.get(
                     conversation_id
                 )
 
@@ -2206,15 +2266,26 @@ class GECXConnector(IVendorConnector):
                 deployment_path=self.deployment_path,
                 initial_message=self.initial_message,
                 async_response_sink=async_response_sink,
+                input_acknowledgement_sink=input_acknowledgement_sink,
             )
             stream_session.start()
 
             with self.sessions_lock:
                 self.streaming_sessions[conversation_id] = stream_session
                 latest_sink = self.async_response_sinks.get(conversation_id)
+                latest_acknowledgement_sink = (
+                    self.input_acknowledgement_sinks.get(conversation_id)
+                )
 
             if latest_sink is not None and latest_sink is not async_response_sink:
                 stream_session.set_async_response_sink(latest_sink)
+            if (
+                latest_acknowledgement_sink is not None
+                and latest_acknowledgement_sink is not input_acknowledgement_sink
+            ):
+                stream_session.set_input_acknowledgement_sink(
+                    latest_acknowledgement_sink
+                )
 
             yield from stream_session.iter_turn_responses(
                 timeout=self.turn_response_timeout_seconds,
@@ -2374,6 +2445,7 @@ class GECXConnector(IVendorConnector):
             stream_session = self.streaming_sessions.pop(conversation_id, None)
             self.detected_formats.pop(conversation_id, None)
             self.async_response_sinks.pop(conversation_id, None)
+            self.input_acknowledgement_sinks.pop(conversation_id, None)
 
         if stream_session:
             stream_session.stop(

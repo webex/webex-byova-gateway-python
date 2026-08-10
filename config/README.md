@@ -41,6 +41,9 @@ voice_activity_detection:
   threshold: 0.5
   start_debounce_ms: 96
   end_silence_ms: 1000
+  speech_end_grace_ms: 1000
+  recognition_assisted_endpointing_enabled: false
+  recognition_assisted_grace_ms: 200
   fallback_sample_rate_hertz: 8000
 ```
 
@@ -48,6 +51,14 @@ These values configure the gateway's speech-boundary observer for each conversat
 `fallback_sample_rate_hertz` is used only when WxCC omits the input sample rate. Changes to
 the threshold or timing values affect turn boundaries and caller experience, so validate
 them with representative audio and latency tests before deployment.
+
+For streaming connectors that merge natural pauses, `speech_end_grace_ms` is the
+cancellable delay after local VAD first reports speech ended. Optional
+recognition-assisted endpointing does not replace local VAD and does not batch audio: it
+uses a current-turn vendor recognition result only to shorten that post-VAD delay to
+`recognition_assisted_grace_ms`. If recognition is absent, the full speech-end grace is
+retained. If speech resumes during either delay, the pending endpoint is cancelled and the
+resumed audio remains in the same input turn. The optimization is disabled by default.
 
 ## Connectors
 

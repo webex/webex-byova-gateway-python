@@ -101,6 +101,28 @@ class IVendorConnector(ABC):
         """Detach a previously registered autonomous-output sink."""
         del conversation_id, response_sink
 
+    def set_input_acknowledgement_sink(
+        self,
+        conversation_id: str,
+        acknowledgement_sink: Callable[[str], None],
+    ) -> None:
+        """Attach a sink for vendor acknowledgement of current caller input.
+
+        Streaming connectors may use this optional hook to report that the
+        vendor has recognized the active caller turn. The gateway can combine
+        that acknowledgement with its own speech boundary; acknowledgement
+        alone must never create an input boundary.
+        """
+        del conversation_id, acknowledgement_sink
+
+    def clear_input_acknowledgement_sink(
+        self,
+        conversation_id: str,
+        acknowledgement_sink: Callable[[str], None],
+    ) -> None:
+        """Detach a previously registered caller-input acknowledgement sink."""
+        del conversation_id, acknowledgement_sink
+
     def handle_speech_boundary(
         self, conversation_id: str, message_data: Dict[str, Any]
     ) -> Optional[Iterator[Optional[Dict[str, Any]]]]:

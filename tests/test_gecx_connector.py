@@ -728,6 +728,29 @@ class TestServerMessageMapping:
         assert "gecx_recognition_received" in caplog.text
         assert "transcript_chars=26" in caplog.text
 
+    def test_current_caller_recognition_notifies_gateway_once(self, connector):
+        acknowledgements = []
+        session = GECXStreamingSession(
+            connector=connector,
+            conversation_id="conv-recognition-ack",
+            session_path="projects/p/locations/us/apps/a/sessions/s1",
+            deployment_path=connector.deployment_path,
+            input_acknowledgement_sink=acknowledgements.append,
+        )
+        recognition = SimpleNamespace(
+            recognition_result=SimpleNamespace(transcript="Store number 1234"),
+            interruption_signal=None,
+            end_session=None,
+            go_away=None,
+            session_output=None,
+        )
+
+        session.begin_input_turn(expect_recognition=True)
+        session._handle_server_message(recognition)
+        session._handle_server_message(recognition)
+
+        assert acknowledgements == ["recognition_result"]
+
     def test_caller_turn_suppresses_stale_no_input_prompt_until_ces_ack(
         self, connector
     ):

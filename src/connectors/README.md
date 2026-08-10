@@ -16,6 +16,8 @@ All connectors must implement `IVendorConnector` which defines:
 - **Message Handling**: `send_message()`
 - **Agent Discovery**: `get_available_agents()`
 - **Data Conversion**: `convert_wxcc_to_vendor()`, `convert_vendor_to_wxcc()`
+- **Optional Streaming Coordination**: asynchronous response delivery, held
+  speech-turn pause/resume/commit, and current-input acknowledgement hooks
 
 ### Interface Contract
 
@@ -160,6 +162,8 @@ Experience) through the CES `BidiRunSession` API.
 - Maps CES recognition, text, audio, interruption, and end-session messages
 - Isolates each gateway-detected caller turn until CES acknowledges the input,
   suppressing an overlapping stale no-input prompt without dropping the reply
+- Can report current-turn CES recognition to the gateway so an opt-in,
+  recognition-assisted policy shortens only the cancellable post-VAD grace
 - Streams 8 kHz mu-law CES output as BYOVA `CHUNK` responses
 - Pushes autonomous CES no-input prompts directly to the active WxCC stream and
   optionally enables barge-in for those open prompts (disabled by default)

@@ -26,6 +26,12 @@ voice_activity_detection:
   # turn end. Combined with end_silence_ms, this creates a two-second bounded
   # natural-pause window without holding every completed turn indefinitely.
   speech_end_grace_ms: 1000
+  # Optional GECX latency optimization. After local VAD has observed the pause,
+  # a CES recognition result can replace the remaining grace with a cancellable
+  # 200ms window. Speech that resumes in that window remains in the same turn;
+  # missing recognition retains speech_end_grace_ms.
+  recognition_assisted_endpointing_enabled: false
+  recognition_assisted_grace_ms: 200
   # Used only when WxCC omits the mandatory audio_input.sample_rate_hertz field.
   fallback_sample_rate_hertz: 8000
 

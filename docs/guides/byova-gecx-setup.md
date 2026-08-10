@@ -258,6 +258,25 @@ retracted. Otherwise it commits the boundary by forwarding the held tail and
 configured endpointing silence. Configure the observer under the top-level
 `voice_activity_detection` block in `config/config.yaml`.
 
+For lower completed-turn latency, set
+`recognition_assisted_endpointing_enabled: true`. Once the gateway has both a
+local VAD pause and a CES recognition result for the current caller turn, it
+uses `recognition_assisted_grace_ms` (default: `200`) instead of the remaining
+fixed speech-end grace. Recognition received before the VAD pause is remembered
+for that active turn; recognition received during the full grace replaces that
+timer with the shorter, cancellable timer. If speech resumes, the timer is
+cancelled and new recognition is required before a later pause can use the
+short grace. If CES recognition never arrives, the normal
+`speech_end_grace_ms` path is unchanged. This changes semantic turn commitment,
+not transport: caller audio continues streaming frame by frame throughout.
+
+Keep the option disabled until representative natural-pause calls and CES
+timeout cases have been tested. The key timing logs are
+`gateway_input_acknowledged_before_vad_pause`,
+`gateway_recognition_assisted_endpointing`,
+`gateway_caller_speech_end_detected`, `gecx_caller_endpoint_committed`,
+and `gecx_first_response_audio`.
+
 ### Output audio: raw 8 kHz mu-law BYOVA chunks
 
 CES normally streams TTS output as small frames. The connector places normal

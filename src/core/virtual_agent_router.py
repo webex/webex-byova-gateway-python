@@ -238,6 +238,22 @@ class VirtualAgentRouter:
             conversation_id, response_sink
         )
 
+    def set_input_acknowledgement_sink(
+        self, agent_id: str, conversation_id: str, acknowledgement_sink
+    ) -> None:
+        """Attach a gateway sink for current caller-input acknowledgement."""
+        self.get_connector_for_agent(agent_id).set_input_acknowledgement_sink(
+            conversation_id, acknowledgement_sink
+        )
+
+    def clear_input_acknowledgement_sink(
+        self, agent_id: str, conversation_id: str, acknowledgement_sink
+    ) -> None:
+        """Detach a gateway caller-input acknowledgement sink."""
+        self.get_connector_for_agent(agent_id).clear_input_acknowledgement_sink(
+            conversation_id, acknowledgement_sink
+        )
+
     def route_request(self, agent_id: str, method: str, *args, **kwargs) -> Any:
         """
         Route a request to the appropriate connector.
