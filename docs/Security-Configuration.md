@@ -2,6 +2,13 @@
 
 This document provides recommended security configurations for the BYOVA Gateway. The steps below are specific to the AWS Cloud Provider, but represent recommended security implementations for any platform hosting the BYOVA Gateway.
 
+For a sanitized description of the ALB-to-EC2 pattern exercised in a controlled test
+environment, including its validation boundary and limitations, see
+[AWS Test Deployment Considerations](AWS_TEST_DEPLOYMENT_CONSIDERATIONS.md). That document is
+not a production deployment design. Its security-group model, which restricts backend ports
+to traffic from the ALB security group, should be used instead of broad placeholder CIDR
+examples when reproducing the test pattern.
+
 ## Table of Contents
 
 1. [HTTPS Configuration for Web Monitor](#https-configuration-for-web-monitor)

@@ -38,6 +38,9 @@ code, not a managed connector or a production-ready service.
 - [Monitoring Authentication Quick Start](../AUTHENTICATION_QUICKSTART.md): Configure Webex
   OAuth for the development dashboard.
 - [Security Configuration](Security-Configuration.md): TLS and load-balancer setup guidance.
+- [AWS Test Deployment Considerations](AWS_TEST_DEPLOYMENT_CONSIDERATIONS.md): Sanitized,
+  known-working ALB-to-EC2 test topology, Amazon Lex access, release flow, and validation
+  boundaries. This is not a production deployment design.
 
 ## Integrate Providers
 

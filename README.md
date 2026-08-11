@@ -184,6 +184,7 @@ endpoint testing, logs, and troubleshooting.
 | Configure AWS Lex | [AWS Lex Configuration](docs/AWS_LEX_CONFIGURATION.md) |
 | Configure Google CX Agent Studio | [GECX Setup Guide](docs/guides/byova-gecx-setup.md) |
 | Test GECX or AWS Lex audio without a WxCC call | [Voice Agent Audio Lab](tools/voice_agent_lab/README.md) |
+| Review the known-working AWS test hosting pattern | [AWS Test Deployment Considerations](docs/AWS_TEST_DEPLOYMENT_CONSIDERATIONS.md) |
 | Configure TLS and network security | [Security Configuration](docs/Security-Configuration.md) |
 | Prepare a derivative for production | [Production Readiness](docs/PRODUCTION_READINESS.md) |
 
