@@ -24,6 +24,8 @@ code, not a managed connector or a production-ready service.
   connectors, including known sample-only placeholders.
 - [Testing Guide](TESTING.md): Automated tests, HTTP smoke tests, gRPC health checks, and
   end-to-end validation.
+- [BYOVA Handoff Summary](BYOVA_HANDOFF_CONTEXT.md): Provider-neutral summary metadata
+  contract for human-agent transfer, including validated Agent Desktop behavior.
 - [Connector Guide](../src/connectors/README.md): Connector interface, available connectors,
   and extension pattern.
 - [Monitoring Interface](../src/monitoring/README.md): Dashboard behavior, Webex OAuth, APIs,

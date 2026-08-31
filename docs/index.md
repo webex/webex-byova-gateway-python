@@ -42,6 +42,8 @@ A fully functional voice AI system where customers can:
 - **[Local Development](LOCAL_DEVELOPMENT.md)** - Install, run, and troubleshoot the sample locally
 - **[JWT Authentication](JWT_AUTHENTICATION.md)** - Configure Webex runtime token validation
 - **[Testing](TESTING.md)** - Run automated, HTTP, gRPC, and end-to-end tests
+- **[BYOVA Handoff Summary](BYOVA_HANDOFF_CONTEXT.md)** - Pass a provider-neutral handoff
+  summary to the receiving WxCC agent
 - **[Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Complete step-by-step setup
 - **[AWS Test Deployment Considerations](AWS_TEST_DEPLOYMENT_CONSIDERATIONS.md)** - Sanitized ALB-to-EC2 test topology, Lex access, release flow, and validation boundaries
 - **[GECX Setup Guide](guides/byova-gecx-setup.md)** - Google CX Agent Studio integration walkthrough
