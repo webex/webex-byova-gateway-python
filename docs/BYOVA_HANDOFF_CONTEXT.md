@@ -129,9 +129,53 @@ actual activity name. Configure the custom variable as:
 | Agent viewable | Enabled |
 | Agent editable | Disabled |
 
-Add the variable to the incoming-interaction popover and the Interaction Control pane in the
-Agent Desktop layout. The transfer must continue even when the provider does not supply a
-summary; an absent summary is not a routing failure.
+These settings live in the flow's **Global flow properties**. They do not require a custom
+Agent Desktop JSON layout.
+
+### 1. Create the agent-viewable variable
+
+Open **Variable definition > Configuration**, create the String variable, and leave its
+default value empty. The summary must be designed to exclude secrets, payment data, and other
+content that should not appear in an incoming offer. The following nonproduction example uses
+synthetic, non-sensitive content.
+
+![Flow variable configured as an agent-viewable String with the AI Handoff Summary desktop label](images/byova-handoff-flow-variable-definition.png)
+
+### 2. Copy the transfer metadata into the variable
+
+On the Virtual Agent V2 **Escalated** branch, add a **Set Variable** activity before the
+activity that queues the contact for a human agent. Select `BYOVAHandoffSummary`, choose
+**Set value**, and enter the metadata expression shown above. Use the flow's actual Virtual
+Agent activity name in the expression.
+
+![Set Variable activity mapping MetaData.summary to BYOVAHandoffSummary](images/byova-handoff-flow-summary-mapping.png)
+
+The surrounding nodes in this screenshot belong to a nonproduction example flow. The
+provider-neutral requirement is the selected variable and expression, not the example's
+activity names or other branches.
+
+Keep the human-routing path independent of the optional value:
+
+- Connect the Set Variable success path to the normal human queue path.
+- If the flow treats a missing nested `summary` key as an **Undefined Error**, connect that
+  error path to the same human queue path, or guard the assignment with an equivalent
+  condition.
+- Do not disconnect the contact or send it to a Virtual Agent failure branch only because
+  the summary is absent.
+- Do not invent a fallback summary. Leave the agent-viewable variable empty when no summary
+  was supplied.
+
+### 3. Select the Agent Desktop surfaces
+
+Open **Variable definition > Desktop viewability & order**. Add
+`BYOVAHandoffSummary` to both **Incoming popover** and **Interaction control pane and
+monitoring control pane**, then place it in the desired order. Publish the flow after the
+configuration has been validated.
+
+![BYOVAHandoffSummary selected for the incoming popover and Interaction control pane](images/byova-handoff-flow-desktop-viewability.png)
+
+The transfer must continue when the provider does not supply a summary; an absent summary is
+not a routing failure.
 
 ## Validated Agent Desktop Behavior
 
