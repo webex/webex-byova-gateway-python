@@ -32,6 +32,7 @@ from src.generated.voicevirtualagent_pb2 import (
 )
 from src.generated.voicevirtualagent_pb2_grpc import VoiceVirtualAgentServicer
 from src.utils.audio_normalizer import normalize_wxcc_audio
+from src.utils.handoff import normalize_handoff
 from src.utils.silero_speech_boundary import (
     SileroSpeechBoundaryObserver,
     SpeechBoundarySignal,
@@ -1174,15 +1175,21 @@ class ConversationProcessor:
                 output_event = OutputEvent()
                 output_event.event_type = OutputEvent.EventType.TRANSFER_TO_AGENT
                 output_event.name = "transfer_requested"
-                handoff_summary = self._handoff_summary(connector_response)
+                handoff = normalize_handoff(connector_response.get("handoff"))
+                handoff_summary = handoff.get("summary")
+                routing_hint = handoff.get("routing_hint")
                 if handoff_summary:
                     output_event.metadata.update({"summary": handoff_summary})
                     va_response.session_summary.text = handoff_summary
+                if routing_hint:
+                    output_event.metadata.update({"routing_hint": routing_hint})
+                if handoff_summary or routing_hint:
                     self.logger.info(
-                        "Forwarded handoff summary for conversation %s "
-                        "(summary_chars=%d)",
+                        "Forwarded allowlisted handoff data for conversation %s "
+                        "(summary_chars=%d, routing_hint_chars=%d)",
                         self.conversation_id,
-                        len(handoff_summary),
+                        len(handoff_summary or ""),
+                        len(routing_hint or ""),
                     )
                 va_response.output_events.append(output_event)
                 self.logger.info(
@@ -1203,6 +1210,18 @@ class ConversationProcessor:
             if "output_events" in connector_response:
                 for event in connector_response["output_events"]:
                     event_type = event.get("event_type")
+                    if (
+                        message_type == "transfer"
+                        and event_type == "TRANSFER_TO_AGENT"
+                    ):
+                        # The canonical transfer above owns the sole terminal
+                        # event and its allowlisted handoff metadata.
+                        self.logger.warning(
+                            "Ignoring duplicate TRANSFER_TO_AGENT event for "
+                            "conversation %s",
+                            self.conversation_id,
+                        )
+                        continue
                     if event_type in [
                         "START_OF_INPUT",
                         "END_OF_INPUT",
@@ -1311,20 +1330,6 @@ class ConversationProcessor:
 
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return self._create_error_response(f"Response conversion error: {str(e)}")
-
-    @staticmethod
-    def _handoff_summary(
-        connector_response: Dict[str, Any],
-    ) -> Optional[str]:
-        """Return a non-empty allowlisted summary from canonical handoff data."""
-        handoff = connector_response.get("handoff")
-        if not isinstance(handoff, dict):
-            return None
-        raw_summary = handoff.get("summary")
-        if not isinstance(raw_summary, str):
-            return None
-        summary = raw_summary.strip()
-        return summary or None
 
     def _create_error_response(self, error_message: str) -> VoiceVAResponse:
         """Create an error response."""

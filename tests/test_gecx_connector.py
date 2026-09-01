@@ -1101,12 +1101,15 @@ class TestServerMessageMapping:
         responses = self._end_session(connector, {"session_escalated": True})
         assert responses[0]["message_type"] == "transfer"
 
-    def test_end_session_with_summary_normalizes_handoff(self, connector):
+    def test_end_session_with_summary_and_routing_hint_normalizes_handoff(
+        self, connector
+    ):
         responses = self._end_session(
             connector,
             {
                 "session_escalated": True,
                 "summary": "  Caller needs help changing a delivery address.  ",
+                "routing_hint": "  delivery_address_specialist  ",
             },
         )
 
@@ -1121,10 +1124,21 @@ class TestServerMessageMapping:
                 "output_events": [],
                 "response_type": "final",
                 "handoff": {
-                    "summary": "Caller needs help changing a delivery address."
+                    "summary": "Caller needs help changing a delivery address.",
+                    "routing_hint": "delivery_address_specialist",
                 },
             }
         ]
+
+    def test_end_session_with_routing_hint_normalizes_handoff(self, connector):
+        responses = self._end_session(
+            connector,
+            {"session_escalated": True, "routing_hint": "billing_specialist"},
+        )
+
+        assert len(responses) == 1
+        assert responses[0]["message_type"] == "transfer"
+        assert responses[0]["handoff"] == {"routing_hint": "billing_specialist"}
 
     @pytest.mark.parametrize("summary", [None, "", "   ", True, ["not", "text"]])
     def test_end_session_without_valid_summary_preserves_transfer(
@@ -1137,6 +1151,27 @@ class TestServerMessageMapping:
 
         assert responses[0]["message_type"] == "transfer"
         assert "handoff" not in responses[0]
+
+    @pytest.mark.parametrize(
+        "routing_hint",
+        [None, "", "   ", True, 12345, "12345", "billing queue", "x" * 65],
+    )
+    def test_end_session_with_invalid_routing_hint_preserves_transfer(
+        self, connector, routing_hint
+    ):
+        responses = self._end_session(
+            connector,
+            {
+                "session_escalated": True,
+                "summary": "Caller needs a human.",
+                "routing_hint": routing_hint,
+                "customer_queue_id": "raw-queue-id-98765",
+            },
+        )
+
+        assert len(responses) == 1
+        assert responses[0]["message_type"] == "transfer"
+        assert responses[0]["handoff"] == {"summary": "Caller needs a human."}
 
     def test_session_output_end_session_uses_nested_metadata(self, connector):
         session = GECXStreamingSession(
@@ -1205,6 +1240,8 @@ class TestServerMessageMapping:
                 "customer_email": "guest@example.com",
                 "reason": "private routing identifier",
                 "summary": "Caller supplied private account information.",
+                "routing_hint": "private_routing_classification",
+                "customer_queue_id": "private-queue-id-12345",
             },
         )
 
@@ -1212,6 +1249,8 @@ class TestServerMessageMapping:
         assert "guest@example.com" not in caplog.text
         assert "private routing identifier" not in caplog.text
         assert "Caller supplied private account information." not in caplog.text
+        assert "private_routing_classification" not in caplog.text
+        assert "private-queue-id-12345" not in caplog.text
 
     def test_end_session_with_escalation_key_name_emits_transfer(self, connector):
         # Key-name keyword match catches naming variants generically.

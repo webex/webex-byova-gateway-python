@@ -909,7 +909,9 @@ class TestConversationProcessor:
         assert dict(event.metadata) == {}
         assert not response.HasField("session_summary")
 
-    def test_transfer_handoff_summary_is_forwarded_to_wxcc(self, processor):
+    def test_transfer_handoff_summary_and_routing_hint_are_forwarded_to_wxcc(
+        self, processor
+    ):
         response = processor._convert_connector_response_to_grpc(
             {
                 "message_type": "transfer",
@@ -918,7 +920,8 @@ class TestConversationProcessor:
                 "barge_in_enabled": False,
                 "response_type": "final",
                 "handoff": {
-                    "summary": "Caller needs help changing a delivery address."
+                    "summary": "Caller needs help changing a delivery address.",
+                    "routing_hint": "delivery_address_specialist",
                 },
             }
         )
@@ -931,9 +934,59 @@ class TestConversationProcessor:
         assert event.metadata["summary"] == (
             "Caller needs help changing a delivery address."
         )
+        assert event.metadata["routing_hint"] == "delivery_address_specialist"
         assert response.session_summary.text == (
             "Caller needs help changing a delivery address."
         )
+        assert response.session_summary.text != event.metadata["routing_hint"]
+
+    def test_transfer_routing_hint_is_only_forwarded_in_event_metadata(
+        self, processor
+    ):
+        response = processor._convert_connector_response_to_grpc(
+            {
+                "message_type": "transfer",
+                "text": "Transferring you to a human agent.",
+                "audio_content": b"",
+                "response_type": "final",
+                "handoff": {
+                    "routing_hint": "billing_specialist",
+                    "customer_queue_id": "raw-queue-id-98765",
+                },
+            }
+        )
+
+        assert response is not None
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        assert event.event_type == 2  # TRANSFER_TO_AGENT
+        assert dict(event.metadata) == {"routing_hint": "billing_specialist"}
+        assert not response.HasField("session_summary")
+
+    def test_transfer_uses_one_allowlisted_terminal_event(self, processor):
+        response = processor._convert_connector_response_to_grpc(
+            {
+                "message_type": "transfer",
+                "text": "Transferring you to a human agent.",
+                "audio_content": b"",
+                "response_type": "final",
+                "handoff": {"routing_hint": "billing_specialist"},
+                "output_events": [
+                    {
+                        "event_type": "TRANSFER_TO_AGENT",
+                        "name": "provider_transfer",
+                        "metadata": {"customer_queue_id": "raw-queue-id-98765"},
+                    }
+                ],
+            }
+        )
+
+        assert response is not None
+        assert len(response.output_events) == 1
+        event = response.output_events[0]
+        assert event.event_type == 2  # TRANSFER_TO_AGENT
+        assert event.name == "transfer_requested"
+        assert dict(event.metadata) == {"routing_hint": "billing_specialist"}
 
     @pytest.mark.parametrize("summary", [None, "", "   ", False, {"text": "no"}])
     def test_transfer_without_valid_handoff_summary_remains_supported(
@@ -954,6 +1007,31 @@ class TestConversationProcessor:
         assert dict(response.output_events[0].metadata) == {}
         assert not response.HasField("session_summary")
 
+    @pytest.mark.parametrize(
+        "routing_hint",
+        [None, "", "   ", False, 12345, "12345", "billing queue", "x" * 65],
+    )
+    def test_transfer_without_valid_handoff_routing_hint_remains_supported(
+        self, processor, routing_hint
+    ):
+        response = processor._convert_connector_response_to_grpc(
+            {
+                "message_type": "transfer",
+                "text": "Transferring you to a human agent.",
+                "audio_content": b"",
+                "response_type": "final",
+                "handoff": {
+                    "routing_hint": routing_hint,
+                    "customer_queue_id": "raw-queue-id-98765",
+                },
+            }
+        )
+
+        assert response is not None
+        assert len(response.output_events) == 1
+        assert dict(response.output_events[0].metadata) == {}
+        assert not response.HasField("session_summary")
+
     def test_handoff_summary_is_not_written_to_gateway_logs(self, processor, caplog):
         caplog.set_level(logging.DEBUG)
 
@@ -963,11 +1041,17 @@ class TestConversationProcessor:
                 "text": "",
                 "audio_content": b"",
                 "response_type": "final",
-                "handoff": {"summary": "Private caller handoff details."},
+                "handoff": {
+                    "summary": "Private caller handoff details.",
+                    "routing_hint": "private_routing_classification",
+                    "customer_queue_id": "private-queue-id-12345",
+                },
             }
         )
 
         assert "Private caller handoff details." not in caplog.text
+        assert "private_routing_classification" not in caplog.text
+        assert "private-queue-id-12345" not in caplog.text
 
     def test_process_audio_input_with_output_events(self, processor, mock_router, mock_audio_input):
         """Test processing audio input with custom output events from connector."""

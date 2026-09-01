@@ -447,7 +447,10 @@ class IVendorConnector(ABC):
             barge_in_enabled: Whether barge-in is enabled for this response
             output_events: List of output events to include
             **additional_params: Additional canonical parameters to include in the
-                response. A transfer may include ``handoff.summary`` for WxCC.
+                response. A transfer may include ``handoff.summary`` and a
+                symbolic ``handoff.routing_hint`` for WxCC. Do not include raw
+                provider metadata or customer queue IDs; use
+                ``src.utils.handoff.normalize_handoff`` to build this object.
 
         Returns:
             Standardized response dictionary with common fields
