@@ -381,6 +381,44 @@ class TestJWTAuthInterceptor:
         # Result should be an abort handler (not the continuation result)
         assert result != "handler"
 
+    def test_standard_health_check_is_allowed_without_token(
+        self, interceptor, mock_validator
+    ):
+        """Allow the exact ALB-compatible health method without a JWT."""
+        details = Mock(spec=grpc.HandlerCallDetails)
+        details.method = "/grpc.health.v1.Health/Check"
+        details.invocation_metadata = []
+        continuation = Mock(return_value="health-handler")
+
+        result = interceptor.intercept_service(continuation, details)
+
+        continuation.assert_called_once_with(details)
+        mock_validator.validate_token.assert_not_called()
+        assert result == "health-handler"
+
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "/grpc.health.v1.Health/List",
+            "/grpc.health.v1.Health/Watch",
+            "/grpc.health.v1.Health/CheckExtra",
+            "/com.cisco.wcc.ccai.media.v1.VoiceVirtualAgent/ListVirtualAgents",
+        ],
+    )
+    def test_health_exemption_does_not_cover_other_methods(
+        self, interceptor, method
+    ):
+        """Keep all methods except the exact health Check behind JWT auth."""
+        details = Mock(spec=grpc.HandlerCallDetails)
+        details.method = method
+        details.invocation_metadata = []
+        continuation = Mock(return_value="handler")
+
+        result = interceptor.intercept_service(continuation, details)
+
+        continuation.assert_not_called()
+        assert result != "handler"
+
     def test_missing_token_allowed_when_not_enforced(self, mock_validator):
         """Test that requests without tokens are allowed when enforcement is disabled."""
         interceptor = JWTAuthInterceptor(

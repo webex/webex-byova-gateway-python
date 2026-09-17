@@ -105,6 +105,8 @@ webex-byova-gateway-python/
   delivered without waiting for another caller request frame
 - Routes requests to the appropriate virtual agent via `VirtualAgentRouter`
 - Tracks connections and manages session lifecycle
+- Keeps only `grpc.health.v1.Health/Check` outside JWT enforcement for private ALB health
+  probes; all BYOVA methods remain authenticated
 
 **Core Methods:**
 - `ListVirtualAgents`: Returns available virtual agents

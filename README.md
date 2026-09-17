@@ -123,7 +123,8 @@ jwt_validation:
 
 Never use disabled authentication for a Webex-connected or production endpoint. For an
 end-to-end test, configure the exact registered datasource URL and keep JWT enforcement
-enabled.
+enabled. The standard gRPC `Health/Check` probe is the only unauthenticated exception; BYOVA
+methods remain protected.
 
 ### Configure Automatic Datasource Management
 
