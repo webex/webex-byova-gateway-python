@@ -62,23 +62,25 @@ class LocalRunServer:
                     payload = {
                         "accessToken": config.access_token,
                         "destination": config.destination,
-                        "audioUrl": "/run/caller.wav",
                         "audioUrls": [
                             f"/run/caller-{index}.wav"
                             for index in range(len(audio_assets))
                         ],
                     }
+                    if audio_assets:
+                        payload["audioUrl"] = "/run/caller.wav"
                     self._write_json(payload)
                     return
                 if self.path == "/run/caller.wav":
+                    if not audio_assets:
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
                     self._send_audio(audio_assets[0].path)
                     return
-                if self.path.startswith("/run/caller-") and self.path.endswith(
-                    ".wav"
-                ):
-                    index_text = self.path.removeprefix(
-                        "/run/caller-"
-                    ).removesuffix(".wav")
+                if self.path.startswith("/run/caller-") and self.path.endswith(".wav"):
+                    index_text = self.path.removeprefix("/run/caller-").removesuffix(
+                        ".wav"
+                    )
                     try:
                         index = int(index_text)
                         if index < 0:

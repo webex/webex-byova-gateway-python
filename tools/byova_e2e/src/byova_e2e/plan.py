@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -25,6 +26,8 @@ USE_FIELDS = {
     "requireGatewayEvents",
 }
 
+DTMF_DIGIT_PATTERN = re.compile(r"^[0-9A-D*#]$")
+
 
 class TestPlanError(ValueError):
     """A user-facing test-plan configuration failure."""
@@ -32,13 +35,14 @@ class TestPlanError(ValueError):
 
 @dataclass(frozen=True)
 class InputStepDefinition:
-    """One prepared caller-audio action in an ordered test."""
+    """One caller audio or DTMF action in an ordered test."""
 
     name: str | None = None
     text: str | None = None
     text_segments: tuple[str, ...] = ()
     wav: Path | None = None
     segment_pause_ms: int | None = None
+    dtmf_digit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -171,20 +175,18 @@ def _parse_test(
     raw_steps = value.get("steps")
     if not isinstance(raw_steps, list) or len(raw_steps) < 2:
         raise TestPlanError(
-            f"{location}.steps must contain at least one audio action and expectation"
+            f"{location}.steps must contain at least one input action and expectation"
         )
     if len(raw_steps) % 2:
         raise TestPlanError(
-            f"{location}.steps must alternate audio actions and expectations"
+            f"{location}.steps must alternate input actions and expectations"
         )
 
     parsed_steps: list[InputStepDefinition | ExpectStepDefinition] = []
     for step_index, raw_step in enumerate(raw_steps):
         step_location = f"{location}.steps[{step_index}]"
         if step_index % 2 == 0:
-            parsed_steps.append(
-                _parse_input_step(raw_step, step_location, source_file)
-            )
+            parsed_steps.append(_parse_input_step(raw_step, step_location, source_file))
         else:
             parsed_steps.append(_parse_expect_step(raw_step, step_location))
 
@@ -232,9 +234,7 @@ def _parse_test(
         require_gateway_events=merged_use.get("requireGatewayEvents"),
         expected_outcome=final_expectation.outcome,
         expected_response_prompts=final_expectation.response_prompts,
-        connected_observation_seconds=(
-            final_expectation.connected_observation_seconds
-        ),
+        connected_observation_seconds=(final_expectation.connected_observation_seconds),
     )
 
 
@@ -244,7 +244,7 @@ def _parse_input_step(
     step = _object(raw, location)
     _reject_unknown(
         step,
-        {"name", "action", "text", "segments", "pauseMs", "path"},
+        {"name", "action", "text", "segments", "pauseMs", "path", "digit"},
         location,
     )
     name = _optional_nonempty_string(step.get("name"), f"{location}.name")
@@ -257,8 +257,10 @@ def _parse_input_step(
                 f"{location} with action 'speak' must define exactly one of "
                 "text or segments"
             )
-        if "path" in step:
-            raise TestPlanError(f"{location}.path is only valid with action 'play'")
+        if "path" in step or "digit" in step:
+            raise TestPlanError(
+                f"{location} with action 'speak' does not accept path or digit"
+            )
         if has_text:
             if "pauseMs" in step:
                 raise TestPlanError(
@@ -284,7 +286,7 @@ def _parse_input_step(
             ),
         )
     if action == "play":
-        if any(field in step for field in ("text", "segments", "pauseMs")):
+        if any(field in step for field in ("text", "segments", "pauseMs", "digit")):
             raise TestPlanError(
                 f"{location} with action 'play' only accepts name, action, and path"
             )
@@ -293,7 +295,18 @@ def _parse_input_step(
         if not wav.is_absolute():
             wav = source_file.parent / wav
         return InputStepDefinition(name=name, wav=wav.resolve())
-    raise TestPlanError(f"{location}.action must be 'speak' or 'play'")
+    if action == "dtmf":
+        if any(field in step for field in ("text", "segments", "pauseMs", "path")):
+            raise TestPlanError(
+                f"{location} with action 'dtmf' only accepts name, action, and digit"
+            )
+        digit = step.get("digit")
+        if not isinstance(digit, str) or not DTMF_DIGIT_PATTERN.fullmatch(digit):
+            raise TestPlanError(
+                f"{location}.digit must be exactly one of 0-9, A-D, *, or #"
+            )
+        return InputStepDefinition(name=name, dtmf_digit=digit)
+    raise TestPlanError(f"{location}.action must be 'speak', 'play', or 'dtmf'")
 
 
 def _parse_expect_step(raw: Any, location: str) -> ExpectStepDefinition:

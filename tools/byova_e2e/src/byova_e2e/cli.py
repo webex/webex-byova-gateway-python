@@ -30,6 +30,7 @@ from .models import (
     ExpectedOutcome,
     RunAction,
     RunConfig,
+    RunDtmfAction,
     RunExpectation,
 )
 from .plan import (
@@ -377,10 +378,15 @@ def _run(args: argparse.Namespace) -> None:
         if selected_test is not None:
             audio_assets: list[AudioAsset] = []
             audio_profiles: list[dict[str, object]] = []
-            run_steps: list[RunAction | RunExpectation] = []
+            run_steps: list[RunAction | RunDtmfAction | RunExpectation] = []
             action_index = 0
             for step_index, step in enumerate(selected_test.steps):
                 if isinstance(step, InputStepDefinition):
+                    if step.dtmf_digit is not None:
+                        run_steps.append(
+                            RunDtmfAction(digit=step.dtmf_digit, name=step.name)
+                        )
+                        continue
                     prepared_step, profile = _prepare_input_step(
                         step,
                         voice,
@@ -447,13 +453,15 @@ def _run(args: argparse.Namespace) -> None:
             audio_profiles = [profile]
             run_steps = []
 
-        primary_audio = audio_assets[0]
+        primary_audio = audio_assets[0] if audio_assets else None
         config = RunConfig(
             destination=args.destination,
             access_token=token,
-            audio_path=primary_audio.path,
-            audio_sha256=primary_audio.sha256,
-            audio_duration_seconds=primary_audio.duration_seconds,
+            audio_path=primary_audio.path if primary_audio else None,
+            audio_sha256=primary_audio.sha256 if primary_audio else None,
+            audio_duration_seconds=(
+                primary_audio.duration_seconds if primary_audio else None
+            ),
             remote_silence_seconds=remote_silence_ms / 1000,
             initial_silence_fallback_seconds=initial_silence_fallback_seconds,
             prompt_timeout_seconds=prompt_timeout_seconds,
@@ -480,7 +488,7 @@ def _run(args: argparse.Namespace) -> None:
             "status": "completed",
             "audio_sha256": config.audio_sha256,
             "audio_duration_seconds": config.audio_duration_seconds,
-            "audio_profile": audio_profiles[0],
+            "audio_profile": audio_profiles[0] if audio_profiles else None,
             "audio_profiles": [
                 {
                     **profile,

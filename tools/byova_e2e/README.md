@@ -192,9 +192,11 @@ media debugging is required.
 
 ## Define tests in JSON
 
-Each version 1 test contains alternating audio actions and expectations. A
+Each version 1 test contains alternating caller-input actions and expectations. A
 `speak` action accepts either `text` or `segments` plus `pauseMs`; a `play`
-action accepts a WAV `path` relative to the config file. `response` waits for a
+action accepts a WAV `path` relative to the config file. A `dtmf` action sends
+exactly one of `0-9`, `A-D`, `*`, or `#` through the Webex Calling SDK.
+`response` waits for a
 complete remote prompt. `response-start` waits only until remote audio becomes
 active, allowing the next action to exercise caller speech during playback.
 `session-end` and `transfer` are terminal expectations and must be the final
@@ -234,6 +236,23 @@ step. Test plans follow Playwright conventions: top-level `use` defaults, named
   ]
 }
 ```
+
+DTMF-only plans do not require a WAV fixture:
+
+```json
+{
+  "id": "dtmf-transfer",
+  "title": "DTMF 5 transfers the Local Audio call",
+  "steps": [
+    {"action": "dtmf", "digit": "5"},
+    {"expect": {"outcome": "transfer", "responsePrompts": 1}}
+  ]
+}
+```
+
+Use DTMF actions only for non-sensitive test controls. The browser event and
+run artifact record only that one digit was sent, not its value. Connector- and
+transport-specific plans can combine this action with gateway-event assertions.
 
 A two-turn test uses the same action/expectation rhythm:
 

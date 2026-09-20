@@ -202,7 +202,39 @@ def test_rejects_consecutive_actions_without_an_expectation(tmp_path: Path) -> N
         ],
     )
 
-    with pytest.raises(PlanError, match="must alternate audio actions and expectations"):
+    with pytest.raises(
+        PlanError, match="must alternate input actions and expectations"
+    ):
+        load_test("sample", path)
+
+
+def test_loads_single_digit_dtmf_action(tmp_path: Path) -> None:
+    path = _write_plan(
+        tmp_path,
+        steps=[
+            {"action": "dtmf", "digit": "5"},
+            {"expect": {"outcome": "transfer"}},
+        ],
+    )
+
+    selected_test = load_test("sample", path)
+
+    assert selected_test.steps[0] == InputStepDefinition(dtmf_digit="5")
+
+
+@pytest.mark.parametrize("digit", ["", "55", "a", "E", "tone"])
+def test_rejects_invalid_or_multi_digit_dtmf_actions(
+    tmp_path: Path, digit: str
+) -> None:
+    path = _write_plan(
+        tmp_path,
+        steps=[
+            {"action": "dtmf", "digit": digit},
+            {"expect": {"outcome": "transfer"}},
+        ],
+    )
+
+    with pytest.raises(PlanError, match="digit must be exactly one"):
         load_test("sample", path)
 
 

@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 from byova_e2e.audio import PreparedAudio
 from byova_e2e.cli import CLIError, _run, build_parser, main
-from byova_e2e.models import ExpectedOutcome, RunAction, RunExpectation
+from byova_e2e.models import (
+    ExpectedOutcome,
+    RunAction,
+    RunDtmfAction,
+    RunExpectation,
+)
 
 
 def test_live_runs_have_no_cli_browser_override_by_default() -> None:
@@ -164,6 +169,66 @@ def test_named_multi_turn_test_prepares_every_action(
         RunExpectation(ExpectedOutcome.RESPONSE),
         RunAction(1),
         RunExpectation(ExpectedOutcome.RESPONSE),
+    )
+
+
+def test_named_dtmf_test_requires_no_prepared_audio(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_file = tmp_path / "connector.spec.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tests": [
+                    {
+                        "id": "dtmf-transfer",
+                        "title": "transfers with one digit",
+                        "steps": [
+                            {"action": "dtmf", "digit": "5"},
+                            {"expect": {"outcome": "transfer"}},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured_config = None
+
+    class FakeRunner:
+        def __init__(self, _tool_root, config):
+            nonlocal captured_config
+            captured_config = config
+
+        def run(self):
+            return {}
+
+    monkeypatch.setattr("byova_e2e.cli.access_token_for_run", lambda _store: "token")
+    monkeypatch.setattr("byova_e2e.cli.BrowserRunner", FakeRunner)
+    monkeypatch.setattr(
+        "byova_e2e.cli.write_artifact",
+        lambda _directory, _payload: tmp_path / "artifact.json",
+    )
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--destination",
+            "9999",
+            "--config",
+            str(config_file),
+            "--test",
+            "dtmf-transfer",
+        ]
+    )
+
+    _run(args)
+
+    assert captured_config is not None
+    assert captured_config.prepared_audio() == ()
+    assert captured_config.steps == (
+        RunDtmfAction("5"),
+        RunExpectation(ExpectedOutcome.TRANSFER),
     )
 
 

@@ -2,18 +2,23 @@ import CallingPackage from "webex/calling";
 import { LocalMicrophoneStream } from "@webex/calling";
 
 import { calculateRms } from "./audio-level";
+import { validateDtmfDigit } from "./dtmf";
 import { unwrapDefaultExport } from "./module-interop";
 
 type RunConfig = {
   accessToken: string;
   destination: string;
-  audioUrl: string;
+  audioUrl?: string;
   audioUrls?: string[];
 };
 
 type EventDetails = Record<string, string | number | boolean | undefined>;
 type InjectionRequest = {
   index?: number;
+  trigger?: string;
+};
+type DtmfRequest = {
+  digit: string;
   trigger?: string;
 };
 
@@ -47,6 +52,7 @@ type CallingCall = {
   on: (name: string, callback: (...args: unknown[]) => void) => void;
   dial: (stream: LocalMicrophoneStream) => Promise<void> | void;
   end: () => void;
+  sendDigit: (digit: string) => void;
   getDisconnectReason: () => { code: number; cause: string };
 };
 
@@ -55,6 +61,7 @@ declare global {
     byovaE2E: {
       dial: () => Promise<void>;
       injectAudio: (request?: string | InjectionRequest) => Promise<void>;
+      sendDtmf: (request: DtmfRequest) => Promise<void>;
       endCall: () => Promise<void>;
     };
   }
@@ -154,6 +161,7 @@ class CallingMediaClient {
   private observer?: RemoteAudioActivity;
   private readonly injectedAudio = new Set<number>();
   private callerEndRequested = false;
+  private callEstablished = false;
 
   async initialise(): Promise<void> {
     // This method is called from the Start button's trusted click event. Chrome
@@ -227,11 +235,13 @@ class CallingMediaClient {
     this.call = call;
     this.call.on("progress", () => void report("progress"));
     this.call.on("established", () => {
+      this.callEstablished = true;
       updateStatus("Call established; listening for the remote prompt.");
       void report("established");
     });
     this.call.on("remote_media", (track) => void this.attachRemoteMedia(track));
     this.call.on("disconnect", (correlationId) => {
+      this.callEstablished = false;
       const reason = this.call?.getDisconnectReason();
       this.observer?.stop();
       remoteAudio.pause();
@@ -291,6 +301,22 @@ class CallingMediaClient {
     source.start();
   }
 
+  async sendDtmf(request: DtmfRequest): Promise<void> {
+    if (!this.call || !this.callEstablished) {
+      throw new Error("Cannot send DTMF before call media is established");
+    }
+    const digit = validateDtmfDigit(request?.digit);
+    this.call.sendDigit(digit);
+    updateStatus("Sent one DTMF control digit.");
+    // DTMF values can contain sensitive data. The run artifact proves only
+    // that one allowlisted digit was submitted; the configured terminal
+    // gateway outcome proves which control flow executed.
+    await report("dtmf_sent", {
+      digitCount: 1,
+      trigger: request.trigger ?? "scenario_step",
+    });
+  }
+
   async endCall(): Promise<void> {
     this.callerEndRequested = true;
     this.call?.end();
@@ -332,6 +358,7 @@ const client = new CallingMediaClient();
 window.byovaE2E = {
   dial: () => client.dial(),
   injectAudio: (trigger) => client.injectAudio(trigger),
+  sendDtmf: (request) => client.sendDtmf(request),
   endCall: () => client.endCall(),
 };
 

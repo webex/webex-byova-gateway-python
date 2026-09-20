@@ -35,6 +35,14 @@ class RunAction:
 
 
 @dataclass(frozen=True)
+class RunDtmfAction:
+    """Send one non-sensitive DTMF control digit through the active call."""
+
+    digit: str
+    name: str | None = None
+
+
+@dataclass(frozen=True)
 class RunExpectation:
     """Wait for one caller-observable outcome."""
 
@@ -51,9 +59,9 @@ class RunConfig:
 
     destination: str
     access_token: str
-    audio_path: Path
-    audio_sha256: str
-    audio_duration_seconds: float
+    audio_path: Path | None
+    audio_sha256: str | None
+    audio_duration_seconds: float | None
     remote_silence_seconds: float
     initial_silence_fallback_seconds: float
     prompt_timeout_seconds: float
@@ -69,17 +77,19 @@ class RunConfig:
     require_gateway_events: bool = False
     headless: bool = False
     audio_assets: tuple[AudioAsset, ...] = ()
-    steps: tuple[RunAction | RunExpectation, ...] = ()
+    steps: tuple[RunAction | RunDtmfAction | RunExpectation, ...] = ()
 
     def prepared_audio(self) -> tuple[AudioAsset, ...]:
         """Return multi-step assets or the legacy single caller fixture."""
         if self.audio_assets:
             return self.audio_assets
+        if self.audio_path is None:
+            return ()
         return (
             AudioAsset(
                 path=self.audio_path,
-                sha256=self.audio_sha256,
-                duration_seconds=self.audio_duration_seconds,
+                sha256=self.audio_sha256 or "",
+                duration_seconds=self.audio_duration_seconds or 0.0,
             ),
         )
 

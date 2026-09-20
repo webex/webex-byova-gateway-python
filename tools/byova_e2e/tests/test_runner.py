@@ -10,6 +10,7 @@ from byova_e2e.models import (
     ExpectedOutcome,
     RunAction,
     RunConfig,
+    RunDtmfAction,
     RunEvent,
     RunExpectation,
 )
@@ -196,6 +197,58 @@ def test_executes_two_request_response_turns_in_order(tmp_path) -> None:
         "action",
         "expect",
     ]
+
+
+@pytest.mark.parametrize(
+    ("digit", "outcome", "gateway_outcome"),
+    [
+        ("5", ExpectedOutcome.TRANSFER, "TRANSFER_TO_AGENT"),
+        ("6", ExpectedOutcome.SESSION_END, "SESSION_END"),
+    ],
+)
+def test_executes_dtmf_action_without_exposing_digit_in_result(
+    tmp_path, digit, outcome, gateway_outcome
+) -> None:
+    config = replace(
+        _config(tmp_path),
+        audio_path=None,
+        audio_sha256=None,
+        audio_duration_seconds=None,
+        steps=(RunDtmfAction(digit), RunExpectation(outcome)),
+        response_timeout_seconds=1,
+        remote_silence_seconds=0,
+    )
+    runner = BrowserRunner(tmp_path, config)
+    runner._gateway_events = _GatewayObserver(
+        result={
+            "event_type": "terminal",
+            "outcome": gateway_outcome,
+        }
+    )
+    page = _CommandPage()
+    events = [
+        RunEvent("remote_audio_active", 1.0),
+        RunEvent("remote_audio_inactive", 2.0),
+        RunEvent("dtmf_sent", 3.0, {"digitCount": 1}),
+        RunEvent("remote_audio_active", 4.0),
+        RunEvent("remote_audio_inactive", 5.0),
+    ]
+    if outcome == ExpectedOutcome.SESSION_END:
+        events.append(RunEvent("disconnect", 6.0, {"initiatedByCaller": False}))
+    else:
+        events.append(RunEvent("disconnect", 6.0, {"initiatedByCaller": True}))
+    server = _EventServer(events)
+
+    result = runner._execute_steps(server, page, time.monotonic() + 2)
+
+    assert page.commands[0] == {
+        "command": "sendDtmf",
+        "argument": {"digit": digit, "trigger": "remote_prompt"},
+    }
+    action_result = result["steps"][0]
+    assert action_result["input"] == "dtmf"
+    assert action_result["digit_count"] == 1
+    assert digit not in str(action_result)
 
 
 def test_injects_second_utterance_after_response_audio_starts(tmp_path) -> None:

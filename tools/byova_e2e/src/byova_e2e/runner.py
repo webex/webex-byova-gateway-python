@@ -20,6 +20,7 @@ from .models import (
     ExpectedOutcome,
     RunAction,
     RunConfig,
+    RunDtmfAction,
     RunEvent,
     RunExpectation,
 )
@@ -100,11 +101,14 @@ class BrowserRunner:
                         ),
                     )
                     if self.config.steps:
-                        finish_result = self._execute_steps(
-                            server, page, deadline
-                        )
+                        finish_result = self._execute_steps(server, page, deadline)
                     else:
-                        self._wait_for_prompt_end(server, page, deadline)
+                        trigger = self._wait_for_prompt_end(server, deadline)
+                        self._command(
+                            page,
+                            "injectAudio",
+                            {"index": 0, "trigger": trigger},
+                        )
                         injection_finished = self._wait_for(
                             server,
                             lambda event: event.name == "injection_finished",
@@ -153,9 +157,7 @@ class BrowserRunner:
                 "observed_remote_prompt_count"
             ],
             "disconnect": finish_result["disconnect"],
-            "gateway_terminal_event": finish_result.get(
-                "gateway_terminal_event"
-            ),
+            "gateway_terminal_event": finish_result.get("gateway_terminal_event"),
             "steps": finish_result.get("steps", []),
             "events": [
                 {
@@ -190,9 +192,7 @@ class BrowserRunner:
         if not self.config.gateway_events_url:
             raise RunFailure("Gateway event assertions require a gateway events URL")
         if self._gateway_events is None:
-            self._gateway_events = GatewayEventObserver(
-                self.config.gateway_events_url
-            )
+            self._gateway_events = GatewayEventObserver(self.config.gateway_events_url)
         try:
             self._gateway_events.begin()
         except GatewayEventError as error:
@@ -201,10 +201,9 @@ class BrowserRunner:
     def _wait_for_prompt_end(
         self,
         server: LocalRunServer,
-        page: Any,
         call_deadline: float,
-        audio_index: int = 0,
-    ) -> None:
+    ) -> str:
+        """Wait for the configured greeting boundary and return its trigger name."""
         gate = PromptGate(
             self.config.remote_silence_seconds,
             self.config.remote_prompt_occurrence,
@@ -225,28 +224,15 @@ class BrowserRunner:
                 elif event.name == "remote_audio_inactive":
                     gate.remote_audio_inactive(time.monotonic())
             if gate.ready_to_inject(time.monotonic()):
-                self._command(
-                    page,
-                    "injectAudio",
-                    {"index": audio_index, "trigger": "remote_prompt"},
-                )
                 gate.mark_injected()
-                return
+                return "remote_prompt"
             if (
                 fallback_deadline is not None
                 and not gate.remote_activity_observed
                 and time.monotonic() >= fallback_deadline
             ):
-                self._command(
-                    page,
-                    "injectAudio",
-                    {
-                        "index": audio_index,
-                        "trigger": "initial_silence_fallback",
-                    },
-                )
                 gate.mark_injected()
-                return
+                return "initial_silence_fallback"
         raise RunFailure(
             "No completed remote prompt was detected before the prompt or call timeout"
         )
@@ -260,7 +246,7 @@ class BrowserRunner:
         """Execute ordered Playwright-shaped action and expectation steps."""
         step_results: list[dict[str, Any]] = []
         observations: list[ResponseObservation] = []
-        last_injection: RunEvent | None = None
+        last_input: RunEvent | None = None
         first_action = True
         prior_response_active = False
         events_during_injection: tuple[RunEvent, ...] = ()
@@ -269,28 +255,19 @@ class BrowserRunner:
             if isinstance(step, RunAction):
                 audio_index = step.audio_index
                 if first_action:
-                    self._wait_for_prompt_end(
-                        server,
-                        page,
-                        call_deadline,
-                        audio_index,
-                    )
+                    trigger = self._wait_for_prompt_end(server, call_deadline)
                     first_action = False
                 else:
-                    self._command(
-                        page,
-                        "injectAudio",
-                        {
-                            "index": audio_index,
-                            "trigger": "scenario_step",
-                        },
-                    )
-                last_injection, events_during_injection = (
-                    self._wait_for_injection_finished(
-                        server,
-                        audio_index,
-                        self._bounded_timeout(30, call_deadline),
-                    )
+                    trigger = "scenario_step"
+                self._command(
+                    page,
+                    "injectAudio",
+                    {"index": audio_index, "trigger": trigger},
+                )
+                last_input, events_during_injection = self._wait_for_injection_finished(
+                    server,
+                    audio_index,
+                    self._bounded_timeout(30, call_deadline),
                 )
                 step_results.append(
                     {
@@ -298,15 +275,42 @@ class BrowserRunner:
                         "kind": "action",
                         "name": step.name,
                         "audio_index": audio_index,
-                        "finished_timestamp": last_injection.timestamp,
+                        "finished_timestamp": last_input.timestamp,
+                    }
+                )
+                continue
+
+            if isinstance(step, RunDtmfAction):
+                if first_action:
+                    trigger = self._wait_for_prompt_end(server, call_deadline)
+                    first_action = False
+                else:
+                    trigger = "scenario_step"
+                self._command(
+                    page,
+                    "sendDtmf",
+                    {"digit": step.digit, "trigger": trigger},
+                )
+                last_input, events_during_injection = self._wait_for_dtmf_sent(
+                    server,
+                    self._bounded_timeout(10, call_deadline),
+                )
+                step_results.append(
+                    {
+                        "index": step_index,
+                        "kind": "action",
+                        "name": step.name,
+                        "input": "dtmf",
+                        "digit_count": 1,
+                        "finished_timestamp": last_input.timestamp,
                     }
                 )
                 continue
 
             if not isinstance(step, RunExpectation):
                 raise RunFailure(f"Unsupported scenario step: {step!r}")
-            if last_injection is None:
-                raise RunFailure("Expectation has no preceding caller injection")
+            if last_input is None:
+                raise RunFailure("Expectation has no preceding caller input")
 
             if step.outcome == ExpectedOutcome.RESPONSE_START:
                 response_start = self._wait_for_response_start(
@@ -318,7 +322,7 @@ class BrowserRunner:
                 prior_response_active = True
                 latency_seconds = max(
                     0.0,
-                    response_start.timestamp - last_injection.timestamp,
+                    response_start.timestamp - last_input.timestamp,
                 )
                 self._assert_latency_target(
                     latency_seconds,
@@ -339,10 +343,8 @@ class BrowserRunner:
             observation = self._wait_for_remote_prompts(
                 server,
                 call_deadline,
-                last_injection,
-                wait_for_disconnect=(
-                    step.outcome == ExpectedOutcome.SESSION_END
-                ),
+                last_input,
+                wait_for_disconnect=(step.outcome == ExpectedOutcome.SESSION_END),
                 expected_response_prompts=step.response_prompts,
                 prefetched_events=events_during_injection,
                 ignore_current_prompt=prior_response_active,
@@ -463,9 +465,7 @@ class BrowserRunner:
             event = (
                 pending.popleft()
                 if pending
-                else self._next_event(
-                    server, min(0.2, deadline - time.monotonic())
-                )
+                else self._next_event(server, min(0.2, deadline - time.monotonic()))
             )
             if event is None:
                 continue
@@ -495,9 +495,7 @@ class BrowserRunner:
         deadline = time.monotonic() + timeout
         concurrent_events: list[RunEvent] = []
         while time.monotonic() < deadline:
-            event = self._next_event(
-                server, min(0.2, deadline - time.monotonic())
-            )
+            event = self._next_event(server, min(0.2, deadline - time.monotonic()))
             if event is None:
                 continue
             if (
@@ -514,6 +512,28 @@ class BrowserRunner:
         raise RunFailure(
             f"Timed out after {timeout:.1f}s waiting for caller audio {audio_index}"
         )
+
+    def _wait_for_dtmf_sent(
+        self,
+        server: LocalRunServer,
+        timeout: float,
+    ) -> tuple[RunEvent, tuple[RunEvent, ...]]:
+        """Wait for the redacted DTMF receipt while retaining response events."""
+        deadline = time.monotonic() + timeout
+        concurrent_events: list[RunEvent] = []
+        while time.monotonic() < deadline:
+            event = self._next_event(server, min(0.2, deadline - time.monotonic()))
+            if event is None:
+                continue
+            if event.name == "dtmf_sent":
+                return event, tuple(concurrent_events)
+            if event.name in {
+                "remote_audio_active",
+                "remote_audio_inactive",
+                "disconnect",
+            }:
+                concurrent_events.append(event)
+        raise RunFailure(f"Timed out after {timeout:.1f}s waiting for DTMF receipt")
 
     @staticmethod
     def _scenario_result(
@@ -747,10 +767,7 @@ class BrowserRunner:
             ):
                 prompt_count += 1
                 quiet_since = None
-                if (
-                    prompt_count >= required_prompts
-                    and not wait_for_disconnect
-                ):
+                if prompt_count >= required_prompts and not wait_for_disconnect:
                     return ResponseObservation(
                         prompt_count=prompt_count,
                         latency_seconds=max(
