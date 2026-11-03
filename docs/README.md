@@ -16,6 +16,8 @@ code, not a managed connector or a production-ready service.
 
 ## Develop and Test
 
+- [WebSocket Live Testing](WEBSOCKET_LIVE_TESTING.md): Resume from local validation
+  with an explicit WxCC/CES acceptance matrix and correlated evidence.
 - [Local Audio Connector Configuration](LOCAL_AUDIO_CONFIGURATION.md): Validate the gateway
   and a Webex Contact Center sandbox before selecting a voice-agent provider.
 - [Local Development](LOCAL_DEVELOPMENT.md): Install, configure a local-only run, start the
@@ -24,6 +26,8 @@ code, not a managed connector or a production-ready service.
   connectors, including known sample-only placeholders.
 - [Testing Guide](TESTING.md): Automated tests, HTTP smoke tests, gRPC health checks, and
   end-to-end validation.
+- [BYOVA WebSocket Transport](WEBSOCKET_TRANSPORT.md): Contract, local dual-listener demo,
+  authentication, datasource profiles, and provider audio framing.
 - [BYOVA Handoff Summary](BYOVA_HANDOFF_CONTEXT.md): Provider-neutral summary metadata
   contract for human-agent transfer, including validated Agent Desktop behavior.
 - [Connector Guide](../src/connectors/README.md): Connector interface, available connectors,
@@ -41,7 +45,7 @@ code, not a managed connector or a production-ready service.
   OAuth for the development dashboard.
 - [Security Configuration](Security-Configuration.md): TLS and load-balancer setup guidance.
 - [AWS Test Deployment Considerations](AWS_TEST_DEPLOYMENT_CONSIDERATIONS.md): Sanitized,
-  known-working ALB-to-EC2 test topology, Amazon Lex access, release flow, and validation
+  dual-protocol ALB-to-EC2 test topology, Amazon Lex access, release flow, and validation
   boundaries. This is not a production deployment design.
 
 ## Integrate Providers
@@ -52,6 +56,8 @@ code, not a managed connector or a production-ready service.
   authentication, deployment, and transfer configuration.
 - [Audio Files](../audio/README.md): Local audio formats and sample media.
 - [Protocol Definitions](../proto/README.md): BYOVA and gRPC schema information.
+- [WebSocket AsyncAPI snapshot](../schemas/websocket/README.md): Pinned upstream contracts
+  and the documented schema-composition defect.
 
 ## Prepare for Production
 

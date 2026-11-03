@@ -17,6 +17,7 @@ from src.core.wxcc_gateway_server import ConversationProcessor, WxCCGatewayServe
 from src.generated.byova_common_pb2 import EventInput
 from src.generated.voicevirtualagent_pb2 import (
     VoiceInput,
+    VoiceVAInputMode,
     VoiceVARequest,
     VoiceVAResponse,
 )
@@ -31,6 +32,12 @@ class TestConversationProcessor:
         """Create a mock router for testing."""
         router = MagicMock(spec=VirtualAgentRouter)
         router.should_coalesce_speech_end_with_response.return_value = False
+        router.get_input_mode.return_value = "INPUT_VOICE_DTMF"
+        router.get_dtmf_input_config.return_value = {
+            "dtmf_input_length": 1,
+            "inter_digit_timeout_msec": 3000,
+            "termchar": "DTMF_DIGIT_POUND",
+        }
         return router
 
     @pytest.fixture
@@ -150,6 +157,36 @@ class TestConversationProcessor:
             connector_sink,
         )
 
+    def test_initial_prompt_preserves_connector_barge_in(
+        self, processor, mock_router
+    ):
+        """Conversation start must not override connector prompt semantics."""
+        mock_router.route_request.return_value = {
+            "message_type": "welcome",
+            "text": "Press 5 to transfer or 6 to end the call.",
+            "audio_content": b"welcome audio",
+            "barge_in_enabled": True,
+        }
+
+        responses = list(processor._start_conversation())
+
+        assert len(responses) == 1
+        assert responses[0].response_type == VoiceVAResponse.ResponseType.FINAL
+        assert responses[0].prompts[0].is_barge_in_enabled is True
+
+    def test_error_response_falls_back_when_connector_input_mode_is_invalid(
+        self, processor, mock_router
+    ):
+        """A broken capability hook must not prevent a graceful error response."""
+        mock_router.get_input_mode.return_value = "INVALID_MODE"
+
+        response = processor._create_error_response("provider failed")
+
+        assert response.response_type == VoiceVAResponse.ResponseType.FINAL
+        assert response.prompts[0].text.endswith("provider failed")
+        assert response.input_mode == VoiceVAInputMode.INPUT_VOICE_DTMF
+        assert response.input_handling_config.dtmf_config.dtmf_input_length == 1
+
     def test_initial_escalation_streams_chunk_before_transfer_final(
         self, processor, mock_router
     ):
@@ -203,6 +240,28 @@ class TestConversationProcessor:
         assert list(processor._process_audio_input(audio_input)) == []
         frame = processor.speech_boundary_observer.observe.call_args.args[0]
         assert frame.sample_rate_hertz == 16000
+
+    def test_audio_diagnostics_report_signal_without_recording_samples(
+        self, processor, mock_router, caplog
+    ):
+        mock_router.route_request.return_value = None
+        processor.speech_boundary_observer = MagicMock()
+        processor.speech_boundary_observer.observe.return_value = []
+        with caplog.at_level(logging.INFO):
+            for audio in [b"\x00\x00" * 256, b"\x00\x40" * 256]:
+                list(processor._process_audio_input(VoiceInput(
+                    caller_audio=audio,
+                    encoding=VoiceInput.VoiceEncoding.LINEAR16_FORMAT,
+                    sample_rate_hertz=8000,
+                )))
+            processor._end_connector_once({})
+            processor._end_connector_once({})
+
+        summaries = [r.message for r in caplog.records if "gateway_audio_summary" in r.message]
+        assert len(summaries) == 1
+        assert "frames=2 audio_bytes=1024 peak_frame_rms=0.500000" in summaries[0]
+        assert "sample_rate_hertz=8000 frame_bytes=512" in caplog.text
+        assert "caller_audio" not in caplog.text
 
     def test_gateway_keeps_speech_started_as_standalone_final_event(
         self, processor, mock_router, mock_audio_input

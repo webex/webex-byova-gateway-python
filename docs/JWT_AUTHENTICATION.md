@@ -21,14 +21,16 @@ When validation is enabled, the gateway:
 - Requires the datasource URL and schema claims to match the configured values.
 - Caches identity-broker public keys for the configured duration.
 
-The standard unary `/grpc.health.v1.Health/Check` method is the only unauthenticated
-exception. This permits load balancer health probes that cannot attach datasource JWT
-metadata. All BYOVA methods and the health `List` and `Watch` methods remain protected.
-
-For every other method, enforcement rejects missing or invalid credentials before the RPC
-reaches the gateway service.
+With enforcement enabled, missing or invalid credentials are rejected before the RPC reaches
+the gateway service.
 
 ## Configuration
+
+The exact unary `grpc.health.v1.Health/Check` method is the only gRPC method exempt from JWT
+validation. This permits a private AWS ALB target-group health check, which cannot attach
+authorization metadata. The health `List` and `Watch` methods and every BYOVA RPC still pass
+through the JWT interceptor. Restrict the application gRPC port to the load balancer or an
+equivalent trusted network boundary.
 
 Configure `jwt_validation` in `config/config.yaml`:
 

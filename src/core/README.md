@@ -20,6 +20,8 @@ The router is responsible for:
 - **Dynamic Connector Loading**: Loads connector implementations at runtime
 - **Request Routing**: Routes incoming requests to appropriate virtual agents
 - **Agent Management**: Manages agent selection and availability
+- **Transport Eligibility**: Uses the same connector allow-list for discovery
+  and runtime selection on gRPC and WebSocket
 - **Session Coordination**: Coordinates sessions across different connectors
 
 The current connector set includes local audio, AWS Lex, and Google CX Agent
@@ -32,11 +34,13 @@ class VirtualAgentRouter:
     def load_connectors(self, config: dict) -> None:
         """Load connector implementations from configuration"""
     
-    def get_all_available_agents(self) -> list[str]:
-        """Return all available agent IDs across all connectors"""
+    def get_all_available_agents(self, transport: str | None = None) -> list[str]:
+        """Return all agent IDs, optionally filtered by transport"""
     
-    def get_connector_for_agent(self, agent_id: str) -> IVendorConnector:
-        """Get the connector instance for a specific agent"""
+    def get_connector_for_agent(
+        self, agent_id: str, transport: str | None = None
+    ) -> IVendorConnector:
+        """Get a connector and optionally enforce transport eligibility"""
     
     def route_request(self, agent_id: str, method: str, *args, **kwargs) -> Any:
         """Route a request to the appropriate connector method"""

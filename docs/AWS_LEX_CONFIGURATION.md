@@ -42,6 +42,59 @@ aws_lex_connector:
   agents: []
 ```
 
+## Separate WebSocket Adapter
+
+Use `AWSLexWebSocketConnector` for the WxCC WebSocket listener. The existing
+`AWSLexConnector` keeps its gRPC-only default. Both use the AWS credential chain
+and share bot discovery, session handling, audio conversion and Lex API calls.
+
+Under `connectors` in the gateway configuration, add:
+
+```yaml
+aws_lex_websocket_connector:
+  type: "aws_lex_websocket_connector"
+  class: "AWSLexWebSocketConnector"
+  module: "connectors.aws_lex_websocket_connector"
+  supported_transports: ["websocket"]
+  config:
+    region_name: "us-east-1"
+    initial_trigger_text: "hello"
+    barge_in_enabled: false
+    audio_logging:
+      enabled: false
+```
+
+Enable `transports.mode: websocket` or `both`, with the independent WebSocket
+datasource and JWT profile described in [WebSocket transport setup](WEBSOCKET_TRANSPORT.md).
+Select `aws_lex_websocket_connector: <Bot Name>` in WxCC. The gRPC catalog retains
+`aws_lex_connector: <Bot Name>`, so loading both adapters does not replace an
+existing agent mapping. Each adapter owns its conversation state.
+
+The WebSocket hop is **WxCC to gateway**. The AWS hop uses the existing
+`RecognizeUtterance` calls: caller audio is buffered until the gateway detects
+the end of speech, and each Lex response is sent as one complete WAV in a
+`FINAL` response. This is not a native Lex WebSocket or `StartConversation`
+implementation. AWS documents its bidirectional streaming protocol as
+[HTTP/2](https://docs.aws.amazon.com/lexv2/latest/dg/streaming.html).
+The WebSocket adapter requests up to ten DTMF digits, a five-second inter-digit
+timeout and `#` termination, including after each response turn.
+
+Local socket tests cover discovery isolation, welcome and voice responses,
+DTMF symbols including `0`, `*` and `#`, and disconnect cleanup with a mocked
+AWS SDK. Real WxCC-to-Lex calls remain a separate live acceptance check. Do not
+infer that Lex has passed live validation from Local Audio or GECX results.
+
+### SDK Baseline
+
+The AWS runtime requirements now require Boto3 and Botocore `>=1.43.114`, with
+S3Transfer `>=0.19.2`. Both adapters were locally tested on Python 3.12 with
+those exact versions, including Botocore Stubber validation of the discovery
+and `RecognizeUtterance` request shapes. No live AWS calls are made by those tests.
+Use the resolver to keep the AWS packages compatible; do not upgrade Botocore
+independently outside Boto3's supported range. See the
+[Boto3 release](https://pypi.org/project/boto3/1.43.114/) and
+[Botocore release](https://pypi.org/project/botocore/1.43.114/).
+
 ## Bot Alias Discovery
 
 Bot aliases are **discovered automatically** by the connector:

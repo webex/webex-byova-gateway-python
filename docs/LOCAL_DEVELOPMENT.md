@@ -76,6 +76,11 @@ jwt_validation:
   enabled: false
 ```
 
+To run both transport listeners, also set `transports.mode: "both"`, bind the
+WebSocket listener to `127.0.0.1`, and explicitly set
+`transports.websocket.allow_unauthenticated_local_dev: true`. See
+[BYOVA WebSocket Transport](WEBSOCKET_TRANSPORT.md) for the complete block.
+
 Do not use those settings for a Webex-connected or production endpoint. For end-to-end
 testing, configure the registered datasource URL and keep JWT enforcement enabled as
 described in [JWT Authentication](JWT_AUTHENTICATION.md).
@@ -96,6 +101,7 @@ python main.py
 The process starts:
 
 - The gRPC server on `localhost:50051`
+- The WebSocket server on `localhost:8765` when its transport is enabled
 - The monitoring interface on `http://localhost:8080`
 
 Press `Ctrl+C` to stop the gateway and allow it to clean up active conversations.

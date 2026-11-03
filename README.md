@@ -3,7 +3,7 @@
 [![License: Cisco Sample Code](https://img.shields.io/badge/License-Cisco%20Sample%20Code-blue.svg)](LICENSE)
 
 A Python gateway that connects Webex Contact Center (WxCC) to external voice virtual-agent
-providers through the BYOVA gRPC interface.
+providers through the BYOVA gRPC and WebSocket interfaces.
 
 This repository is functional sample code for customers and partners building or evaluating
 a BYOVA integration. It is not a managed connector or a production-ready deployment. The
@@ -21,7 +21,7 @@ For Google CX Agent Studio, use the
 
 ## What the Gateway Does
 
-At runtime, WxCC opens a bidirectional gRPC stream to the registered gateway endpoint. The
+At runtime, WxCC opens a bidirectional gRPC stream or a call-long WebSocket to the registered gateway endpoint. The
 gateway validates the signed Webex token, routes the conversation to the configured
 connector, and translates audio and events between WxCC and the voice-agent provider.
 Caller ingestion, ordered connector processing, and response delivery use independent
@@ -31,10 +31,14 @@ connector is still producing output.
 The sample includes:
 
 - A BYOVA gRPC server with `ListVirtualAgents` and `ProcessCallerInput`
-- JWT validation for the WxCC data plane
-- Optional BYODS datasource registration and pre-expiry JWS renewal
+- BYOVA WebSocket `/v1/va` and `/v1/listVirtualAgents` endpoints that can run
+  beside gRPC in the same process
+- Separate datasource-bound JWT profiles for gRPC and WebSocket with a shared JWKS cache
+- Optional independent BYODS datasource registration and pre-expiry JWS renewal;
+  a combined deployment uses separate Service Apps and token providers
 - A configuration-driven connector router
-- Local audio, AWS Lex, and Google CX Agent Studio connectors
+- Local audio, AWS Lex, and separate Google CX Agent Studio gRPC and native
+  WebSocket provider connectors
 - Immediate 8 kHz mu-law BYOVA `CHUNK` output for Google CX Agent Studio,
   either requested directly from CES or converted once from 24 kHz Linear16,
   with guarded suppression of anomalously long low-energy pre-roll and one
@@ -48,6 +52,8 @@ The sample includes:
 - gRPC and HTTP health checks
 - A development monitoring dashboard
 - Unit tests and local gRPC smoke-test utilities
+- A local end-to-end caller that can correlate exact gateway outcomes through a
+  loopback-only AWS Systems Manager port-forward to a private monitoring listener
 
 ## Quick Start
 
@@ -123,8 +129,7 @@ jwt_validation:
 
 Never use disabled authentication for a Webex-connected or production endpoint. For an
 end-to-end test, configure the exact registered datasource URL and keep JWT enforcement
-enabled. The standard gRPC `Health/Check` probe is the only unauthenticated exception; BYOVA
-methods remain protected.
+enabled.
 
 ### Configure Automatic Datasource Management
 
@@ -178,6 +183,7 @@ endpoint testing, logs, and troubleshooting.
 | Validate BYOVA before choosing a voice-agent provider | [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md) |
 | Install and run the sample locally | [Local Development](docs/LOCAL_DEVELOPMENT.md) |
 | Configure the gateway and connectors | [Configuration Reference](config/README.md) |
+| Configure the WebSocket listener and contract | [BYOVA WebSocket Transport](docs/WEBSOCKET_TRANSPORT.md) |
 | Configure runtime JWT validation | [gRPC JWT Authentication](docs/JWT_AUTHENTICATION.md) |
 | Pass a virtual-agent summary to a human agent | [BYOVA Handoff Summary](docs/BYOVA_HANDOFF_CONTEXT.md) |
 | Run automated and service tests | [Testing Guide](docs/TESTING.md) |
@@ -198,10 +204,40 @@ The [documentation index](docs/README.md) provides additional component referenc
 
 - `ListVirtualAgents`: Returns the configured virtual agents.
 - `ProcessCallerInput`: Handles bidirectional caller audio, DTMF, and conversation events.
-- `grpc.health.v1.Health/Check`: Reports service health.
+- `grpc.health.v1.Health/Check`: Reports minimal service health without a JWT so a private
+  ALB target-group probe can operate. All BYOVA RPCs remain JWT-protected.
 
 The protocol definitions are in `proto/` and originate from the Webex Voice Virtual Agent
 schema.
+
+### WebSocket
+
+- `/v1/va`: Long-lived JSON text socket for a full call.
+- `/v1/listVirtualAgents`: JSON discovery socket that returns only agents enabled
+  for WebSocket and then waits for the peer to close, with a bounded idle timeout.
+- `/health`: Minimal HTTP process health for a private load-balancer probe.
+
+Terminal transfer and session-end responses are flushed before the gateway
+waits for the Webex peer to close the conversation socket, with a bounded
+fallback timeout for abandoned connections.
+
+The listener uses the official WebSocket datasource schema, requires
+`SESSION_START`, preserves ordered full-duplex provider output, and shares the
+same pluggable connector architecture as gRPC. Connector discovery and runtime
+selection are transport-aware: undeclared connectors default to gRPC-only,
+while Local Audio and GECX declare both gRPC and WebSocket support. See
+[BYOVA WebSocket Transport](docs/WEBSOCKET_TRANSPORT.md).
+That capability describes the WxCC-facing listener. To use WebSocket on both
+hops, configure `GECXWebSocketConnector` and restrict its advertised agent to
+`supported_transports: ["websocket"]`.
+The Webex Service App must be authorized for the WebSocket datasource schema
+before that independent `wss://` datasource can be registered.
+Users can enable gRPC, WebSocket, or both. A single-transport deployment needs
+only that transport's Service App, datasource, listener, and load-balancer target.
+A combined deployment composes both independent profiles in one process.
+For AWS, use one public TLS listener with a distinct HTTP/1.1 target group on private port
+8765; the [AWS test deployment guide](docs/AWS_TEST_DEPLOYMENT_CONSIDERATIONS.md) covers the
+safe activation order.
 
 ### HTTP Monitoring
 
@@ -216,13 +252,18 @@ production without the controls described in the production guide.
 ## Included Connectors
 
 - **Local Audio**: Uses the included WAV files for local development and vendor-neutral
-  end-to-end validation. See [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md).
-- **AWS Lex**: Connects to Amazon Lex V2 through the standard AWS SDK credential chain.
+  end-to-end validation over gRPC or WebSocket. See
+  [Local Audio Connector Configuration](docs/LOCAL_AUDIO_CONFIGURATION.md).
+- **AWS Lex**: Separate `AWSLexConnector` (WxCC gRPC) and
+  `AWSLexWebSocketConnector` (WxCC WebSocket) adapters share Amazon Lex V2
+  `RecognizeUtterance`, the standard AWS SDK credential chain, and audio/session
+  handling. The WebSocket adapter uses complete WAV responses and distinct
+  discovery IDs. See [Lex configuration](docs/AWS_LEX_CONFIGURATION.md).
 - **Google CX Agent Studio**: Streams caller audio to Gemini Enterprise for Customer
-  Experience through CES `BidiRunSession`. Caller speech starts an isolated response turn,
-  so an overlapping CES no-input prompt cannot consume the caller's post-input reply. The
-  connector can request 24 kHz Linear16 synthesis and perform the final anti-aliased 8 kHz
-  mu-law conversion locally. See the [GECX Setup Guide](docs/guides/byova-gecx-setup.md).
+  Experience through CES `BidiRunSession`. `GECXConnector` uses the CES gRPC
+  client; `GECXWebSocketConnector` uses Google's native JSON WebSocket gateway
+  while sharing the same audio, turn, and terminal behavior. Use distinct agent
+  IDs when both are loaded. See the [GECX Setup Guide](docs/guides/byova-gecx-setup.md).
 
 Connectors implement `IVendorConnector` and are loaded from `config/config.yaml`. See the
 [Connector Guide](src/connectors/README.md) for the interface contract and extension pattern.
@@ -235,13 +276,16 @@ webex-byova-gateway-python/
 ├── config/             # Gateway and connector configuration
 ├── docs/               # Evaluation, security, testing, and operations guides
 ├── proto/              # BYOVA and health protocol definitions
+├── schemas/            # Pinned upstream WebSocket AsyncAPI contracts
 ├── scripts/            # Runtime release tooling
 ├── src/
-│   ├── auth/           # gRPC JWT validation
+│   ├── auth/           # Datasource-bound JWT validation and shared JWKS cache
 │   ├── connectors/     # Virtual-agent connectors
 │   ├── core/           # Datasource lifecycle, gateway server, routing, and health
 │   ├── generated/      # Locally generated gRPC modules
 │   ├── monitoring/     # Development monitoring interface
+│   ├── runtime/        # Container bootstrap and health-check helpers
+│   ├── transports/     # WebSocket models, adapter, and listener
 │   └── utils/          # Audio utilities
 ├── tests/              # Automated test suite
 ├── tools/              # Local development and end-to-end test tools
@@ -276,10 +320,49 @@ dependencies are installed through `requirements-dev.txt` and must not be copied
 gateway or included in an image or release archive. Gateway containers install only
 `requirements.txt`. Deploying the whole repository can cause host scanners to report
 development-only dependencies as if the gateway loaded them at runtime.
+The E2E caller can temporarily forward a private monitoring listener through an
+SSM-managed host so exact terminal outcomes are observed without publishing the monitoring
+API. Keep the instance ID, private host, region, profile, and ports in ignored local
+configuration; see [the E2E caller guide](tools/byova_e2e/README.md).
 
 Before deployment, scan the generated archive and verify its checksum. Keep environment
 configuration and secrets outside the artifact and inject them through the deployment
 system.
+
+## Build the ECS Container
+
+Build the Fargate-compatible image for the ECS runtime architecture:
+
+```bash
+docker buildx build \
+  --platform linux/amd64 \
+  --load \
+  -t byova-gateway:ecs-dev-local \
+  .
+```
+
+The image uses the digest-pinned `linux/amd64` Amazon Linux 2023 minimal base and its
+namespaced Python 3.12 package. It installs matching CPU-only Torch and Torchaudio packages,
+regenerates protobuf modules, runs as UID `10001`, exposes gRPC 50051, WebSocket 8765, and
+monitoring 8080, and emits logs to standard output by default. The ECS task enables its init
+process instead of adding an init binary to the image. A short-lived, capability-limited init
+container assigns the writable runtime volume to UID `10001` before the capability-free
+gateway starts. The container bootstrap can fetch a private gateway YAML from
+`GATEWAY_CONFIG_S3_URI`. GECX on ECS preferably uses
+`GOOGLE_EXTERNAL_ACCOUNT_S3_URI` with Google workload-identity `external_account`
+configuration. For a dev migration, an existing service-account profile may instead be
+read directly from an exact Secrets Manager ARN. It is validated and written only to the
+task's ephemeral volume; it is never stored in the image, S3, or task environment.
+The container health check reads the selected transport mode and probes only its
+active listeners. In dual mode it requires both listeners unless the explicit
+development partial-startup option is enabled.
+
+For a local container check, use `config/container_smoke_example.yaml` only on loopback or
+in a task that is not attached to a public listener. It intentionally disables JWT and
+datasource lifecycle and is not a deployment configuration.
+
+Keep environment-specific orchestration, AWS resource identifiers, listener rules, private
+networking, and credential references outside this shared example repository.
 
 ## Development
 

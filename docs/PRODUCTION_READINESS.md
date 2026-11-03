@@ -51,7 +51,7 @@ The production service should provide all of the following:
 | Capacity | The gRPC thread pool and concurrent-stream settings are hard-coded. Sample session limits are not a validated capacity model. | Configurable limits established through load tests, with admission control, autoscaling, and headroom. |
 | Health | gRPC health primarily reflects whether agents are registered. The HTTP endpoint is a simple process health response. | Separate startup, liveness, readiness, and dependency health; readiness must consider draining, saturation, and critical connector availability. |
 | Deployment | A single Python process also starts a Flask development monitoring thread. | Independently operable workloads, production process servers, immutable artifacts, multi-zone placement, and controlled rollout. |
-| Transport | The application binds an insecure gRPC port and relies on deployment infrastructure for TLS. | TLS 1.2 or later on every untrusted hop, verified HTTP/2 behavior, certificate automation, and documented trust boundaries. |
+| Transport | The application binds separate insecure gRPC and WebSocket ports and relies on deployment infrastructure for TLS. | TLS 1.2 or later on every untrusted hop, verified HTTP/2 gRPC and HTTP/1.1 WebSocket upgrade behavior, certificate automation, long-connection draining, and documented trust boundaries. |
 | Operations | Local dashboard and recent in-memory events aid development. | Central dashboards, SLOs, alerts, runbooks, incident command, support ownership, and audit history. |
 
 The sections below turn these gaps into a production program.

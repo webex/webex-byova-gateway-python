@@ -40,6 +40,8 @@ class RunDtmfAction:
 
     digit: str
     name: str | None = None
+    duration_ms: int | None = None
+    terminate: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,8 @@ class RunConfig:
     connected_observation_seconds: float = 0.0
     gateway_events_url: str | None = None
     require_gateway_events: bool = False
+    expected_gateway_transport: str | None = None
+    expected_gateway_agent_id: str | None = None
     headless: bool = False
     audio_assets: tuple[AudioAsset, ...] = ()
     steps: tuple[RunAction | RunDtmfAction | RunExpectation, ...] = ()

@@ -1,5 +1,24 @@
 -r requirements.txt
 
+# Development and test tooling. Keep these out of runtime images and EC2
+# release artifacts.
+pytest>=8.4.1
+pytest-asyncio>=1.1.0
+black>=25.1.0
+ruff>=0.12.7
+mypy>=1.17.1
+mypy_extensions>=1.1.0
+flake8>=7.3.0
+pycodestyle>=2.14.0
+pyflakes>=3.4.0
+mccabe>=0.7.0
+pathspec>=0.12.1
+packaging>=25.0
+platformdirs>=4.3.8
+pluggy>=1.6.0
+iniconfig>=2.1.0
+Pygments>=2.19.2
+
 # Voice Agent Audio Lab (local development only)
 aiohttp>=3.12.15
 aiohappyeyeballs>=2.6.1

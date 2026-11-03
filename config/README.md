@@ -34,6 +34,50 @@ memory and apply backpressure; they are not production throughput targets.
 announcement responses. GECX raw CHUNK streaming does not use this delay.
 Maximum gRPC message sizes and the concurrent-stream option remain set in `main.py`.
 
+## Transport Listeners
+
+```yaml
+transports:
+  mode: "grpc" # grpc | websocket | both
+  allow_partial_transport_startup: false
+  websocket:
+    host: "0.0.0.0"
+    port: 8765
+    first_message_timeout_seconds: 10
+    discovery_idle_timeout_seconds: 5
+    terminal_flush_timeout_seconds: 2
+    terminal_peer_close_timeout_seconds: 30
+    queue_maxsize: 100
+    queue_put_timeout_seconds: 1
+    max_message_bytes: 131072
+    connector_max_workers: 20
+    connector_max_pending: 20
+    output_chunk_bytes: 3200
+    allow_unauthenticated_local_dev: false
+```
+
+If `transports` is absent, the gateway remains gRPC-only. `grpc` and
+`websocket` require only their selected transport's authentication and
+datasource configuration. `both` starts the listeners in one process with a
+shared router and conversation registry, while keeping their Service Apps,
+datasources, JWT profiles, and renewal workers independent. Partial startup
+requires the explicit development override and applies only to `both` mode.
+
+`discovery_idle_timeout_seconds` bounds how long the server waits for the WxCC
+control-plane peer to close after receiving the virtual-agent list. The server
+does not immediately close the discovery socket after sending the response.
+
+After sending `TRANSFER_TO_AGENT` or server-initiated `SESSION_END`, the
+gateway flushes the terminal response and leaves the conversation socket open
+for the WxCC peer to close, as required by the WebSocket lifecycle. The
+`terminal_peer_close_timeout_seconds` safety bound closes an unresponsive peer
+after 30 seconds by default.
+
+The local authentication bypass is accepted only from a loopback peer. Public
+and Webex-connected WebSockets require the independent
+`websocket_jwt_validation` profile. See
+[BYOVA WebSocket Transport](../docs/WEBSOCKET_TRANSPORT.md).
+
 ## Voice Activity Detection
 
 ```yaml
@@ -70,6 +114,7 @@ connectors:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
+    supported_transports: ["grpc", "websocket"]
     config:
       agent_id: "Local Playback"
       audio_base_path: "audio"
@@ -80,6 +125,17 @@ mapping defaults to an empty dictionary. It dynamically imports `src.<module>`, 
 that the class implements `IVendorConnector`, and registers the agents returned by the
 connector.
 
+`supported_transports` accepts only `grpc` and `websocket`. When it is omitted,
+the connector's declared safe default is used; the base connector default is
+gRPC-only, while Local Audio and GECX declare both. The router applies this
+eligibility to both agent discovery and runtime lookup. A deployment can still
+restrict either connector to one transport with an explicit override.
+
+For GECX, this setting is independent of the provider connection. Use
+`GECXConnector` for CES gRPC or `GECXWebSocketConnector` for native CES
+WebSocket. When both are loaded, give them distinct agent IDs and explicitly
+restrict each connector so discovery identifies the intended provider path.
+
 Available connector documentation:
 
 - [Connector interface and development](../src/connectors/README.md)
@@ -88,6 +144,7 @@ Available connector documentation:
 - [Google CX Agent Studio configuration](../docs/guides/byova-gecx-setup.md)
 - `config/aws_lex_example.yaml`
 - `config/gecx_example.yaml`
+- `config/gecx_websocket_example.yaml`
 - `config/config.cloudrun.yaml`
 
 ### Local Audio Connector
@@ -115,13 +172,16 @@ Use `agent_id`, not an `agents` list, to change the advertised local agent name.
 [Local Audio Connector Configuration](../docs/LOCAL_AUDIO_CONFIGURATION.md) for the local
 and end-to-end sandbox test paths.
 
-### GECX / CX Agent Studio Connector
+### GECX / CX Agent Studio Connectors
 
-The GECX connector streams WxCC caller audio to Google CX Agent Studio through the CES
+The GECX connectors stream WxCC caller audio to Google CX Agent Studio through the CES
 `BidiRunSession` API. It can request 24 kHz Linear16 output and perform the final
 anti-aliased 8 kHz mu-law conversion locally, or forward CES 8 kHz mu-law output
 directly. Both paths emit immediate BYOVA `CHUNK` responses followed by exactly
 one normal or terminal `FINAL`.
+
+`GECXConnector` uses CES gRPC. `GECXWebSocketConnector` is a separate module
+that uses the native CES JSON WebSocket endpoint with the same session behavior.
 
 ```yaml
 connectors:
@@ -167,6 +227,12 @@ connectors:
         - "My GECX Agent"
 ```
 
+`terminal_response_grace_seconds` prevents a late CES `EndSession` from
+following an already-committed normal `FINAL`. The connector applies the grace
+window after terminal-sounding output and after a completed turn with no audio
+or text, since native CES WebSocket sessions can send the terminal event just
+after an empty turn-complete signal.
+
 GECX accepts two explicit provider-output pairs: `24000`/`LINEAR16` for the
 recommended connector-side conversion path, or `8000`/`MULAW` for direct CES
 mu-law. WxCC always receives 8 kHz mu-law; unsupported provider-output pairs
@@ -193,7 +259,9 @@ Interactive OAuth credentials are stored as authorized-user JSON, written
 atomically with owner-only permissions. Do not reuse the former pickle token
 format; delete any old `gecx_oauth_token.pickle` file and authenticate again.
 
-See [`gecx_example.yaml`](gecx_example.yaml) for all options and the
+See [`gecx_example.yaml`](gecx_example.yaml) for the gRPC provider variant,
+[`gecx_websocket_example.yaml`](gecx_websocket_example.yaml) for native CES
+WebSocket, and the
 [GECX Setup Guide](../docs/guides/byova-gecx-setup.md) for IAM, deployment, and
 Webex Contact Center configuration.
 
@@ -264,6 +332,24 @@ URL. The gateway will not start with an empty value.
 See [gRPC JWT Authentication](../docs/JWT_AUTHENTICATION.md) for claims, issuers, deployment
 modes, and troubleshooting.
 
+## WebSocket JWT Validation
+
+```yaml
+websocket_jwt_validation:
+  enabled: true
+  datasource_url: "wss://your-gateway.example.com"
+  datasource_schema_uuid: "a38a10b7-43e4-4676-a076-a7d6dce9387d"
+  cache_duration_minutes: 60
+```
+
+Authentication completes before the HTTP connection upgrades. The WebSocket
+and gRPC validators share fetched JWKS keys but validate their own datasource
+URL and schema claims.
+The WebSocket datasource URL is the secure WebSocket origin without the
+`/v1/va` path. Use the exact URL accepted at registration in the JWT profile
+too. With an AWS ALB, route `/v1/va` and
+`/v1/listVirtualAgents` to the private WebSocket listener on port 8765.
+
 ## BYODS Datasource Lifecycle
 
 The optional `data_source` section uses `webex-byods-sdk` to discover or register the
@@ -301,6 +387,14 @@ rejects ambiguous matches. Explicit `url` and `schema_id` values must match the 
 For short-lived development, use `auth.type: "static"` with
 `access_token_env: "WEBEX_BYODS_ACCESS_TOKEN"`. Static access tokens cannot be refreshed;
 use OAuth refresh credentials for unattended operation.
+
+`websocket_data_source` has the same lifecycle fields but uses its own ID, URL,
+WebSocket schema, and WebSocket-only Service App. It falls back to
+`websocket_jwt_validation` values rather than the gRPC profile. In `both` mode,
+the gateway rejects identical credential mappings, datasource IDs, or datasource
+ID environment-variable names. The organization administrator OAuth bootstrap
+identity may be shared, but the two Service App identities may not be shared.
+Each lifecycle creates and renews its own token provider.
 
 ## Logging
 

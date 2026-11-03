@@ -1,0 +1,107 @@
+{
+    "asyncapi": "3.0.0",
+    "info": {
+      "title": "List Virtual Agents WebSocket API",
+      "version": "1.0.0",
+      "description": "WebSocket-based API for listing virtual agents, adapted from the gRPC service definition."
+    },
+    "defaultContentType": "application/json",
+    "servers": {
+      "production": {
+        "protocol": "wss",
+        "description": "Production WebSocket server",
+        "pathname": "/voice-virtual-agent"
+      }
+    },
+    "channels": {
+      "listVirtualAgents": {
+        "address": "/v1/listVirtualAgents",
+        "messages": {
+          "ListVARequest": {
+            "summary": "Client requests the list of virtual agents (ListVARequest)",
+            "payload": {
+              "$ref": "#/components/schemas/ListVARequest"
+            }
+          },
+          "ListVAResponse": {
+            "summary": "Server responds with the list of virtual agents (ListVAResponse)",
+            "payload": {
+              "$ref": "#/components/schemas/ListVAResponse"
+            }
+          }
+        },
+        "subscribe": {
+          "operationId": "sendListVARequest",
+          "messages": [
+            {
+              "$ref": "#/channels/listVirtualAgents/messages/ListVARequest"
+            }
+          ]
+        },
+        "publish": {
+          "operationId": "receiveListVAResponse",
+          "messages": [
+            {
+              "$ref": "#/channels/listVirtualAgents/messages/ListVAResponse"
+            }
+          ]
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "ListVARequest": {
+          "type": "object",
+          "properties": {
+            "customer_org_id": {
+              "type": "string",
+              "description": "Customer organization ID. Mandatory for all requests."
+            },
+            "is_default_virtual_agent_enabled": {
+              "type": "boolean",
+              "description": "Default virtual agent enabled/disabled. If not selecting the VA, default agent will be picked up."
+            }
+          },
+          "required": [
+            "customer_org_id"
+          ]
+        },
+        "ListVAResponse": {
+          "type": "object",
+          "properties": {
+            "virtual_agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/VirtualAgentInfo"
+              },
+              "description": "List of bots for the selected provider."
+            }
+          },
+          "required": [
+            "virtual_agents"
+          ]
+        },
+        "VirtualAgentInfo": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Unique identifier of the virtual agent."
+            },
+            "name": {
+              "type": "string",
+              "description": "Name of the virtual agent."
+            },
+            "description": {
+              "type": "string",
+              "description": "Description of the virtual agent."
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ]
+        }
+      }
+    }
+  }

@@ -37,6 +37,37 @@ class IVendorConnector(ABC):
         """Return whether connector audio is streamed or utterance buffered."""
         return "streaming"
 
+    def get_supported_transports(self) -> frozenset[str]:
+        """Return the transports enabled for this connector by default.
+
+        Existing and third-party connectors remain gRPC-only unless they
+        explicitly opt into the WebSocket contract or deployment configuration
+        enables it after compatibility has been verified.
+        """
+        return frozenset({"grpc"})
+
+    def get_websocket_output_mode(self) -> str:
+        """Return the WebSocket audio framing mode for this connector.
+
+        This optional capability preserves source compatibility for existing
+        third-party connectors. Undeclared connectors use raw CHUNK frames.
+        """
+        return "raw_chunk"
+
+    def get_input_mode(self, transport: str) -> str:
+        """Return the WxCC input collection mode for one gateway transport."""
+        del transport
+        return "INPUT_VOICE_DTMF"
+
+    def get_dtmf_input_config(self, transport: str) -> Dict[str, Any]:
+        """Return the DTMF collection policy for one gateway transport."""
+        del transport
+        return {
+            "dtmf_input_length": 1,
+            "inter_digit_timeout_msec": 3000,
+            "termchar": "DTMF_DIGIT_POUND",
+        }
+
     def should_observe_speech_boundaries(self, conversation_id: str) -> bool:
         """Return whether gateway VAD should observe this conversation's frames."""
         del conversation_id

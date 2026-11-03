@@ -38,6 +38,23 @@ class _Page:
         raise PlaywrightError("navigation lost")
 
 
+class _DialPage:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def on(self, *_args) -> None:
+        pass
+
+    def goto(self, *_args, **_kwargs) -> None:
+        pass
+
+    def click(self, *_args, **_kwargs) -> None:
+        pass
+
+    def evaluate(self, _script: str, payload: dict[str, object]) -> None:
+        self.commands.append(str(payload["command"]))
+
+
 class _Context:
     def new_page(self) -> _Page:
         return _Page()
@@ -98,6 +115,47 @@ def test_browser_failure_is_reported_without_masking_cleanup_error(
     assert server.closed
 
 
+def test_failed_run_ends_call_before_browser_cleanup(tmp_path, monkeypatch) -> None:
+    server = _Server()
+    page = _DialPage()
+    context = _Context()
+    context.new_page = lambda: page
+    browser = _Browser()
+    browser.new_context = lambda **_kwargs: context
+    playwright = _Playwright()
+    playwright.chromium = _Chromium()
+    playwright.chromium.launch = lambda **_kwargs: browser
+
+    @contextmanager
+    def sync_playwright_with_dial_page():
+        yield playwright
+
+    monkeypatch.setattr("byova_e2e.runner.LocalRunServer", lambda *_args: server)
+    monkeypatch.setattr(
+        "byova_e2e.runner.sync_playwright", sync_playwright_with_dial_page
+    )
+    runner = BrowserRunner(tmp_path, _config(tmp_path))
+    monkeypatch.setattr(runner, "_build_frontend", lambda: tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "_wait_for",
+        lambda *_args, **_kwargs: RunEvent("frontend_ready", time.monotonic()),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_established",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RunFailure("establishment failed")
+        ),
+    )
+
+    with pytest.raises(RunFailure, match="establishment failed"):
+        runner.run()
+
+    assert page.commands == ["dial", "endCall"]
+    assert server.closed
+
+
 class _EventServer:
     def __init__(self, events: list[RunEvent]) -> None:
         self.events = list(events)
@@ -119,6 +177,13 @@ class _GatewayObserver:
         self.result = result
         self.error = error
         self.calls: list[tuple[ExpectedOutcome, float]] = []
+        self.wait_calls: list[float] = []
+
+    def wait_for_conversation(self, timeout_seconds):
+        self.wait_calls.append(timeout_seconds)
+        if self.error is not None:
+            raise self.error
+        return {"event_type": "start", "conversation_id": "conversation-1"}
 
     def assert_outcome(self, expected, timeout_seconds):
         self.calls.append((expected, timeout_seconds))
@@ -214,7 +279,10 @@ def test_executes_dtmf_action_without_exposing_digit_in_result(
         audio_path=None,
         audio_sha256=None,
         audio_duration_seconds=None,
-        steps=(RunDtmfAction(digit), RunExpectation(outcome)),
+        steps=(
+            RunDtmfAction(digit, duration_ms=500, terminate=True),
+            RunExpectation(outcome),
+        ),
         response_timeout_seconds=1,
         remote_silence_seconds=0,
     )
@@ -243,12 +311,20 @@ def test_executes_dtmf_action_without_exposing_digit_in_result(
 
     assert page.commands[0] == {
         "command": "sendDtmf",
-        "argument": {"digit": digit, "trigger": "remote_prompt"},
+        "argument": {
+            "digit": digit,
+            "trigger": "remote_prompt",
+            "durationMs": 500,
+            "terminate": True,
+        },
     }
     action_result = result["steps"][0]
     assert action_result["input"] == "dtmf"
-    assert action_result["digit_count"] == 1
-    assert digit not in str(action_result)
+    assert action_result["digit_count"] == 2
+    assert action_result["duration_ms"] == 500
+    assert action_result["terminated"] is True
+    assert "digit" not in action_result
+    assert len(runner._gateway_events.wait_calls) == 1
 
 
 def test_injects_second_utterance_after_response_audio_starts(tmp_path) -> None:
@@ -514,3 +590,55 @@ def test_gateway_event_mismatch_becomes_run_failure(tmp_path) -> None:
 
     with pytest.raises(RunFailure, match="terminal outcome mismatch"):
         runner._assert_gateway_outcome(ExpectedOutcome.TRANSFER, 0)
+
+
+@pytest.mark.parametrize("steps_mode", [False, True])
+@pytest.mark.parametrize("outcome,prompts,connected_seconds,code,passes", [
+    (ExpectedOutcome.TRANSFER, 1, 0, 0, True),
+    (ExpectedOutcome.TRANSFER, 2, 0, 0, False),
+    (ExpectedOutcome.TRANSFER, 1, 1, 0, False),
+    (ExpectedOutcome.RESPONSE, 1, 0, 0, False),
+    (ExpectedOutcome.TRANSFER, 1, 0, 500, False),
+])
+def test_terminal_disconnect_before_silence_window(
+    tmp_path, steps_mode, outcome, prompts, connected_seconds, code, passes
+):
+    """Transfer may disconnect after its announcement; normal calls must stay up."""
+    config = replace(
+        _config(tmp_path), expected_outcome=outcome,
+        expected_response_prompts=prompts,
+        connected_observation_seconds=connected_seconds,
+        response_timeout_seconds=1, remote_silence_seconds=2.5,
+        audio_assets=_audio_assets(tmp_path, 1),
+        steps=(RunAction(0), RunExpectation(
+            outcome, response_prompts=prompts,
+            connected_observation_seconds=connected_seconds,
+        )) if steps_mode else (),
+    )
+    runner = BrowserRunner(tmp_path, config)
+    gateway_event = {"outcome": "TRANSFER_TO_AGENT", "conversation_id": "conversation-1"}
+    observer = _GatewayObserver(result=gateway_event)
+    runner._gateway_events = observer
+    runner._wait_for_prompt_end = lambda *args: "fixture"
+    injection = RunEvent("injection_finished", 10, {"injectionIndex": 0})
+    server = _EventServer(
+        ([injection] if steps_mode else []) + [
+            RunEvent("remote_audio_active", 12),
+            RunEvent("remote_audio_inactive", 14),
+            RunEvent("disconnect", 15, {"code": code, "initiatedByCaller": False}),
+        ]
+    )
+    page = _CommandPage()
+    def execute():
+        if steps_mode:
+            return runner._execute_steps(server, page, time.monotonic() + 2)
+        return runner._finish_call(server, page, time.monotonic() + 2, injection)
+    if not passes:
+        with pytest.raises(RunFailure, match="before the required remote response"):
+            execute()
+        return
+    result = execute()
+    assert result["completion_reason"] == "remote_disconnect"
+    assert result["gateway_terminal_event"] == gateway_event
+    assert observer.calls[0][0] == ExpectedOutcome.TRANSFER
+    assert not any(c["command"] == "endCall" for c in page.commands)

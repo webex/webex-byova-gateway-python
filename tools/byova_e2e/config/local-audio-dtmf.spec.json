@@ -1,0 +1,55 @@
+{
+  "$schema": "./byova-e2e.schema.json",
+  "version": 1,
+  "use": {
+    "headless": true,
+    "remoteSilenceMs": 3000,
+    "remotePromptOccurrence": 1,
+    "promptTimeoutSeconds": 60,
+    "callTimeoutSeconds": 120,
+    "responseTimeoutSeconds": 30,
+    "requireGatewayEvents": true,
+    "gatewayTransport": "websocket",
+    "gatewayAgentId": "Local Audio: Local Playback"
+  },
+  "tests": [
+    {
+      "id": "dtmf-transfer",
+      "title": "DTMF 5 transfers the Local Audio call",
+      "steps": [
+        {
+          "name": "Request transfer",
+          "action": "dtmf",
+          "digit": "5",
+          "durationMs": 500
+        },
+        {
+          "name": "Prove transfer announcement and gateway event",
+          "expect": {
+            "outcome": "transfer",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "dtmf-session-end",
+      "title": "DTMF 6 ends the Local Audio session",
+      "steps": [
+        {
+          "name": "Request session end",
+          "action": "dtmf",
+          "digit": "6",
+          "durationMs": 500
+        },
+        {
+          "name": "Prove goodbye and gateway session end",
+          "expect": {
+            "outcome": "session-end",
+            "responsePrompts": 1
+          }
+        }
+      ]
+    }
+  ]
+}

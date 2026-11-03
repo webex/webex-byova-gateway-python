@@ -6,9 +6,11 @@ Webex Contact Center and the virtual agent connectors.
 """
 
 import logging
+import math
 import queue
 import threading
 import time
+import uuid
 from typing import Any, Callable, Dict, Iterator, Optional
 
 import grpc
@@ -37,6 +39,12 @@ from src.utils.silero_speech_boundary import (
     SpeechBoundarySignal,
 )
 
+from .conversation_registry import (
+    ConversationConflictError,
+    ConversationLease,
+    ConversationRegistry,
+    ConversationStore,
+)
 from .health_service import HealthCheckService
 from .virtual_agent_router import VirtualAgentRouter
 
@@ -60,13 +68,18 @@ class ConversationProcessor:
     }
 
     def __init__(
-        self, conversation_id: str, virtual_agent_id: str, router: VirtualAgentRouter,
+        self,
+        conversation_id: str,
+        virtual_agent_id: str,
+        router: VirtualAgentRouter,
         vad_config: Optional[Dict[str, Any]] = None,
         max_terminal_playback_seconds: float = 30.0,
+        transport: str = "grpc",
     ):
         self.conversation_id = conversation_id
         self.virtual_agent_id = virtual_agent_id
         self.router = router
+        self.transport = transport
         self.logger = logging.getLogger(
             f"{__name__}.ConversationProcessor.{conversation_id}"
         )
@@ -77,16 +90,17 @@ class ConversationProcessor:
             0.0, float(max_terminal_playback_seconds)
         )
         self._stream_cancel_event = threading.Event()
-        self._async_response_sink: Optional[
-            Callable[[VoiceVAResponse], bool]
-        ] = None
-        self._connector_response_sink: Optional[
-            Callable[[Dict[str, Any]], bool]
-        ] = None
+        self._async_response_sink: Optional[Callable[[VoiceVAResponse], bool]] = None
+        self._connector_response_sink: Optional[Callable[[Dict[str, Any]], bool]] = None
         self._connector_input_acknowledgement_sink: Callable[[str], None] = (
             self._handle_input_acknowledgement
         )
         self._speech_end_lock = threading.Lock()
+        self._connector_end_lock = threading.Lock()
+        self._connector_end_called = False
+        self._audio_frames_received = 0
+        self._audio_bytes_received = 0
+        self._audio_peak_frame_rms = 0.0
         self._pending_speech_end_timer: Optional[threading.Timer] = None
         self._pending_speech_end_sample_rate_hertz: Optional[int] = None
         self._pending_speech_end_uses_recognition_grace = False
@@ -127,8 +141,62 @@ class ConversationProcessor:
         )
 
         self.logger.info(
-            f"Created conversation processor for {conversation_id} with agent {virtual_agent_id}"
+            "Created conversation processor for %s with agent %s over %s",
+            conversation_id,
+            virtual_agent_id,
+            transport,
         )
+
+    def _configure_next_input(self, response: VoiceVAResponse) -> None:
+        """Apply connector input collection semantics for this transport."""
+        capability = getattr(self.router, "get_input_mode", None)
+        input_mode_name = (
+            capability(self.virtual_agent_id, self.transport)
+            if callable(capability)
+            else "INPUT_VOICE_DTMF"
+        )
+        if not isinstance(input_mode_name, str):
+            input_mode_name = "INPUT_VOICE_DTMF"
+        config_capability = getattr(self.router, "get_dtmf_input_config", None)
+        default_dtmf_config = {
+            "dtmf_input_length": 1,
+            "inter_digit_timeout_msec": 3000,
+            "termchar": "DTMF_DIGIT_POUND",
+        }
+        dtmf_config = (
+            config_capability(self.virtual_agent_id, self.transport)
+            if callable(config_capability)
+            else default_dtmf_config
+        )
+        if not isinstance(dtmf_config, dict):
+            dtmf_config = default_dtmf_config
+        self._apply_input_configuration(response, input_mode_name, dtmf_config)
+
+    def _apply_input_configuration(
+        self,
+        response: VoiceVAResponse,
+        input_mode_name: str,
+        dtmf_config: Dict[str, Any],
+    ) -> None:
+        """Apply one validated input mode and the shared DTMF collection policy."""
+        response.input_mode = VoiceVAInputMode.Value(input_mode_name)
+        input_config = InputHandlingConfig(
+            dtmf_config=DTMFInputConfig(
+                dtmf_input_length=dtmf_config["dtmf_input_length"],
+                inter_digit_timeout_msec=dtmf_config[
+                    "inter_digit_timeout_msec"
+                ],
+                termchar=DTMFDigits.Value(dtmf_config["termchar"]),
+            )
+        )
+        # The WebSocket schema reserves these gRPC speech completion timers.
+        # Its separate no_input_timeout_msec field does not exist in this proto
+        # and is added by the WebSocket wire adapter at the transport boundary.
+        if self.transport != "websocket":
+            input_config.speech_timers.CopyFrom(
+                InputSpeechTimers(complete_timeout_msec=5000)
+            )
+        response.input_handling_config.CopyFrom(input_config)
 
     def set_stream_cancel_event(self, cancel_event: threading.Event) -> None:
         """Attach the cancellation signal for the active WxCC request stream."""
@@ -142,9 +210,7 @@ class ConversationProcessor:
         def connector_response_sink(
             connector_response: Dict[str, Any],
         ) -> bool:
-            grpc_response = self._convert_connector_response_to_grpc(
-                connector_response
-            )
+            grpc_response = self._convert_connector_response_to_grpc(connector_response)
             if grpc_response is None:
                 return True
             accepted = response_sink(grpc_response)
@@ -473,11 +539,12 @@ class ConversationProcessor:
                         f"Audio content size: {len(connector_response.get('audio_content'))}"
                     )
 
-            # Convert response to gRPC format with FINAL response type and disabled barge-in for conversation start
+            # Preserve the connector's prompt semantics for conversation start.
+            # In particular, an interruptible welcome enables WxCC to collect
+            # first-turn voice and DTMF while the prompt is active.
             grpc_response = self._convert_connector_response_to_grpc(
                 connector_response,
                 response_type=VoiceVAResponse.ResponseType.FINAL,
-                barge_in_enabled=False,  # Enable barge-in for conversation start (until server bug is resolved)
             )
 
             self.logger.debug(
@@ -503,6 +570,18 @@ class ConversationProcessor:
     def _process_audio_input(self, audio_input) -> Iterator[VoiceVAResponse]:
         """Process audio input."""
         try:
+            self._audio_frames_received += 1
+            self._audio_bytes_received += len(audio_input.caller_audio)
+            if self._audio_frames_received == 1:
+                self.logger.info(
+                    "gateway_audio_format conversation_id=%s transport=%s "
+                    "encoding=%s sample_rate_hertz=%d frame_bytes=%d",
+                    self.conversation_id,
+                    self.transport,
+                    audio_input.encoding,
+                    audio_input.sample_rate_hertz,
+                    len(audio_input.caller_audio),
+                )
             # Convert request to connector format
             message_data = {
                 "conversation_id": self.conversation_id,
@@ -542,8 +621,17 @@ class ConversationProcessor:
                 audio_input.sample_rate_hertz,
                 fallback_sample_rate_hertz=self.vad_fallback_sample_rate_hertz,
             )
+            if frame.samples:
+                frame_rms = math.sqrt(
+                    sum(sample * sample for sample in frame.samples) / len(frame.samples)
+                )
+                self._audio_peak_frame_rms = max(self._audio_peak_frame_rms, frame_rms)
             for signal in self.speech_boundary_observer.observe(frame):
-                event_type = "START_OF_INPUT" if signal.kind == "speech_started" else "END_OF_INPUT"
+                event_type = (
+                    "START_OF_INPUT"
+                    if signal.kind == "speech_started"
+                    else "END_OF_INPUT"
+                )
                 if signal.kind == "speech_started":
                     self.logger.info(
                         "gateway_caller_speech_start_detected "
@@ -566,9 +654,7 @@ class ConversationProcessor:
                 merges_speech_pauses = (
                     self._async_response_sink is not None
                     and self.speech_end_grace_ms > 0
-                    and self.router.should_merge_speech_pauses(
-                        self.virtual_agent_id
-                    )
+                    and self.router.should_merge_speech_pauses(self.virtual_agent_id)
                 )
                 if (
                     merges_speech_pauses
@@ -604,9 +690,7 @@ class ConversationProcessor:
     ) -> Iterator[VoiceVAResponse]:
         """Commit one gateway speech boundary and convert connector responses."""
         event_type = (
-            "START_OF_INPUT"
-            if signal.kind == "speech_started"
-            else "END_OF_INPUT"
+            "START_OF_INPUT" if signal.kind == "speech_started" else "END_OF_INPUT"
         )
         boundary_event = {
             "event_type": event_type,
@@ -873,12 +957,7 @@ class ConversationProcessor:
                     }
 
                     # Route to connector to end conversation
-                    connector_response = self.router.route_request(
-                        self.virtual_agent_id,
-                        "end_conversation",
-                        self.conversation_id,
-                        message_data,
-                    )
+                    connector_response = self._end_connector_once(message_data)
 
                     # If connector returns a response, convert and yield it
                     if connector_response:
@@ -1034,7 +1113,7 @@ class ConversationProcessor:
                         InputHandlingConfig(
                             dtmf_config=DTMFInputConfig(
                                 dtmf_input_length=1,
-                                inter_digit_timeout_msec=300,
+                                inter_digit_timeout_msec=3000,
                                 termchar=DTMFDigits.DTMF_DIGIT_POUND,
                             ),
                             speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
@@ -1048,17 +1127,7 @@ class ConversationProcessor:
                         else VoiceVAResponse.ResponseType.FINAL
                     )
                     va_response.response_type = final_response_type
-                    va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-                    va_response.input_handling_config.CopyFrom(
-                        InputHandlingConfig(
-                            dtmf_config=DTMFInputConfig(
-                                dtmf_input_length=1,
-                                inter_digit_timeout_msec=300,
-                                termchar=DTMFDigits.DTMF_DIGIT_POUND,
-                            ),
-                            speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
-                        )
-                    )
+                    self._configure_next_input(va_response)
 
                 # Handle output events for silence responses before returning
                 if connector_response and "output_events" in connector_response:
@@ -1288,17 +1357,7 @@ class ConversationProcessor:
             else:
                 # Set the next input mode and handling configuration only while
                 # the virtual-agent session is still active.
-                va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-                va_response.input_handling_config.CopyFrom(
-                    InputHandlingConfig(
-                        dtmf_config=DTMFInputConfig(
-                            dtmf_input_length=1,
-                            inter_digit_timeout_msec=300,
-                            termchar=DTMFDigits.DTMF_DIGIT_POUND,
-                        ),
-                        speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
-                    )
-                )
+                self._configure_next_input(va_response)
 
             self.logger.debug(
                 f"Final gRPC response created with {len(va_response.prompts)} prompts"
@@ -1348,20 +1407,28 @@ class ConversationProcessor:
         # Set response type
         va_response.response_type = VoiceVAResponse.ResponseType.FINAL
 
-        # Set input mode
-        va_response.input_mode = VoiceVAInputMode.INPUT_VOICE_DTMF
-
-        # Set input handling configuration
-        va_response.input_handling_config.CopyFrom(
-            InputHandlingConfig(
-                dtmf_config=DTMFInputConfig(
-                    dtmf_input_length=1,
-                    inter_digit_timeout_msec=300,
-                    termchar=DTMFDigits.DTMF_DIGIT_POUND,
-                ),
-                speech_timers=InputSpeechTimers(complete_timeout_msec=5000),
+        try:
+            self._configure_next_input(va_response)
+        except Exception as error:
+            # Error rendering must remain reliable even when a connector has
+            # disappeared or advertises an invalid input capability.  The
+            # literal fallback is schema-valid and cannot invoke connector
+            # code again.
+            self.logger.warning(
+                "Falling back to default input configuration while rendering "
+                "an error response for conversation %s: %s",
+                self.conversation_id,
+                error,
             )
-        )
+            self._apply_input_configuration(
+                va_response,
+                "INPUT_VOICE_DTMF",
+                {
+                    "dtmf_input_length": 1,
+                    "inter_digit_timeout_msec": 3000,
+                    "termchar": "DTMF_DIGIT_POUND",
+                },
+            )
 
         self.logger.debug(
             f"Sending error response for conversation {self.conversation_id}"
@@ -1381,18 +1448,13 @@ class ConversationProcessor:
         if timer is not None:
             timer.cancel()
         try:
-            # End the conversation with the connector
-            message_data = {
-                "conversation_id": self.conversation_id,
-                "virtual_agent_id": self.virtual_agent_id,
-                "input_type": "conversation_end",
-                "termination_reason": termination_reason,
-            }
-            self.router.route_request(
-                self.virtual_agent_id,
-                "end_conversation",
-                self.conversation_id,
-                message_data,
+            self._end_connector_once(
+                {
+                    "conversation_id": self.conversation_id,
+                    "virtual_agent_id": self.virtual_agent_id,
+                    "input_type": "conversation_end",
+                    "termination_reason": termination_reason,
+                }
             )
         except Exception as e:
             self.logger.error(
@@ -1403,6 +1465,33 @@ class ConversationProcessor:
         self.logger.debug(
             f"Cleaned up conversation {self.conversation_id} (duration: {duration:.2f}s)"
         )
+
+    def _end_connector_once(self, message_data: Dict[str, Any]) -> Any:
+        """End the provider session at most once across all cleanup paths."""
+        with self._connector_end_lock:
+            if self._connector_end_called:
+                return None
+            self._connector_end_called = True
+        self.logger.info(
+            "gateway_audio_summary conversation_id=%s transport=%s "
+            "frames=%d audio_bytes=%d peak_frame_rms=%.6f",
+            self.conversation_id,
+            self.transport,
+            self._audio_frames_received,
+            self._audio_bytes_received,
+            self._audio_peak_frame_rms,
+        )
+        try:
+            return self.router.route_request(
+                self.virtual_agent_id,
+                "end_conversation",
+                self.conversation_id,
+                message_data,
+            )
+        except Exception:
+            # A failed provider termination is still a consumed cleanup attempt;
+            # retrying from another transport callback risks duplicate effects.
+            raise
 
 
 class WxCCGatewayServer(VoiceVirtualAgentServicer):
@@ -1421,6 +1510,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         max_terminal_playback_seconds: float = 30.0,
         request_queue_maxsize: int = 100,
         response_queue_maxsize: int = 100,
+        conversation_registry: Optional[ConversationRegistry] = None,
     ) -> None:
         """
         Initialize the WxCC Gateway Server.
@@ -1442,8 +1532,12 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         )
         self.logger = logging.getLogger(__name__)
 
-        # Conversation state management - track active conversations by conversation_id
-        self.conversations: Dict[str, ConversationProcessor] = {}
+        # Conversation identity includes the customer org. Legacy string reads
+        # remain supported while unambiguous for monitoring and integrations.
+        self.conversations: ConversationStore[ConversationProcessor] = (
+            ConversationStore()
+        )
+        self.conversation_registry = conversation_registry or ConversationRegistry()
 
         # Connection tracking for monitoring
         self.connection_events = []
@@ -1474,7 +1568,9 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
         self.logger.info("WxCCGatewayServer shutdown complete")
 
     def _cleanup_conversation(
-        self, conversation_id: str, termination_reason: str = "gateway_cleanup"
+        self,
+        conversation_id,
+        termination_reason: str = "gateway_cleanup",
     ):
         """Clean up a specific conversation."""
         if conversation_id in self.conversations:
@@ -1486,6 +1582,8 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 )
             finally:
                 del self.conversations[conversation_id]
+                if isinstance(conversation_id, tuple):
+                    self.conversation_registry.release_key(conversation_id)
 
     def add_connection_event(
         self, event_type: str, conversation_id: str, agent_id: str, **kwargs
@@ -1537,10 +1635,17 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             Dictionary of active conversations
         """
         active_conversations = {}
-        for conversation_id, processor in self.conversations.items():
-            active_conversations[conversation_id] = {
+        for (customer_org_id, conversation_id), processor in self.conversations.items():
+            display_id = (
+                conversation_id
+                if not customer_org_id
+                else f"{customer_org_id}:{conversation_id}"
+            )
+            active_conversations[display_id] = {
                 "agent_id": processor.virtual_agent_id,
                 "conversation_id": processor.conversation_id,
+                "customer_org_id": customer_org_id,
+                "transport": "grpc",
                 "session_started": processor.session_started,
                 "can_be_deleted": processor.can_be_deleted,
                 "start_time": processor.start_time,
@@ -1567,7 +1672,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             self.logger.debug("ListVirtualAgents called")
 
             # Get all available agents from the router
-            available_agents = self.router.get_all_available_agents()
+            available_agents = self.router.get_all_available_agents(transport="grpc")
 
             # Build the response
             virtual_agents = []
@@ -1619,8 +1724,11 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             VoiceVAResponse messages containing agent responses
         """
         conversation_id = None
+        customer_org_id = None
         agent_id = None
         processor = None
+        conversation_key = None
+        lease: Optional[ConversationLease] = None
         stream_cancel_event = threading.Event()
         request_reader_done = threading.Event()
         request_processor_done = threading.Event()
@@ -1645,10 +1753,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                 current_reason = state["stream_end_reason"]
                 if current_reason == "server_terminal":
                     return
-                if (
-                    reason == "server_terminal"
-                    or current_reason == "client_half_close"
-                ):
+                if reason == "server_terminal" or current_reason == "client_half_close":
                     state["stream_end_reason"] = reason
 
         def enqueue_request(request: VoiceVARequest) -> bool:
@@ -1687,9 +1792,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     context.set_details(f"Stream error: {str(error)}")
             except Exception as error:
                 set_stream_end_reason("stream_error")
-                self.logger.error(
-                    "Error reading ProcessCallerInput stream: %s", error
-                )
+                self.logger.error("Error reading ProcessCallerInput stream: %s", error)
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(f"Stream error: {str(error)}")
             finally:
@@ -1697,7 +1800,13 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
 
         def process_requests() -> None:
             """Process caller requests in order and enqueue outbound responses."""
-            nonlocal conversation_id, agent_id, processor
+            nonlocal \
+                conversation_id, \
+                customer_org_id, \
+                agent_id, \
+                processor, \
+                conversation_key, \
+                lease
             try:
                 while True:
                     if stream_cancel_event.is_set():
@@ -1712,11 +1821,14 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                     # Extract conversation and agent information from the first request
                     if conversation_id is None:
                         conversation_id = request.conversation_id
+                        customer_org_id = request.customer_org_id
                         agent_id = request.virtual_agent_id
 
                         # Use default agent if none specified
                         if not agent_id:
-                            available_agents = self.router.get_all_available_agents()
+                            available_agents = self.router.get_all_available_agents(
+                                transport="grpc"
+                            )
                             if available_agents:
                                 agent_id = available_agents[0]
                                 self.logger.debug(
@@ -1729,14 +1841,44 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                                 return
 
                         try:
-                            self.router.get_connector_for_agent(agent_id)
+                            self.router.get_connector_for_agent(
+                                agent_id, transport="grpc"
+                            )
                         except ValueError:
                             self.logger.error("Agent not found: %s", agent_id)
                             context.set_code(grpc.StatusCode.NOT_FOUND)
                             context.set_details(f"Agent not found: {agent_id}")
                             return
 
-                        if conversation_id not in self.conversations:
+                        conversation_key = self.conversation_registry.key(
+                            customer_org_id, conversation_id
+                        )
+                        if conversation_key in self.conversations:
+                            existing_processor = self.conversations[conversation_key]
+                            if existing_processor.virtual_agent_id != agent_id:
+                                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                                context.set_details(
+                                    "virtual_agent_id does not match the existing "
+                                    "conversation"
+                                )
+                                return
+                        try:
+                            lease = self.conversation_registry.acquire(
+                                customer_org_id=customer_org_id,
+                                conversation_id=conversation_id,
+                                transport="grpc",
+                                agent_id=agent_id,
+                                connection_id=uuid.uuid4().hex,
+                                allow_transport_reconnect=True,
+                            )
+                        except ConversationConflictError:
+                            context.set_code(grpc.StatusCode.ALREADY_EXISTS)
+                            context.set_details(
+                                "conversation is already owned by another connection"
+                            )
+                            return
+
+                        if conversation_key not in self.conversations:
                             processor = ConversationProcessor(
                                 conversation_id,
                                 agent_id,
@@ -1744,7 +1886,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                                 self.vad_config,
                                 self.max_terminal_playback_seconds,
                             )
-                            self.conversations[conversation_id] = processor
+                            self.conversations[conversation_key] = processor
                             self.add_connection_event(
                                 "start", conversation_id, agent_id
                             )
@@ -1753,7 +1895,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                                 conversation_id,
                             )
                         else:
-                            processor = self.conversations[conversation_id]
+                            processor = self.conversations[conversation_key]
                             if processor.virtual_agent_id != agent_id:
                                 self.logger.error(
                                     "Rejected conversation %s reconnection with "
@@ -1788,11 +1930,9 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                             conversation_id,
                         )
                     elif request.HasField("event_input"):
-                        event_type_name = (
-                            ConversationProcessor.EVENT_TYPE_NAMES.get(
-                                request.event_input.event_type,
-                                f"UNKNOWN({request.event_input.event_type})",
-                            )
+                        event_type_name = ConversationProcessor.EVENT_TYPE_NAMES.get(
+                            request.event_input.event_type,
+                            f"UNKNOWN({request.event_input.event_type})",
                         )
                         self.logger.debug(
                             "Processing event input for conversation %s: %s",
@@ -1809,9 +1949,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                         if not enqueue_response(response):
                             return
 
-                    self.add_connection_event(
-                        "message", conversation_id, agent_id
-                    )
+                    self.add_connection_event("message", conversation_id, agent_id)
                     if processor.can_be_deleted:
                         set_stream_end_reason("server_terminal")
                         return
@@ -1921,8 +2059,7 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             for thread in (request_reader_thread, request_processor_thread):
                 if thread.is_alive():
                     self.logger.error(
-                        "wxcc_stream_thread_join_timeout conversation_id=%s "
-                        "thread=%s",
+                        "wxcc_stream_thread_join_timeout conversation_id=%s thread=%s",
                         conversation_id,
                         thread.name,
                     )
@@ -1936,8 +2073,8 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
             # processor and vendor session across that continuation boundary.
             # Connector opt-in applies only to cancellation and actual request
             # stream failures, where no continuation is expected.
-            if conversation_id and conversation_id in self.conversations:
-                processor = self.conversations[conversation_id]
+            if conversation_key and conversation_key in self.conversations:
+                processor = self.conversations[conversation_key]
                 agent_id = processor.virtual_agent_id
                 cleanup_on_stream_end = (
                     not processor.can_be_deleted
@@ -1957,12 +2094,16 @@ class WxCCGatewayServer(VoiceVirtualAgentServicer):
                         termination_reason,
                     )
                     self._cleanup_conversation(
-                        conversation_id, termination_reason=termination_reason
+                        conversation_key, termination_reason=termination_reason
                     )
                     self.add_connection_event(
                         "end", conversation_id, agent_id, reason=termination_reason
                     )
                 else:
+                    if lease is not None:
+                        self.conversation_registry.deactivate(lease)
                     self.logger.debug(
                         f"Keeping conversation {conversation_id} active for potential reconnection"
                     )
+            elif lease is not None:
+                self.conversation_registry.release(lease)

@@ -68,6 +68,16 @@
         },
         "requireGatewayEvents": {
           "type": "boolean"
+        },
+        "gatewayTransport": {
+          "enum": [
+            "grpc",
+            "websocket"
+          ]
+        },
+        "gatewayAgentId": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -210,6 +220,14 @@
         "digit": {
           "type": "string",
           "pattern": "^[0-9A-D*#]$"
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 40,
+          "maximum": 6000
+        },
+        "terminate": {
+          "type": "boolean"
         }
       }
     },

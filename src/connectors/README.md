@@ -15,9 +15,13 @@ All connectors must implement `IVendorConnector` which defines:
 - **Conversation Management**: `start_conversation()`, `end_conversation()`
 - **Message Handling**: `send_message()`
 - **Agent Discovery**: `get_available_agents()`
+- **Transport Capability**: `get_supported_transports()` defaults to gRPC-only;
+  a connector or reviewed deployment override must explicitly enable WebSocket
 - **Data Conversion**: `convert_wxcc_to_vendor()`, `convert_vendor_to_wxcc()`
 - **Optional Streaming Coordination**: asynchronous response delivery, held
   speech-turn pause/resume/commit, and current-input acknowledgement hooks
+- **Optional WebSocket Framing**: `get_websocket_output_mode()` returns
+  `raw_chunk` or `wav_final`; existing connectors default to `raw_chunk`
 
 ### Interface Contract
 
@@ -47,6 +51,14 @@ class IVendorConnector(ABC):
     def get_available_agents(self) -> list[str]:
         """Return list of available agent IDs"""
         pass
+
+    def get_websocket_output_mode(self) -> str:
+        """Optional; defaults to raw_chunk for source compatibility"""
+        return "raw_chunk"
+
+    def get_supported_transports(self) -> frozenset[str]:
+        """Optional; defaults to the safe gRPC-only eligibility set"""
+        return frozenset({"grpc"})
 ```
 
 ## Available Connectors
@@ -71,6 +83,8 @@ connectors:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
+    # Local Audio supports both; restrict this list for a single-protocol demo.
+    supported_transports: ["grpc", "websocket"]
     config:
       agent_id: "Local Playback"
       audio_base_path: "audio"
@@ -85,6 +99,12 @@ connectors:
 ### AWS Lex Connector (`aws_lex_connector.py`)
 
 **Purpose**: Integration with Amazon Lex v2 for virtual agent capabilities
+
+`AWSLexConnector` defaults to WxCC gRPC. The separate
+`AWSLexWebSocketConnector` in `aws_lex_websocket_connector.py` defaults to WxCC
+WebSocket, with its own discovery prefix and session state. Both share the
+utterance-buffered Lex `RecognizeUtterance` provider. See the
+[WebSocket adapter configuration](../../docs/AWS_LEX_CONFIGURATION.md#separate-websocket-adapter).
 
 **Features**:
 - Connects to existing AWS Lex v2 instances
@@ -109,8 +129,7 @@ connectors:
     config:
       region_name: "us-east-1"  # Your AWS region
       # Note: Bot aliases are discovered automatically. The connector uses the most recent alias for each bot.
-      aws_access_key_id: "YOUR_DEV_ACCESS_KEY"  # Explicit AWS access key (for dev only)
-      aws_secret_access_key: "YOUR_DEV_SECRET_KEY"  # Explicit AWS secret (for dev only)
+      # AWS credentials come from the SDK credential chain, never this YAML.
       initial_trigger_text: "hello"  # Text sent when starting conversation (default: "hello")
       barge_in_enabled: false
       audio_logging:
@@ -152,10 +171,16 @@ The connector supports multiple ways to provide AWS credentials:
 - Full conversation handling not yet implemented
 - Audio processing integration pending
 
-### GECX / CX Agent Studio Connector (`gecx_connector.py`)
+### GECX / CX Agent Studio Connectors
 
 **Purpose**: Integration with CX Agent Studio (Gemini Enterprise for Customer
 Experience) through the CES `BidiRunSession` API.
+
+- `gecx_connector.py` uses the CES gRPC client.
+- `gecx_websocket_connector.py` uses the native CES JSON WebSocket endpoint and
+  shares the existing audio, turn, response, and terminal semantics.
+- Use distinct agent IDs and explicit `supported_transports` restrictions when
+  both provider connectors are configured in one gateway.
 
 **Features**:
 - Streams WxCC caller audio to Google as it arrives
@@ -209,7 +234,8 @@ gecx_connector:
 ```
 
 See the [GECX setup guide](../../docs/guides/byova-gecx-setup.md) and
-[`config/gecx_example.yaml`](../../config/gecx_example.yaml).
+[`config/gecx_example.yaml`](../../config/gecx_example.yaml) and
+[`config/gecx_websocket_example.yaml`](../../config/gecx_websocket_example.yaml).
 
 ## Adding New Connectors
 

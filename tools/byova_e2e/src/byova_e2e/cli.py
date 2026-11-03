@@ -25,6 +25,11 @@ from .auth import (
     default_token_path,
     load_local_environment,
 )
+from .gateway_tunnel import (
+    GatewayTunnelError,
+    SSMPortForwardConfig,
+    gateway_event_tunnel,
+)
 from .models import (
     AudioAsset,
     ExpectedOutcome,
@@ -144,6 +149,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fail unless the expected outcome is proven by gateway diagnostics",
     )
     run.add_argument(
+        "--gateway-transport",
+        choices=["grpc", "websocket"],
+        default=None,
+        help="Require the correlated gateway conversation to use this transport",
+    )
+    run.add_argument(
+        "--gateway-agent-id",
+        default=None,
+        help="Require the correlated gateway conversation to use this exact agent ID",
+    )
+    run.add_argument(
+        "--gateway-events-ssm-target",
+        default=None,
+        help="SSM-managed EC2 instance used to reach the private monitoring listener",
+    )
+    run.add_argument(
+        "--gateway-events-ssm-host",
+        default=None,
+        help="Private gateway host reachable from the SSM-managed instance",
+    )
+    run.add_argument(
+        "--gateway-events-ssm-remote-port",
+        type=int,
+        default=None,
+        help="Private monitoring port forwarded through SSM (default: 8080)",
+    )
+    run.add_argument(
+        "--gateway-events-ssm-local-port",
+        type=int,
+        default=None,
+        help="Loopback port exposed to the E2E observer (default: 18080)",
+    )
+    run.add_argument(
+        "--gateway-events-ssm-region",
+        default=None,
+        help="Optional AWS region for the SSM session",
+    )
+    run.add_argument(
+        "--gateway-events-ssm-profile",
+        default=None,
+        help="Optional local AWS CLI profile for the SSM session",
+    )
+    run.add_argument(
         "--expect-outcome",
         choices=[
             ExpectedOutcome.RESPONSE.value,
@@ -215,6 +263,7 @@ def main(argv: list[str] | None = None) -> None:
         RunFailure,
         TestPlanError,
         CLIError,
+        GatewayTunnelError,
     ) as error:
         if args.command == "run":
             event_history = [
@@ -310,13 +359,29 @@ def _run(args: argparse.Namespace) -> None:
         if args.expect_outcome
         else (selected_test.expected_outcome if selected_test else None)
     )
-    gateway_events_url = args.gateway_events_url or os.getenv(
+    direct_gateway_events_url = args.gateway_events_url or os.getenv(
         "BYOVA_E2E_GATEWAY_EVENTS_URL"
+    )
+    gateway_tunnel_config, gateway_events_url = _gateway_event_connection(
+        args,
+        direct_gateway_events_url,
     )
     require_gateway_events = bool(
         args.require_gateway_events
         or gateway_events_url
         or (selected_test and selected_test.require_gateway_events)
+    )
+    expected_gateway_transport = _configured(
+        args.gateway_transport,
+        selected_test,
+        "expected_gateway_transport",
+        None,
+    )
+    expected_gateway_agent_id = _configured(
+        args.gateway_agent_id,
+        selected_test,
+        "expected_gateway_agent_id",
+        None,
     )
     expected_response_prompts = (
         args.expected_response_prompts
@@ -362,6 +427,12 @@ def _run(args: argparse.Namespace) -> None:
         raise CLIError(
             "Gateway event assertions require --expect-outcome or a named test"
         )
+    if (
+        expected_gateway_transport or expected_gateway_agent_id
+    ) and not require_gateway_events:
+        raise CLIError(
+            "Gateway transport or agent assertions require gateway event assertions"
+        )
     if gateway_events_url and not gateway_events_url.startswith(
         ("http://", "https://")
     ):
@@ -384,7 +455,12 @@ def _run(args: argparse.Namespace) -> None:
                 if isinstance(step, InputStepDefinition):
                     if step.dtmf_digit is not None:
                         run_steps.append(
-                            RunDtmfAction(digit=step.dtmf_digit, name=step.name)
+                            RunDtmfAction(
+                                digit=step.dtmf_digit,
+                                name=step.name,
+                                duration_ms=step.dtmf_duration_ms,
+                                terminate=step.dtmf_terminate,
+                            )
                         )
                         continue
                     prepared_step, profile = _prepare_input_step(
@@ -475,11 +551,14 @@ def _run(args: argparse.Namespace) -> None:
             connected_observation_seconds=connected_observation_seconds,
             gateway_events_url=gateway_events_url,
             require_gateway_events=require_gateway_events,
+            expected_gateway_transport=expected_gateway_transport,
+            expected_gateway_agent_id=expected_gateway_agent_id,
             headless=headless,
             audio_assets=tuple(audio_assets),
             steps=tuple(run_steps),
         )
-        result = BrowserRunner(TOOL_ROOT, config).run()
+        with gateway_event_tunnel(gateway_tunnel_config):
+            result = BrowserRunner(TOOL_ROOT, config).run()
 
     artifact = write_artifact(
         args.artifact_dir,
@@ -506,6 +585,13 @@ def _run(args: argparse.Namespace) -> None:
             "browser_profile": {"headless": config.headless},
             "gateway_event_profile": {
                 "required": config.require_gateway_events,
+                "expected_transport": config.expected_gateway_transport,
+                "expected_agent_id": config.expected_gateway_agent_id,
+                "transport": (
+                    "ssm"
+                    if gateway_tunnel_config
+                    else ("direct" if config.gateway_events_url else "disabled")
+                ),
             },
             "test": selected_test.test_id if selected_test else None,
             "test_title": selected_test.title if selected_test else None,
@@ -564,3 +650,74 @@ def _configured(
         if test_value is not None:
             return test_value
     return default
+
+
+def _gateway_event_connection(
+    args: argparse.Namespace,
+    direct_url: str | None,
+) -> tuple[SSMPortForwardConfig | None, str | None]:
+    """Resolve a direct URL or a loopback-only SSM event connection."""
+    target = args.gateway_events_ssm_target or os.getenv(
+        "BYOVA_E2E_GATEWAY_EVENTS_SSM_TARGET"
+    )
+    remote_host = args.gateway_events_ssm_host or os.getenv(
+        "BYOVA_E2E_GATEWAY_EVENTS_SSM_HOST"
+    )
+    remote_port = _configured_port(
+        args.gateway_events_ssm_remote_port,
+        "BYOVA_E2E_GATEWAY_EVENTS_SSM_REMOTE_PORT",
+        8080,
+    )
+    local_port = _configured_port(
+        args.gateway_events_ssm_local_port,
+        "BYOVA_E2E_GATEWAY_EVENTS_SSM_LOCAL_PORT",
+        18080,
+    )
+    region = args.gateway_events_ssm_region or os.getenv(
+        "BYOVA_E2E_GATEWAY_EVENTS_SSM_REGION"
+    )
+    profile = args.gateway_events_ssm_profile or os.getenv(
+        "BYOVA_E2E_GATEWAY_EVENTS_SSM_PROFILE"
+    )
+    configured_values = (
+        target,
+        remote_host,
+        args.gateway_events_ssm_remote_port,
+        args.gateway_events_ssm_local_port,
+        region,
+        profile,
+        os.getenv("BYOVA_E2E_GATEWAY_EVENTS_SSM_REMOTE_PORT"),
+        os.getenv("BYOVA_E2E_GATEWAY_EVENTS_SSM_LOCAL_PORT"),
+    )
+    if not any(value is not None for value in configured_values):
+        return None, direct_url
+    if direct_url:
+        raise CLIError(
+            "Use either a direct gateway events URL or the SSM tunnel options, not both"
+        )
+    if not target or not remote_host:
+        raise CLIError(
+            "The SSM gateway event tunnel requires both --gateway-events-ssm-target "
+            "and --gateway-events-ssm-host"
+        )
+    config = SSMPortForwardConfig(
+        target=target,
+        remote_host=remote_host,
+        remote_port=remote_port,
+        local_port=local_port,
+        region=region,
+        profile=profile,
+    )
+    return config, config.events_url
+
+
+def _configured_port(cli_value: int | None, environment_name: str, default: int) -> int:
+    if cli_value is not None:
+        return cli_value
+    raw_value = os.getenv(environment_name)
+    if raw_value is None:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError as error:
+        raise CLIError(f"{environment_name} must be an integer") from error

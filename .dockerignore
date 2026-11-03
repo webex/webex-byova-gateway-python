@@ -38,9 +38,21 @@ gcp-credentials.json
 # VCS / IDE / docs (not needed at runtime)
 .git/
 .github/
+.cursor/
 .vscode/
 .idea/
 docs/
+*.md
+
+# Development-only tools and manifests
+tools/
+scripts/
+requirements-dev.txt
+package.json
+package-lock.json
+npm-shrinkwrap.json
+yarn.lock
+pnpm-lock.yaml
 
 # Tests
 tests/

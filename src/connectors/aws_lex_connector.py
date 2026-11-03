@@ -45,6 +45,8 @@ class AWSLexConnector(IVendorConnector):
     The audio utilities automatically handle all necessary conversions.
     """
 
+    agent_id_prefix = "aws_lex_connector"
+
     def __init__(self, config: Dict[str, Any]):
         """
         Initialize the AWS Lex connector.
@@ -82,7 +84,9 @@ class AWSLexConnector(IVendorConnector):
         self._init_aws_clients()
 
         # Initialize session manager
-        self.session_manager = AWSLexSessionManager(self.logger)
+        self.session_manager = AWSLexSessionManager(
+            self.logger, agent_id_prefix=self.agent_id_prefix
+        )
         
         # Initialize response handler
         self.response_handler = AWSLexResponseHandler(self.logger, self.error_handler)
@@ -131,6 +135,10 @@ class AWSLexConnector(IVendorConnector):
 
     def get_audio_delivery_mode(self) -> str:
         return "utterance_buffered"
+
+    def get_websocket_output_mode(self) -> str:
+        """Lex returns one complete WAV response for each turn."""
+        return "wav_final"
 
     def should_observe_speech_boundaries(self, conversation_id: str) -> bool:
         """Disable gateway VAD while Lex is handling DTMF input."""
@@ -389,16 +397,29 @@ class AWSLexConnector(IVendorConnector):
         dtmf_events = dtmf_data.get("dtmf_events", [])
 
         if dtmf_events:
-            self.logger.info(f"Received DTMF input for conversation {conversation_id}: {dtmf_events}")
-            # Convert DTMF events to a string
-            dtmf_string = "".join([str(digit) for digit in dtmf_events])
+            if any(
+                type(digit) is not int or not 1 <= digit <= 16
+                for digit in dtmf_events
+            ):
+                raise ValueError("Unsupported DTMF control event")
+            self.logger.info(
+                "Received %d DTMF control digit(s) for conversation %s",
+                len(dtmf_events),
+                conversation_id,
+            )
+            # BYOVA enums 10 through 16 represent 0, A-D, star and pound.
+            dtmf_string = "".join(
+                "1234567890ABCD*#"[digit - 1] for digit in dtmf_events
+            )
 
             # Remove conversation from DTMF mode tracking to re-enable speech detection
             self.session_manager.remove_dtmf_mode_tracking(conversation_id)
             self.logger.info(f"Removed conversation {conversation_id} from DTMF mode tracking - speech detection re-enabled")
 
             # Send all DTMF digits directly to AWS Lex
-            self.logger.debug(f"Sending DTMF {dtmf_string} to Lex for conversation {conversation_id}")
+            self.logger.debug(
+                "Sending DTMF control input to Lex for conversation %s", conversation_id
+            )
             # Send clean DTMF digits to Lex for better intent matching
             text_input = dtmf_string
             return self._send_text_to_lex(conversation_id, text_input)
@@ -459,7 +480,11 @@ class AWSLexConnector(IVendorConnector):
                 self.logger.error(f"No session found for conversation {conversation_id}")
                 return self.error_handler.create_session_error_response(conversation_id, ErrorContext.SESSION_NO_SESSION)
             
-            self.logger.debug(f"Sending text '{text_input}' to Lex for conversation {conversation_id}")
+            self.logger.debug(
+                "Sending %d text characters to Lex for conversation %s",
+                len(text_input),
+                conversation_id,
+            )
 
             # Get session details
             bot_id = self.session_manager.get_bot_id(conversation_id)
@@ -485,7 +510,14 @@ class AWSLexConnector(IVendorConnector):
                 # Convert text to bytes for the request
                 text_bytes = text_input.encode('utf-8')
                 
-                self.logger.debug(f"Sending text to AWS Lex: botId={bot_id}, botAliasId={bot_alias_id}, localeId={self.locale_id}, sessionId={session_id}, text='{text_input}'")
+                self.logger.debug(
+                    "Sending text to AWS Lex: botId=%s, botAliasId=%s, "
+                    "localeId=%s, sessionId=%s",
+                    bot_id,
+                    bot_alias_id,
+                    self.locale_id,
+                    session_id,
+                )
 
                 response = self.lex_runtime.recognize_utterance(
                     botId=bot_id,
@@ -804,6 +836,5 @@ class AWSLexConnector(IVendorConnector):
         """Refresh the cached list of available bots."""
         self.session_manager.refresh_bot_cache()
         self.get_available_agents()
-
 
 

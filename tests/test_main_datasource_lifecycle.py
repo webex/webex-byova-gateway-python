@@ -50,6 +50,7 @@ def test_datasource_is_ready_before_grpc_starts_and_stops_on_shutdown():
         )
         stack.enter_context(patch("main.add_VoiceVirtualAgentServicer_to_server"))
         stack.enter_context(patch("main.health_pb2_grpc.add_HealthServicer_to_server"))
+        stack.enter_context(patch("main.wait_for_shutdown"))
         main.main()
 
     assert events == ["datasource", "grpc"]

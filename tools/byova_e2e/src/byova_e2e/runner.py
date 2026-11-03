@@ -66,6 +66,8 @@ class BrowserRunner:
             with sync_playwright() as playwright:
                 browser = None
                 context = None
+                page = None
+                call_cleanup_required = False
                 try:
                     browser = playwright.chromium.launch(
                         headless=self.config.headless,
@@ -93,6 +95,7 @@ class BrowserRunner:
                         server, lambda event: event.name == "frontend_ready", 20
                     )
                     self._command(page, "dial")
+                    call_cleanup_required = True
                     deadline = time.monotonic() + self.config.call_timeout_seconds
                     self._wait_for_established(
                         server,
@@ -121,9 +124,18 @@ class BrowserRunner:
                             injection_finished,
                         )
                     final_reason = str(finish_result["completion_reason"])
+                    call_cleanup_required = False
                 finally:
                     # A crashed browser can make close() fail. Preserve the original
                     # RunFailure so the CLI can write its diagnostic artifact.
+                    if call_cleanup_required and page is not None:
+                        with suppress(RunFailure):
+                            self._command(page, "endCall")
+                            self._wait_for(
+                                server,
+                                lambda event: event.name == "disconnect",
+                                5,
+                            )
                     if context is not None:
                         with suppress(PlaywrightError):
                             context.close()
@@ -192,7 +204,11 @@ class BrowserRunner:
         if not self.config.gateway_events_url:
             raise RunFailure("Gateway event assertions require a gateway events URL")
         if self._gateway_events is None:
-            self._gateway_events = GatewayEventObserver(self.config.gateway_events_url)
+            self._gateway_events = GatewayEventObserver(
+                self.config.gateway_events_url,
+                expected_transport=self.config.expected_gateway_transport,
+                expected_agent_id=self.config.expected_gateway_agent_id,
+            )
         try:
             self._gateway_events.begin()
         except GatewayEventError as error:
@@ -282,6 +298,12 @@ class BrowserRunner:
 
             if isinstance(step, RunDtmfAction):
                 if first_action:
+                    self._wait_for_gateway_conversation(
+                        self._bounded_timeout(
+                            self.config.prompt_timeout_seconds,
+                            call_deadline,
+                        )
+                    )
                     trigger = self._wait_for_prompt_end(server, call_deadline)
                     first_action = False
                 else:
@@ -289,7 +311,12 @@ class BrowserRunner:
                 self._command(
                     page,
                     "sendDtmf",
-                    {"digit": step.digit, "trigger": trigger},
+                    {
+                        "digit": step.digit,
+                        "trigger": trigger,
+                        "durationMs": step.duration_ms,
+                        "terminate": step.terminate,
+                    },
                 )
                 last_input, events_during_injection = self._wait_for_dtmf_sent(
                     server,
@@ -301,7 +328,9 @@ class BrowserRunner:
                         "kind": "action",
                         "name": step.name,
                         "input": "dtmf",
-                        "digit_count": 1,
+                        "digit_count": 1 + int(step.terminate),
+                        "duration_ms": step.duration_ms,
+                        "terminated": step.terminate,
                         "finished_timestamp": last_input.timestamp,
                     }
                 )
@@ -345,6 +374,10 @@ class BrowserRunner:
                 call_deadline,
                 last_input,
                 wait_for_disconnect=(step.outcome == ExpectedOutcome.SESSION_END),
+                allow_disconnect=(
+                    step.outcome == ExpectedOutcome.TRANSFER
+                    and step.connected_observation_seconds == 0
+                ),
                 expected_response_prompts=step.response_prompts,
                 prefetched_events=events_during_injection,
                 ignore_current_prompt=prior_response_active,
@@ -389,6 +422,11 @@ class BrowserRunner:
                     step_results,
                 )
             if step.outcome == ExpectedOutcome.TRANSFER:
+                if observation.disconnect_event is not None:
+                    return self._scenario_result(
+                        "remote_disconnect", observations,
+                        observation.disconnect_event, step_results,
+                    )
                 if step.connected_observation_seconds > 0:
                     self._assert_call_remains_connected(
                         server,
@@ -426,6 +464,15 @@ class BrowserRunner:
             return None
         try:
             return self._gateway_events.assert_outcome(expected, timeout_seconds)
+        except GatewayEventError as error:
+            raise RunFailure(str(error), list(self.events)) from error
+
+    def _wait_for_gateway_conversation(self, timeout_seconds: float) -> None:
+        """Ensure DTMF is not sent during media that precedes the virtual agent."""
+        if self._gateway_events is None:
+            return
+        try:
+            self._gateway_events.wait_for_conversation(timeout_seconds)
         except GatewayEventError as error:
             raise RunFailure(str(error), list(self.events)) from error
 
@@ -597,6 +644,10 @@ class BrowserRunner:
                 call_deadline,
                 injection_finished,
                 wait_for_disconnect=expected_outcome == ExpectedOutcome.SESSION_END,
+                allow_disconnect=(
+                    expected_outcome == ExpectedOutcome.TRANSFER
+                    and self.config.connected_observation_seconds == 0
+                ),
             )
             gateway_terminal_event = self._assert_gateway_outcome(
                 expected_outcome or ExpectedOutcome.RESPONSE,
@@ -606,7 +657,10 @@ class BrowserRunner:
                     wait_for_normal=True,
                 ),
             )
-            if expected_outcome == ExpectedOutcome.SESSION_END:
+            if expected_outcome == ExpectedOutcome.SESSION_END or (
+                expected_outcome == ExpectedOutcome.TRANSFER
+                and observation.disconnect_event is not None
+            ):
                 disconnect = observation.disconnect_event
                 if disconnect is None:
                     raise RunFailure(
@@ -695,6 +749,7 @@ class BrowserRunner:
         injection_finished: RunEvent,
         *,
         wait_for_disconnect: bool = False,
+        allow_disconnect: bool = False,
         expected_response_prompts: int | None = None,
         prefetched_events: tuple[RunEvent, ...] = (),
         ignore_current_prompt: bool = False,
@@ -735,7 +790,14 @@ class BrowserRunner:
                         )
                     continue
                 if event.name == "disconnect":
-                    if wait_for_disconnect and first_active is not None:
+                    normal_remote_disconnect = (
+                        event.details.get("code") == 0
+                        and event.details.get("initiatedByCaller") is False
+                    )
+                    if first_active is not None and (
+                        wait_for_disconnect
+                        or (allow_disconnect and normal_remote_disconnect)
+                    ):
                         if remote_active or quiet_since is not None:
                             prompt_count += 1
                         if prompt_count >= required_prompts:

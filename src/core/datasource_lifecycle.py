@@ -20,6 +20,7 @@ from webex_byods import (
 )
 
 DEFAULT_BYOVA_SCHEMA_ID = "5397013b-7920-4ffc-807c-e8a3e0a18f43"
+DEFAULT_WEBSOCKET_SCHEMA_ID = "a38a10b7-43e4-4676-a076-a7d6dce9387d"
 
 
 class DataSourceLifecycleError(RuntimeError):
@@ -82,39 +83,45 @@ def create_token_provider(auth_config: dict[str, Any]) -> AccessTokenProvider:
 def create_data_source_lifecycle(
     config: dict[str, Any],
     logger: logging.Logger | None = None,
+    *,
+    section_name: str = "data_source",
+    jwt_section_name: str = "jwt_validation",
+    default_schema_id: str = DEFAULT_BYOVA_SCHEMA_ID,
+    token_provider: AccessTokenProvider | None = None,
 ) -> DataSourceLifecycle | None:
     """Build the configured lifecycle, or return ``None`` when it is disabled."""
-    lifecycle_config = config.get("data_source", {})
+    lifecycle_config = config.get(section_name, {})
     if not lifecycle_config.get("enabled", False):
         return None
 
     lifecycle_config = dict(lifecycle_config)
-    jwt_config = config.get("jwt_validation", {})
+    jwt_config = config.get(jwt_section_name, {})
 
     configured_url = str(lifecycle_config.get("url", "")).strip()
     jwt_url = str(jwt_config.get("datasource_url", "")).strip()
     data_source_url = configured_url or jwt_url
     if not data_source_url:
         raise ValueError(
-            "data_source requires a URL. Configure data_source.url or "
-            "jwt_validation.datasource_url."
+            f"{section_name} requires a URL. Configure {section_name}.url or "
+            f"{jwt_section_name}.datasource_url."
         )
     if jwt_url and configured_url and jwt_url != configured_url:
         raise ValueError(
-            "data_source.url must exactly match jwt_validation.datasource_url"
+            f"{section_name}.url must exactly match {jwt_section_name}.datasource_url"
         )
 
     configured_schema = str(lifecycle_config.get("schema_id", "")).strip()
     jwt_schema = str(jwt_config.get("datasource_schema_uuid", "")).strip()
-    schema_id = configured_schema or jwt_schema or DEFAULT_BYOVA_SCHEMA_ID
+    schema_id = configured_schema or jwt_schema or default_schema_id
     if jwt_schema and configured_schema and jwt_schema != configured_schema:
         raise ValueError(
-            "data_source.schema_id must match jwt_validation.datasource_schema_uuid"
+            f"{section_name}.schema_id must match "
+            f"{jwt_section_name}.datasource_schema_uuid"
         )
 
     auth_config = lifecycle_config.get("auth")
     if not isinstance(auth_config, dict):
-        raise ValueError("data_source.auth must be configured when enabled")
+        raise ValueError(f"{section_name}.auth must be configured when enabled")
 
     data_source_id = str(lifecycle_config.get("id", "")).strip()
     data_source_id_env = str(lifecycle_config.get("id_env", "")).strip()
@@ -128,7 +135,9 @@ def create_data_source_lifecycle(
             "id": data_source_id,
         }
     )
-    client = WebexDataSourceClient(token_provider=create_token_provider(auth_config))
+    if token_provider is None:
+        token_provider = create_token_provider(auth_config)
+    client = WebexDataSourceClient(token_provider=token_provider)
     return DataSourceLifecycle(client, lifecycle_config, logger=logger)
 
 

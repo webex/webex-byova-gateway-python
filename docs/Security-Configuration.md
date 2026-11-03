@@ -27,6 +27,8 @@ examples when reproducing the test pattern.
    - [Configure Security Groups](#grpc-security-groups)
    - [Verification](#grpc-verification)
 
+3. [WebSocket TLS Termination Setup](#websocket-tls-termination-setup)
+
 ---
 
 # HTTPS Configuration for Web Monitor
@@ -38,7 +40,8 @@ This section configures HTTPS for the web monitoring interface (port 8080) with 
 - AWS CLI configured with appropriate permissions
 - SSL/TLS certificate in AWS Certificate Manager (ACM)
 - VPC and subnets configured
-- Security groups allowing inbound traffic on ports 80, 443, and 8080
+- Separate ALB and backend security groups. Only the ALB receives public 443 traffic; backend
+  listener ports accept traffic from the ALB security group.
 
 ## Web Monitor SSL Certificate Setup
 
@@ -75,39 +78,11 @@ aws acm import-certificate \
 
 #### Certificate File Preparation
 
-**Certificate Format (certificate.pem)**:
-```
------BEGIN CERTIFICATE-----
-MIIDXTCCAkWgAwIBAgIJAKoK/heBjcOuMA0GCSqGSIb3DQEBBQUAMEUxCzAJBgNV
-BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX
-aWRnaXRzIFB0eSBMdGQwHhcNMTMwOTI5MTQwNjIyWhcNMjMwOTI3MTQwNjIyWjBF
-MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50
-ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
-CgKCAQEAwuqTiuGqkIX7/y4fNDGDNvXfObgWrVzaATuL0mxjxjBJ...
------END CERTIFICATE-----
-```
-
-**Private Key Format (private-key.pem)**:
-```
------BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDC6pOK4aqQhfv/
-Lh80MYM29d85uBatXNoBOvSbGPGMEkmPiIrXZcZvLVPGahZNUtFJrBvftJ+urpH
-MYFrcMiMLXB40kecwCDfAHrhY3ePqifsVqAC5CcupccfNUX5E4K99H/zbr8RB77
-AdFiIN6yjOHGU1Z4ykUKrUYtwqED93jx6uy2wc6w8CgWINiDZuFAOisPL4WQQgqV
-WFXA+IkU3oPwIrCrTQtO7zQAHxLkiQIDAQABAoIBABd0Ov7+QQynbqHiuIqbw
-...
------END PRIVATE KEY-----
-```
-
-**Certificate Chain Format (certificate-chain.pem)**:
-```
------BEGIN CERTIFICATE-----
-[Intermediate CA Certificate]
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-[Root CA Certificate]
------END CERTIFICATE-----
-```
+Keep certificate, private-key, and chain files outside the repository with owner-only file
+permissions. Validate the certificate hostname, expiry, key size, signature algorithm, and
+complete chain before importing it. Prefer an ACM-issued certificate because ACM manages
+private-key storage and renewal. Never paste private-key material into source files, tickets,
+logs, shell history, or deployment output.
 
 #### Verify Imported Certificate
 
@@ -223,16 +198,6 @@ aws ec2 authorize-security-group-ingress \
   --port 443 \
   --cidr 0.0.0.0/0
 
-# Allow ALB to reach backend on port 8080
-aws ec2 authorize-security-group-ingress \
-  --group-id sg-xxxxxxxxx \
-  --protocol tcp \
-  --port 8080 \
-  --cidr 0.0.0.0/0
-```
-
-### Backend Service Security Group
-```bash
 # Allow HTTP traffic from ALB to port 8080
 aws ec2 authorize-security-group-ingress \
   --group-id sg-backend-xxxxx \
@@ -258,8 +223,8 @@ curl -I http://your-domain.com
 # Should return: HTTP/1.1 301 Moved Permanently
 
 # Test HTTPS endpoints
-curl -k https://your-domain.com/api/status
-curl -k https://your-domain.com/health
+curl --fail --show-error https://your-domain.com/api/status
+curl --fail --show-error https://your-domain.com/health
 ```
 
 ---
@@ -315,10 +280,10 @@ aws elbv2 create-rule \
 ```bash
 # Allow ALB to reach gRPC backend on port 50051
 aws ec2 authorize-security-group-ingress \
-  --group-id sg-xxxxxxxxx \
+  --group-id sg-backend-xxxxx \
   --protocol tcp \
   --port 50051 \
-  --cidr 0.0.0.0/0 \
+  --source-group sg-alb-xxxxx \
   --description "gRPC Backend Access"
 ```
 
@@ -344,3 +309,60 @@ grpcurl -import-path proto -proto health.proto \
   your-domain.com:443 \
   grpc.health.v1.Health/Check
 ```
+
+---
+
+# WebSocket TLS Termination Setup
+
+Run the gateway with `transports.mode: "both"` and the WebSocket listener on private port
+8765. Reuse the existing public HTTPS listener and ACM certificate; do not create a second
+public listener or expose port 8765 directly.
+
+Create a distinct HTTP/1.1 target group. Use the WebSocket listener's minimal `/health`
+endpoint instead of the monitoring process:
+
+```bash
+aws elbv2 create-target-group \
+  --name byova-websocket-tg \
+  --protocol HTTP \
+  --protocol-version HTTP1 \
+  --port 8765 \
+  --vpc-id vpc-xxxxxxxxx \
+  --target-type instance \
+  --health-check-protocol HTTP \
+  --health-check-port traffic-port \
+  --health-check-path /health \
+  --matcher HttpCode=200
+```
+
+Allow only the ALB security group to reach the backend port:
+
+```bash
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-backend-xxxxx \
+  --protocol tcp \
+  --port 8765 \
+  --source-group sg-alb-xxxxx \
+  --description "BYOVA WebSocket from ALB"
+```
+
+Register the instance, deploy the listener, and wait for healthy target status before adding
+public routing. Then add one rule containing both protocol-owned paths:
+
+```bash
+aws elbv2 create-rule \
+  --listener-arn arn:aws:elasticloadbalancing:region:account:listener/app/byova-gateway-alb/xxxxx/xxxxx \
+  --priority 90 \
+  --conditions 'Field=path-pattern,Values=/v1/va,/v1/listVirtualAgents' \
+  --actions Type=forward,TargetGroupArn=arn:aws:elasticloadbalancing:region:account:targetgroup/byova-websocket-tg/xxxxx
+```
+
+Before enabling the rule, verify that missing or invalid authorization is rejected before
+upgrade. After enabling it, validate TLS normally; never disable certificate verification.
+Set the ALB idle timeout to accommodate the longest expected period with no WebSocket frames,
+and use target draining for deployments because each conversation is held in process memory.
+
+The WebSocket BYODS datasource URL is the secure WebSocket origin such as
+`wss://your-domain.com`, without the `/v1/va` path. It uses the WebSocket schema
+UUID and a datasource ID distinct from gRPC. Store both datasource IDs and all Service App
+secrets outside Git in the host environment or an approved secret store.

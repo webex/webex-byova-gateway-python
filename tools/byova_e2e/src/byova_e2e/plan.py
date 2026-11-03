@@ -24,6 +24,8 @@ USE_FIELDS = {
     "postAudioGraceSeconds",
     "responseTimeoutSeconds",
     "requireGatewayEvents",
+    "gatewayTransport",
+    "gatewayAgentId",
 }
 
 DTMF_DIGIT_PATTERN = re.compile(r"^[0-9A-D*#]$")
@@ -43,6 +45,8 @@ class InputStepDefinition:
     wav: Path | None = None
     segment_pause_ms: int | None = None
     dtmf_digit: str | None = None
+    dtmf_duration_ms: int | None = None
+    dtmf_terminate: bool = False
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,8 @@ class TestDefinition:
     post_audio_grace_seconds: float | None = None
     response_timeout_seconds: float | None = None
     require_gateway_events: bool | None = None
+    expected_gateway_transport: str | None = None
+    expected_gateway_agent_id: str | None = None
     expected_outcome: ExpectedOutcome = ExpectedOutcome.RESPONSE
     expected_response_prompts: int = 1
     connected_observation_seconds: float = 0.0
@@ -232,6 +238,8 @@ def _parse_test(
         post_audio_grace_seconds=merged_use.get("postAudioGraceSeconds"),
         response_timeout_seconds=merged_use.get("responseTimeoutSeconds"),
         require_gateway_events=merged_use.get("requireGatewayEvents"),
+        expected_gateway_transport=merged_use.get("gatewayTransport"),
+        expected_gateway_agent_id=merged_use.get("gatewayAgentId"),
         expected_outcome=final_expectation.outcome,
         expected_response_prompts=final_expectation.response_prompts,
         connected_observation_seconds=(final_expectation.connected_observation_seconds),
@@ -244,7 +252,17 @@ def _parse_input_step(
     step = _object(raw, location)
     _reject_unknown(
         step,
-        {"name", "action", "text", "segments", "pauseMs", "path", "digit"},
+        {
+            "name",
+            "action",
+            "text",
+            "segments",
+            "pauseMs",
+            "path",
+            "digit",
+            "durationMs",
+            "terminate",
+        },
         location,
     )
     name = _optional_nonempty_string(step.get("name"), f"{location}.name")
@@ -298,14 +316,41 @@ def _parse_input_step(
     if action == "dtmf":
         if any(field in step for field in ("text", "segments", "pauseMs", "path")):
             raise TestPlanError(
-                f"{location} with action 'dtmf' only accepts name, action, and digit"
+                f"{location} with action 'dtmf' only accepts name, action, digit, "
+                "durationMs, and terminate"
             )
+        _reject_unknown(
+            step,
+            {"name", "action", "digit", "durationMs", "terminate"},
+            location,
+        )
         digit = step.get("digit")
         if not isinstance(digit, str) or not DTMF_DIGIT_PATTERN.fullmatch(digit):
             raise TestPlanError(
                 f"{location}.digit must be exactly one of 0-9, A-D, *, or #"
             )
-        return InputStepDefinition(name=name, dtmf_digit=digit)
+        duration_ms = step.get("durationMs")
+        if duration_ms is not None:
+            duration_ms = _positive_integer(
+                duration_ms, f"{location}.durationMs"
+            )
+            if not 40 <= duration_ms <= 6000:
+                raise TestPlanError(
+                    f"{location}.durationMs must be between 40 and 6000"
+                )
+        terminate = step.get("terminate", False)
+        if not isinstance(terminate, bool):
+            raise TestPlanError(f"{location}.terminate must be a boolean")
+        if terminate and digit == "#":
+            raise TestPlanError(
+                f"{location}.terminate cannot be true when digit is already #"
+            )
+        return InputStepDefinition(
+            name=name,
+            dtmf_digit=digit,
+            dtmf_duration_ms=duration_ms,
+            dtmf_terminate=terminate,
+        )
     raise TestPlanError(f"{location}.action must be 'speak', 'play', or 'dtmf'")
 
 
@@ -376,6 +421,13 @@ def _parse_use(raw: Any, location: str) -> dict[str, Any]:
         field_location = f"{location}.{field}"
         if field == "voice":
             parsed[field] = _nonempty_string(raw_value, field_location)
+        elif field == "gatewayAgentId":
+            parsed[field] = _nonempty_string(raw_value, field_location)
+        elif field == "gatewayTransport":
+            transport = _nonempty_string(raw_value, field_location).lower()
+            if transport not in {"grpc", "websocket"}:
+                raise TestPlanError(f"{field_location} must be 'grpc' or 'websocket'")
+            parsed[field] = transport
         elif field in {"headless", "requireGatewayEvents"}:
             if not isinstance(raw_value, bool):
                 raise TestPlanError(f"{field_location} must be a boolean")

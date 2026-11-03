@@ -237,7 +237,8 @@ step. Test plans follow Playwright conventions: top-level `use` defaults, named
 }
 ```
 
-DTMF-only plans do not require a WAV fixture:
+DTMF plans do not require a WAV fixture. This example asserts both the
+caller-observed prompt and the exact gateway terminal event:
 
 ```json
 {
@@ -251,8 +252,11 @@ DTMF-only plans do not require a WAV fixture:
 ```
 
 Use DTMF actions only for non-sensitive test controls. The browser event and
-run artifact record only that one digit was sent, not its value. Connector- and
-transport-specific plans can combine this action with gateway-event assertions.
+run artifact record only that one digit was sent, not its value. The checked-in
+`config/local-audio-dtmf.spec.json` plan covers Local Audio digit 5 transfer and
+digit 6 session end. It also requires gateway evidence that the correlated
+conversation used the `websocket` transport and agent
+`Local Audio: Local Playback`.
 
 A two-turn test uses the same action/expectation rhythm:
 
@@ -322,6 +326,32 @@ export BYOVA_E2E_GATEWAY_EVENTS_URL=http://127.0.0.1:8080
 development monitoring interface on a restricted or securely forwarded path;
 do not expose it publicly for E2E access.
 
+For an AWS deployment whose monitoring listener is private, the runner can own
+an AWS Systems Manager remote-host port-forward for the duration of the call.
+This requires AWS CLI credentials, the Session Manager plugin, and an
+SSM-managed EC2 instance that can reach the gateway's private host and port.
+Supply deployment-specific identifiers through the ignored `.env` file or the
+equivalent CLI options; do not put them in a committed test plan.
+
+```bash
+export BYOVA_E2E_GATEWAY_EVENTS_SSM_TARGET=i-0123456789abcdef0
+export BYOVA_E2E_GATEWAY_EVENTS_SSM_HOST=10.0.1.25
+export BYOVA_E2E_GATEWAY_EVENTS_SSM_REGION=us-east-1
+
+byova-e2e run \
+  --destination 9999 \
+  --text 'Please transfer me to an agent.' \
+  --expect-outcome transfer
+```
+
+The runner starts `AWS-StartPortForwardingSessionToRemoteHost` without a shell,
+waits for `http://127.0.0.1:18080`, reads `/api/connections` through that
+loopback listener, and terminates the session after the run. Override the
+private port with `BYOVA_E2E_GATEWAY_EVENTS_SSM_REMOTE_PORT` and the loopback
+port with `BYOVA_E2E_GATEWAY_EVENTS_SSM_LOCAL_PORT`. The corresponding CLI
+options use the `--gateway-events-ssm-*` prefix. A direct gateway-events URL and
+an SSM tunnel are mutually exclusive.
+
 For custom fixtures, `--expect-outcome response|session-end|transfer` enables
 the same assertions without using a named test. Flows that guarantee a
 minimum connected interval after transfer can add
@@ -337,9 +367,9 @@ and inspect it without placing a call:
 byova-e2e validate --config config/gecx-regression.spec.json --list
 ```
 
-The plan requires correlated gateway events. Before running it, set
-`BYOVA_E2E_GATEWAY_EVENTS_URL` to the restricted monitoring endpoint for the
-same gateway deployment being called.
+The plan requires correlated gateway events. Before running it, set either
+`BYOVA_E2E_GATEWAY_EVENTS_URL` to a restricted monitoring endpoint or configure
+the SSM tunnel above for the same gateway deployment being called.
 
 Run one test at a time against the dedicated non-production entry point:
 
@@ -400,15 +430,32 @@ Correlate each artifact window and config SHA-256 with gateway and CES evidence:
   live semantic gap explicitly.
 - `task-complete`: one correlated gateway `SESSION_END` output event before the
   remote disconnect.
-- `transfer`: one correlated gateway `TRANSFER_TO_AGENT` output event and both
-  configured post-input announcement epochs.
+- `transfer`: one correlated gateway `TRANSFER_TO_AGENT` output event and the
+  configured post-input announcement epochs. Match the count to the selected
+  agent and flow; some CES agents escalate without a spoken announcement. A
+  normal remote disconnect after the required audio is accepted when no
+  connected-observation interval is requested. A normal response, an error
+  disconnect, and a transfer required to stay connected still fail on early
+  disconnect.
 
 The latency target preserves the current evidence-backed endpointing tradeoff:
 gateway end-silence and speech-resume grace remain one second each, while GECX
 appends two seconds of codec-correct endpointing silence because one second left
-short CES turns open. The longer `remoteSilenceMs: 2500` used by long-response
-and multi-turn tests affects prompt-completion observation, not response-start
-latency.
+short CES turns open. The `remoteSilenceMs` threshold affects prompt-completion
+observation, not response-start latency. Tune it in a private profile for the selected agent: a
+short interval can inject during a welcome pause, while a long interval can
+overlap an autonomous no-input reprompt. With barge-in disabled, an early
+injection can be discarded by WxCC. An autonomous no-input reprompt can then
+satisfy an audio-only response expectation: a green caller result alone is not
+a speech-recognition pass. Correlate every expected caller turn with provider
+recognition evidence before accepting the scenario.
+
+If the selected CES agent starts a no-input reprompt immediately after its
+welcome, record whether the caller injection overlaps it. A non-interruptible
+reprompt can prevent the complete utterance reaching the gateway. Configure the
+existing autonomous-prompt `barge_in_enabled` option only when that behavior is
+intended, and retain the configuration fingerprint with the run; greeting and
+caller-triggered reply chunks remain non-interruptible.
 
 ## Safety boundaries
 

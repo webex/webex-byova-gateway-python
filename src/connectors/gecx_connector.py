@@ -832,12 +832,22 @@ class GECXStreamingSession:
                 if self.is_terminal:
                     return
 
-                buffered_text = self._active_text()
-                may_have_terminal = self.connector.may_have_delayed_terminal(
-                    buffered_text
+                with self._lock:
+                    buffered_text = "".join(self._text_buffer)
+                    empty_completed_turn = (
+                        not buffered_text and not self._turn_audio_emitted
+                    )
+                terminal_grace_reason = (
+                    "empty_completed_turn"
+                    if empty_completed_turn
+                    else (
+                        "terminal_cue"
+                        if self.connector.may_have_delayed_terminal(buffered_text)
+                        else ""
+                    )
                 )
                 if (
-                    may_have_terminal
+                    terminal_grace_reason
                     and terminal_grace_seconds > 0
                     and terminal_grace_deadline is None
                 ):
@@ -846,9 +856,10 @@ class GECXStreamingSession:
                     )
                     self.logger.info(
                         "[%s] [GECX] Waiting up to %.1fs for a terminal event "
-                        "after streamed announcement audio",
+                        "after turn completion reason=%s",
                         self.conversation_id,
                         terminal_grace_seconds,
+                        terminal_grace_reason,
                     )
 
                 if (
@@ -1254,7 +1265,7 @@ class GECXStreamingSession:
             awaiting_input_ack = self._awaiting_input_ack
             self._handle_server_message_locked(message)
             if (
-                getattr(message, "recognition_result", None)
+                self._has_message_field(message, "recognition_result")
                 and awaiting_input_ack
                 and not self._awaiting_input_ack
             ):
@@ -1271,6 +1282,17 @@ class GECXStreamingSession:
                             "conversation_id=%s source=recognition_result",
                             self.conversation_id,
                         )
+
+    @staticmethod
+    def _has_message_field(message: Any, field_name: str) -> bool:
+        """Check protobuf presence while retaining test-double compatibility."""
+        protobuf_message = getattr(message, "_pb", None)
+        if protobuf_message is not None:
+            try:
+                return protobuf_message.HasField(field_name)
+            except (ValueError, AttributeError):
+                pass
+        return bool(getattr(message, field_name, None))
 
     def _handle_server_message_locked(self, message: Any) -> None:
         """Map a CES server message while holding the lifecycle lock."""
@@ -1289,7 +1311,7 @@ class GECXStreamingSession:
             )
             return
 
-        if message.recognition_result:
+        if self._has_message_field(message, "recognition_result"):
             self._acknowledge_caller_input_locked("recognition_result")
             transcript = message.recognition_result.transcript.strip()
             with self._input_lock:
@@ -1305,7 +1327,7 @@ class GECXStreamingSession:
                 time.monotonic() - input_turn_started_at,
             )
 
-        if message.interruption_signal:
+        if self._has_message_field(message, "interruption_signal"):
             self.logger.info(f"[{conversation_id}] [GECX] Barge-in interruption signal")
             # Keep lifecycle -> audio locking consistent with terminate() so a
             # concurrent interruption cannot erase the winning terminal response.
@@ -1323,9 +1345,9 @@ class GECXStreamingSession:
                         except queue.Empty:
                             break
 
-        if message.session_output:
+        if self._has_message_field(message, "session_output"):
             output = message.session_output
-            has_terminal_output = bool(output.end_session)
+            has_terminal_output = self._has_message_field(output, "end_session")
 
             provider_audio_bytes = self._decode_output_audio(output.audio)
             audio_bytes = self._output_audio_converter.process(provider_audio_bytes)
@@ -1371,11 +1393,11 @@ class GECXStreamingSession:
                 )
                 turn_completed = True
 
-        if message.end_session:
+        if self._has_message_field(message, "end_session"):
             self._handle_end_session(conversation_id, message.end_session)
             turn_completed = True
 
-        if message.go_away:
+        if self._has_message_field(message, "go_away"):
             self.terminate(
                 reason=GECXTerminalReason.GO_AWAY,
                 outcome=GECXTerminalOutcome.SESSION_END,
@@ -2081,6 +2103,24 @@ class GECXConnector(IVendorConnector):
             else None
         )
 
+        self._initialize_provider_transport(credentials, client_options)
+
+        self.app_path = (
+            f"projects/{self.project_id}/locations/{self.location}/"
+            f"apps/{self.application_id}"
+        )
+        self.logger.info(
+            "GECX connector initialized provider_transport=%s deployment=%s",
+            self.get_provider_transport(),
+            self.deployment_path,
+        )
+
+    def _initialize_provider_transport(
+        self,
+        credentials: Any | None,
+        client_options: Any | None,
+    ) -> None:
+        """Create the CES gRPC client used by this connector variant."""
         if credentials:
             self.session_client = ces_v1.SessionServiceClient(
                 credentials=credentials,
@@ -2091,12 +2131,27 @@ class GECXConnector(IVendorConnector):
                 client_options=client_options
             )
 
-        self.app_path = (
-            f"projects/{self.project_id}/locations/{self.location}/"
-            f"apps/{self.application_id}"
-        )
-        self.logger.info(
-            f"GECXConnector initialized for deployment: {self.deployment_path}"
+    def _create_streaming_session(
+        self,
+        *,
+        conversation_id: str,
+        session_path: str,
+        async_response_sink: Callable[[dict[str, Any]], bool] | None,
+        input_acknowledgement_sink: Callable[[str], None] | None,
+    ) -> GECXStreamingSession:
+        """Create one gRPC-backed CES streaming session.
+
+        Provider transport variants override this factory while retaining the
+        connector's shared audio, turn, terminal, and response-mapping logic.
+        """
+        return GECXStreamingSession(
+            connector=self,
+            conversation_id=conversation_id,
+            session_path=session_path,
+            deployment_path=self.deployment_path,
+            initial_message=self.initial_message,
+            async_response_sink=async_response_sink,
+            input_acknowledgement_sink=input_acknowledgement_sink,
         )
 
     def _load_credentials(self, config: Dict[str, Any]) -> Optional[Any]:
@@ -2211,6 +2266,18 @@ class GECXConnector(IVendorConnector):
     def get_audio_delivery_mode(self) -> str:
         """GECX receives caller audio frames as they arrive from WxCC."""
         return "streaming"
+
+    def get_supported_transports(self) -> frozenset[str]:
+        """GECX supports both turn-based gRPC and full-duplex WebSocket."""
+        return frozenset({"grpc", "websocket"})
+
+    def get_websocket_output_mode(self) -> str:
+        """GECX streams raw audio chunks as they arrive from CES."""
+        return "raw_chunk"
+
+    def get_provider_transport(self) -> str:
+        """Return the protocol this connector uses from the gateway to CES."""
+        return "grpc"
 
     def should_cleanup_on_client_stream_end(self) -> bool:
         """Close CES after WxCC cancellation or request-stream failure."""
@@ -2374,12 +2441,9 @@ class GECXConnector(IVendorConnector):
                     conversation_id
                 )
 
-            stream_session = GECXStreamingSession(
-                connector=self,
+            stream_session = self._create_streaming_session(
                 conversation_id=conversation_id,
                 session_path=session_path,
-                deployment_path=self.deployment_path,
-                initial_message=self.initial_message,
                 async_response_sink=async_response_sink,
                 input_acknowledgement_sink=input_acknowledgement_sink,
             )

@@ -1,0 +1,58 @@
+# Native GECX (CX Agent Studio / CES) WebSocket provider connector example.
+# Copy this connector under `connectors:` in config/config.yaml.
+
+gecx_websocket_connector:
+  type: "gecx_websocket_connector"
+  class: "GECXWebSocketConnector"
+  module: "connectors.gecx_websocket_connector"
+  # This example intentionally exposes the agent only through the Webex-facing
+  # WebSocket datasource. The provider connection is also WebSocket.
+  supported_transports: ["websocket"]
+  config:
+    project_id: "YOUR_PROJECT_ID"
+    location: "us"
+    application_id: "YOUR_APPLICATION_ID"
+    # deployment_id: "YOUR_DEPLOYMENT_ID"
+    # entry_agent: "projects/PROJECT/locations/us/apps/APP_ID/agents/AGENT_ID"
+
+    language_code: "en-US"
+    input_sample_rate_hertz: 8000
+    input_audio_encoding: "MULAW"
+    output_sample_rate_hertz: 24000
+    output_audio_encoding: "LINEAR16"
+    suppress_long_leading_audio: true
+    output_leading_audio_min_ms: 5000
+    output_speech_rms_threshold: 200
+    output_speech_start_frames: 2
+    output_speech_preroll_ms: 100
+
+    initial_message: "Hello"
+    enable_partial_responses: true
+    barge_in_enabled: false
+    force_input_format: "wxcc"
+    turn_response_timeout_seconds: 30
+    endpointing_silence_ms: 2000
+    input_preroll_ms: 500
+    input_holdback_ms: 250
+    input_pause_preroll_ms: 250
+    input_stream_chunk_ms: 100
+    input_queue_max_chunks: 20
+    input_queue_put_timeout_ms: 50
+    terminal_response_grace_seconds: 3
+
+    # The connector derives the documented endpoint from location:
+    # wss://ces.googleapis.com/ws/google.cloud.ces.v1.SessionService/
+    # BidiRunSession/locations/<location>
+    # The production host, WSS scheme, port, and path are allow-listed. A local
+    # ws:// endpoint is accepted only with allow_insecure_local_websocket: true.
+    websocket_connect_timeout_seconds: 15
+    websocket_receive_timeout_seconds: 1
+    websocket_sender_join_timeout_seconds: 5
+    websocket_max_response_bytes: 4194304
+
+    # Omit auth settings to use Application Default Credentials. The runtime
+    # identity needs ces.sessions.bidiRunSession (roles/ces.client).
+    # service_account_key: "/path/to/ces-service-account.json"
+
+    agents:
+      - "My GECX WebSocket Agent"

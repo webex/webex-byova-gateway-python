@@ -10,13 +10,12 @@ This module tests the LocalAudioConnector class functionality including:
 - Error handling and fallbacks
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, Mock, call
-import logging
-from pathlib import Path
-import tempfile
 import shutil
-from typing import Dict, Any
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.connectors.local_audio_connector import LocalAudioConnector
 
@@ -148,6 +147,20 @@ class TestLocalAudioConnector:
         expected_agents = ["Local Audio: TestAgent"]
         assert agents == expected_agents
 
+    def test_declares_grpc_and_websocket_transport_support(self, connector):
+        """Local playback is safe for discovery and sessions on both protocols."""
+        assert connector.get_supported_transports() == frozenset(
+            {"grpc", "websocket"}
+        )
+        assert connector.get_websocket_output_mode() == "raw_chunk"
+        assert connector.get_input_mode("grpc") == "INPUT_VOICE_DTMF"
+        assert connector.get_input_mode("websocket") == "INPUT_VOICE_DTMF"
+        assert connector.get_dtmf_input_config("websocket") == {
+            "dtmf_input_length": 1,
+            "inter_digit_timeout_msec": 5000,
+            "termchar": "DTMF_DIGIT_POUND",
+        }
+
     def test_start_conversation_success(self, connector, temp_audio_dir):
         """Test successful conversation start."""
         # Create a test audio file
@@ -161,7 +174,7 @@ class TestLocalAudioConnector:
         assert response["message_type"] == "welcome"
         assert "welcome to the webex contact center" in response["text"]
         assert response["audio_content"] == b"converted_audio"
-        assert response["barge_in_enabled"] is False
+        assert response["barge_in_enabled"] is True
 
     def test_start_conversation_with_recording_enabled(self, connector):
         """Test conversation start with audio recording enabled."""
@@ -239,7 +252,11 @@ class TestLocalAudioConnector:
         
         response = list(connector.send_message("conv123", message_data))
         assert len(response) == 0  # Should return no responses (None was returned)
-        connector.logger.info.assert_any_call("DTMF digits entered: 123")
+        connector.logger.info.assert_any_call(
+            "Received %d DTMF control digit(s) for conversation %s",
+            3,
+            "conv123",
+        )
 
     def test_send_message_dtmf_no_events(self, connector):
         """Test handling of DTMF input with no events."""

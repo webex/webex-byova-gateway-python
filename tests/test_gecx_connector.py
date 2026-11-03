@@ -1546,6 +1546,46 @@ class TestTerminalLifecycle:
         ]
         assert remaining[0]["response_type"] == "final"
 
+    def test_delayed_transfer_replaces_empty_turn_final(self, connector):
+        session = self._session(connector)
+        session._turn_completed.set()
+        real_get = session.outbound_queue.get
+        terminal_injected = False
+
+        def inject_terminal_on_blocking_wait(*args, **kwargs):
+            nonlocal terminal_injected
+            block = args[0] if args else kwargs.get("block", True)
+            if block and not terminal_injected:
+                terminal_injected = True
+                session._handle_end_session(
+                    "conv-1",
+                    SimpleNamespace(
+                        metadata={"session_escalated": True}
+                    ),
+                )
+            return real_get(*args, **kwargs)
+
+        with patch.object(
+            session.outbound_queue,
+            "get",
+            side_effect=inject_terminal_on_blocking_wait,
+        ):
+            responses = list(
+                session.iter_turn_responses(
+                    timeout=1.0,
+                    terminal_grace_seconds=1.0,
+                )
+            )
+
+        assert terminal_injected is True
+        assert [response["message_type"] for response in responses] == [
+            "transfer"
+        ]
+        assert responses[0]["response_type"] == "final"
+        assert sum(
+            response["response_type"] == "final" for response in responses
+        ) == 1
+
     @pytest.mark.parametrize(
         ("gateway_reason", "terminal_reason"),
         [

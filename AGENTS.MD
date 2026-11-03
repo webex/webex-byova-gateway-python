@@ -14,7 +14,7 @@ This document provides guidance for AI agents working with this codebase. It exp
 
 ## Project Overview
 
-The Webex Contact Center BYOVA Gateway is a Python-based gateway that acts as a bridge between Webex Contact Center (WxCC) and various virtual agent providers. It enables seamless voice interactions by implementing the required gRPC interfaces and routing requests to appropriate vendor-specific connector implementations.
+The Webex Contact Center BYOVA Gateway is a Python-based gateway that acts as a bridge between Webex Contact Center (WxCC) and various virtual agent providers. It implements separate gRPC/protobuf and WebSocket/JSON transports over one shared connector router and conversation engine.
 
 ### Purpose
 
@@ -41,8 +41,8 @@ The gateway follows a modular architecture with the following key components:
 
 ```
                             ┌───────────────┐
-                            │  WxCC gRPC    │
-                            │   Interface   │
+                            │ WxCC gRPC or  │
+                            │  WebSocket    │
                             └───────┬───────┘
                                     │
                             ┌───────▼───────┐
@@ -108,6 +108,26 @@ webex-byova-gateway-python/
 - Keeps only `grpc.health.v1.Health/Check` outside JWT enforcement for private ALB health
   probes; all BYOVA methods remain authenticated
 
+### WebSocketGatewayServer (`websocket_server.py`)
+
+- Implements `/v1/va` with strict JSON models and forward-compatible discovery
+  parsing on `/v1/listVirtualAgents`
+- Exposes a minimal `/health` route for private load-balancer target checks
+- Authenticates before upgrade against the WebSocket datasource profile
+- Reuses `ConversationProcessor`, VAD, router, and existing connectors
+- Lists and accepts only connectors enabled for the WebSocket transport
+- Includes Local Audio and GECX in that WebSocket-safe connector set by default
+- Enforces bounded queues, sender sequence order, fatal protocol errors, and disconnect cleanup
+
+### GECX provider transports
+
+- `GECXConnector` keeps the existing gateway-to-CES gRPC implementation.
+- `GECXWebSocketConnector` uses the native CES JSON WebSocket endpoint in a
+  separate module while reusing the established audio and lifecycle behavior.
+- `supported_transports` still describes the WxCC-facing protocol. Use distinct
+  agent IDs and explicit `grpc`/`websocket` restrictions when both provider
+  connectors are enabled in one gateway.
+
 **Core Methods:**
 - `ListVirtualAgents`: Returns available virtual agents
 - `ProcessCallerInput`: Bidirectional streaming for voice interactions
@@ -118,6 +138,7 @@ webex-byova-gateway-python/
 - Maintains agent-to-connector mappings
 - Routes requests to the appropriate connector based on agent ID
 - Provides connector and agent information for monitoring
+- Filters discovery and runtime lookup by explicit connector transport capability
 
 **Core Methods:**
 - `load_connectors`: Dynamically loads connector implementations from configuration
@@ -153,6 +174,9 @@ webex-byova-gateway-python/
 - Renews the datasource JWS before `tokenExpiryTime` and retries transient failures
 - Reads credential values only from explicitly named environment variables
 - Requires an explicit datasource ID when discovery returns multiple matches
+- Creates an independent token provider and renewal worker for each enabled datasource
+- Keeps the gRPC datasource bound to its HTTPS URL and the WebSocket datasource bound to
+  its WSS URL; combined mode requires separate schema-specific Service Apps
 
 ## Development Guidelines
 
@@ -417,6 +441,24 @@ are development-only and must not be present on gateway hosts. Verify the genera
 and scan the installed runtime filesystem, not the source checkout, before closing dependency
 incidents.
 
+### Container Runtime
+
+Build the container image as `linux/amd64` from the repository `Dockerfile`. The image uses
+the digest-pinned Amazon Linux 2023 minimal platform image and namespaced Python 3.12 package,
+includes only allowlisted application paths, regenerates protobuf modules, installs matching
+CPU-only Torch and Torchaudio packages, runs as UID `10001`, logs to stdout, and handles
+SIGTERM through the normal gateway cleanup path. The ECS task enables `InitProcessEnabled`;
+do not add a second init binary to the image. A short-lived init container may use only the
+`CHOWN` capability to assign the shared runtime volume to UID `10001`; the gateway must wait
+for its successful exit and remain capability-free. Keep development tools in
+`requirements-dev.txt`; they must not be present in the runtime image. Keep environment-specific
+infrastructure, resource identifiers, routing, and credentials outside this shared example
+repository.
+The container health check reads the configured transport selection: single-protocol
+deployments probe only their selected listener, atomic combined deployments require both,
+and the explicit development partial-startup mode succeeds while either listener remains
+healthy.
+
 ### Direct Voice Agent Audio Lab
 
 For local browser-to-provider testing that intentionally bypasses WxCC, use:
@@ -555,7 +597,14 @@ When analyzing this codebase as an AI agent:
 **Key Files to Know:**
 - `src/connectors/i_vendor_connector.py` - Abstract base class for all connectors
 - `src/connectors/local_audio_connector.py` - Working example connector
+- `src/connectors/gecx_connector.py` - CES gRPC provider connector and shared GECX behavior
+- `src/connectors/gecx_websocket_connector.py` - Native CES WebSocket provider connector
+- `src/connectors/aws_lex_websocket_connector.py` - WxCC WebSocket adapter sharing the existing Lex RecognizeUtterance provider
 - `src/core/wxcc_gateway_server.py` - Main gRPC server implementation
+- `src/transports/websocket_server.py` - WebSocket listener and lifecycle
+- `src/transports/websocket_models.py` - Strict concrete wire models
+- `src/transports/websocket_adapter.py` - JSON/protobuf compatibility adapter
+- `src/core/conversation_registry.py` - Cross-transport conversation ownership
 - `src/core/virtual_agent_router.py` - Routes requests to appropriate connectors
 - `config/config.yaml` - Configuration for connectors and gateway settings
 - `proto/` - Protocol buffer definitions for gRPC interfaces
