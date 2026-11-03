@@ -993,6 +993,79 @@ def test_new_connections_are_rejected_while_shutting_down():
     asyncio.run(asyncio.wait_for(scenario(), timeout=20))
 
 
+@pytest.mark.parametrize("endpoint", ["/v1/va", "/v1/listVirtualAgents"])
+def test_shutdown_rejects_upgrade_waiting_for_authentication(endpoint):
+    async def scenario():
+        started = threading.Event()
+        release = threading.Event()
+
+        class Validator:
+            def validate_token(self, _token):
+                started.set()
+                assert release.wait(5)
+
+        router = FakeRouter()
+        server = WebSocketGatewayServer(router, jwt_validator=Validator())
+        client = await _client_for(server)
+        pending = asyncio.ensure_future(
+            client.ws_connect(endpoint, headers={"Authorization": "Bearer example"})
+        )
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            await server.close_active_connections(timeout=0.1)
+            release.set()
+            with pytest.raises(WSServerHandshakeError) as error:
+                await pending
+            assert error.value.status == 503
+            assert not server.registry.snapshot()
+            assert not server._active_connections
+            assert router.async_sink is None
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await client.close()
+            server.shutdown()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/va", "/v1/listVirtualAgents"])
+def test_shutdown_closes_upgrade_already_in_progress(monkeypatch, endpoint):
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        original_prepare = aiohttp.web.WebSocketResponse.prepare
+
+        async def delayed_prepare(socket, request):
+            started.set()
+            await release.wait()
+            return await original_prepare(socket, request)
+
+        monkeypatch.setattr(aiohttp.web.WebSocketResponse, "prepare", delayed_prepare)
+        router = FakeRouter()
+        server = WebSocketGatewayServer(router, allow_unauthenticated_local_dev=True)
+        client = await _client_for(server)
+        pending = asyncio.ensure_future(client.ws_connect(endpoint))
+        try:
+            await started.wait()
+            await server.close_active_connections(timeout=0.1)
+            release.set()
+            socket = await pending
+            message = await asyncio.wait_for(socket.receive(), timeout=2)
+            assert message.type == WSMsgType.CLOSE
+            assert message.data == 1001
+            assert not server.registry.snapshot()
+            assert not server._active_connections
+            assert router.async_sink is None
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await client.close()
+            server.shutdown()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
 def _free_port() -> int:
     with socket_module.socket() as probe:
         probe.bind(("127.0.0.1", 0))

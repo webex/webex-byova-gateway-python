@@ -190,6 +190,8 @@ class WebSocketGatewayServer:
                 "WebSocket upgrade rejected because JWT validation failed"
             )
             return web.json_response({"error": "unauthorized"}, status=401)
+        if self._shutting_down:
+            return web.json_response({"error": "gateway is shutting down"}, status=503)
         return None
 
     async def handle_list_virtual_agents(
@@ -204,6 +206,9 @@ class WebSocketGatewayServer:
             max_msg_size=self.max_message_bytes,
         )
         await socket.prepare(request)
+        if self._shutting_down:
+            await socket.close(code=1001, message=b"gateway is shutting down")
+            return socket
         connection_id = uuid.uuid4().hex
         current_task = asyncio.current_task()
         # Discovery holds no provider state, so shutdown can simply cancel it.
@@ -283,6 +288,9 @@ class WebSocketGatewayServer:
             max_msg_size=self.max_message_bytes,
         )
         await socket.prepare(request)
+        if self._shutting_down:
+            await socket.close(code=1001, message=b"gateway is shutting down")
+            return socket
 
         lease: ConversationLease | None = None
         processor: ConversationProcessor | None = None

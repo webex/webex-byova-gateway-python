@@ -62,9 +62,13 @@ def gateway_is_healthy(
 ) -> bool:
     """Probe only selected transports, honoring dual partial-startup semantics."""
     from src.core.transport_profiles import enabled_transport_profiles
+    from src.runtime.container_bootstrap import RUNTIME_DIRECTORY
 
     values = environment if environment is not None else os.environ
     config_path = Path(values.get("GATEWAY_CONFIG", "config/config.yaml"))
+    if values.get("GATEWAY_CONFIG_S3_URI", "").strip():
+        # Container health processes do not inherit bootstrap's environment changes.
+        config_path = RUNTIME_DIRECTORY / "config.yaml"
     try:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         if not isinstance(config, dict):
