@@ -1,7 +1,11 @@
 """Tests for transport-aware ECS container health checks."""
 
+import io
+
+import pytest
 import yaml
 
+from src.runtime import container_bootstrap
 from src.runtime.healthcheck import gateway_is_healthy
 
 
@@ -100,4 +104,61 @@ def test_invalid_selected_port_fails_healthcheck(tmp_path):
             }
         )
         is False
+    )
+
+
+@pytest.mark.parametrize("mode", ["grpc", "websocket", "both"])
+def test_healthcheck_uses_downloaded_config_with_original_container_environment(
+    tmp_path, monkeypatch, mode
+):
+    bundled_config = write_config(tmp_path, {"transports": {"mode": "grpc"}})
+    runtime_directory = tmp_path / "runtime"
+    monkeypatch.setattr(container_bootstrap, "RUNTIME_DIRECTORY", runtime_directory)
+    payload = yaml.safe_dump({"transports": {"mode": mode}}).encode()
+
+    class FakeS3:
+        def get_object(self, **_kwargs):
+            return {"Body": io.BytesIO(payload)}
+
+    container_environment = {
+        "GATEWAY_CONFIG": str(bundled_config),
+        "GATEWAY_CONFIG_S3_URI": "s3://example-bucket/config.yaml",
+    }
+    gateway_environment = dict(container_environment)
+    container_bootstrap.prepare_runtime_files(
+        environ=gateway_environment,
+        runtime_directory=runtime_directory,
+        s3_client=FakeS3(),
+    )
+    calls = []
+    healthy = gateway_is_healthy(
+        environment=container_environment,
+        grpc_probe=lambda port: calls.append(("grpc", port)) or True,
+        websocket_probe=lambda port: calls.append(("websocket", port)) or True,
+    )
+
+    assert (
+        gateway_environment["GATEWAY_CONFIG"] != container_environment["GATEWAY_CONFIG"]
+    )
+    assert healthy is True
+    assert (
+        calls
+        == {
+            "grpc": [("grpc", 50051)],
+            "websocket": [("websocket", 8765)],
+            "both": [("grpc", 50051), ("websocket", 8765)],
+        }[mode]
+    )
+
+
+def test_missing_downloaded_config_fails_healthcheck(tmp_path, monkeypatch):
+    bundled_config = write_config(tmp_path, {"transports": {"mode": "grpc"}})
+    monkeypatch.setattr(container_bootstrap, "RUNTIME_DIRECTORY", tmp_path / "missing")
+
+    assert not gateway_is_healthy(
+        environment={
+            "GATEWAY_CONFIG": str(bundled_config),
+            "GATEWAY_CONFIG_S3_URI": "s3://example-bucket/config.yaml",
+        },
+        grpc_probe=lambda _port: True,
     )
