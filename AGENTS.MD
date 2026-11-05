@@ -434,8 +434,7 @@ The builder must regenerate the Python gRPC modules from the selected ref's prot
 definitions and include them under `src/generated/`. Run it with `grpcio-tools` available
 from `requirements.txt`; never rely on ignored workstation-generated modules.
 
-Do not deploy or archive the repository root. In particular, `tools/byova_e2e/`,
-`tools/voice_agent_lab/`, `tools/gecx_audio_lab/`, `tests/`, `docs/`,
+Do not deploy or archive the repository root. In particular, `tools/`, `tests/`, `docs/`,
 `requirements-dev.txt`, npm manifests and lockfiles, and AppleDouble files
 are development-only and must not be present on gateway hosts. Verify the generated archive
 and scan the installed runtime filesystem, not the source checkout, before closing dependency
