@@ -323,8 +323,9 @@ development-only dependencies as if the gateway loaded them at runtime.
 The SDK-based E2E caller now lives in the separate private
 [WebexSamples/webex-test-caller](https://github.com/WebexSamples/webex-test-caller)
 application (repository access required). Install and run it from its own checkout;
-its generic calling tests do not require this gateway. Existing `byova-e2e` commands,
-test plans, OAuth environment variables, and saved logins remain supported there.
+its generic calling tests do not require this gateway. Use its `webex-test-caller`
+command and `WEBEX_TEST_CALLER_*` settings; see the application's prerequisites and
+OAuth setup before placing a call.
 The standalone caller can temporarily forward a private monitoring listener through an
 SSM-managed host so exact terminal outcomes are observed without publishing the monitoring
 API. Keep the instance ID, private host, region, profile, and ports in ignored local
