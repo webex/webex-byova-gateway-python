@@ -314,16 +314,21 @@ files and includes those modules under `src/generated/`. Run it from an environm
 `requirements.txt` is installed so `grpcio-tools` is available; an archive missing any
 required generated module fails validation before it can be deployed.
 
-`tools/byova_e2e/`, `tools/voice_agent_lab/`, and its `tools/gecx_audio_lab/` compatibility
+`tools/voice_agent_lab/` and its `tools/gecx_audio_lab/` compatibility
 implementation are local validation utilities. Their browser assets and development
 dependencies are installed through `requirements-dev.txt` and must not be copied to an EC2
 gateway or included in an image or release archive. Gateway containers install only
 `requirements.txt`. Deploying the whole repository can cause host scanners to report
 development-only dependencies as if the gateway loaded them at runtime.
-The E2E caller can temporarily forward a private monitoring listener through an
+The SDK-based E2E caller now lives in the separate private
+[WebexSamples/webex-test-caller](https://github.com/WebexSamples/webex-test-caller)
+application (repository access required). Install and run it from its own checkout;
+its generic calling tests do not require this gateway. Existing `byova-e2e` commands,
+test plans, OAuth environment variables, and saved logins remain supported there.
+The standalone caller can temporarily forward a private monitoring listener through an
 SSM-managed host so exact terminal outcomes are observed without publishing the monitoring
 API. Keep the instance ID, private host, region, profile, and ports in ignored local
-configuration; see [the E2E caller guide](tools/byova_e2e/README.md).
+configuration; see [the BYOVA caller guide](https://github.com/WebexSamples/webex-test-caller/blob/main/docs/BYOVA.md).
 
 Before deployment, scan the generated archive and verify its checksum. Keep environment
 configuration and secrets outside the artifact and inject them through the deployment
