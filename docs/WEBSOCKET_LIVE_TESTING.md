@@ -63,8 +63,12 @@ source venv/bin/activate
 python -m grpc_tools.protoc -I./proto \
   --python_out=src/generated --grpc_python_out=src/generated proto/*.proto
 python -m pytest tests/
-PYTHONPATH=tools/byova_e2e/src python -m pytest tools/byova_e2e/tests/
 ```
+
+The SDK caller and its tests are maintained separately in the private
+[webex-test-caller application](https://github.com/WebexSamples/webex-test-caller)
+(repository access required). Follow its setup guide and run its tests from that
+checkout, using its own virtual environment.
 
 For a local socket smoke check, start the gateway in one terminal:
 
@@ -128,7 +132,7 @@ one provider cleanup per conversation and no remaining registry leases.
   [GECX setup guide](guides/byova-gecx-setup.md).
 - Use a dedicated test caller and approved WxCC test flow/destination. Configure
   the E2E runner's private gateway-events access as described in its
-  [JSON test and gateway-evidence guide](../tools/byova_e2e/README.md#define-tests-in-json).
+  [JSON test and gateway-evidence guide](https://github.com/WebexSamples/webex-test-caller/blob/main/docs/BYOVA.md#define-tests-in-json).
 
 ## 3. Run the acceptance matrix
 
@@ -146,19 +150,20 @@ one provider cleanup per conversation and no remaining registry leases.
 | gRPC regression | Existing gRPC discovery, voice, transfer, and termination still work with their independent datasource. |
 
 The existing E2E plans already cover the Local Audio terminal controls and GECX
-voice/terminal scenarios. From `tools/byova_e2e`, using its configured environment:
+voice/terminal scenarios. From the separate `webex-test-caller` checkout, using
+its configured environment:
 
 ```bash
-byova-e2e validate --config config/local-audio-dtmf.spec.json --list
-byova-e2e validate --config config/gecx-regression.spec.json --list
+webex-test-caller validate --config config/local-audio-dtmf.spec.json --list
+webex-test-caller validate --config config/gecx-regression.spec.json --list
 ```
 
 Run each Local Audio test against the test destination:
 
 ```bash
-byova-e2e run --destination "$BYOVA_TEST_DESTINATION" \
+webex-test-caller run --destination "$BYOVA_TEST_DESTINATION" \
   --config config/local-audio-dtmf.spec.json --test dtmf-transfer
-byova-e2e run --destination "$BYOVA_TEST_DESTINATION" \
+webex-test-caller run --destination "$BYOVA_TEST_DESTINATION" \
   --config config/local-audio-dtmf.spec.json --test dtmf-session-end
 ```
 
