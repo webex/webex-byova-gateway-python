@@ -4,6 +4,9 @@ The gateway can run the existing gRPC service, the Webex BYOVA WebSocket API,
 or both listeners in one process. Both transports use the same configured
 connectors, router, VAD behavior, handoff mapping, and monitoring process.
 
+For a transfer-response JSON example and the Flow Designer steps that display a summary
+on Agent Desktop, see [BYOVA Handoff Summary](BYOVA_HANDOFF_CONTEXT.md#websocket).
+
 The WebSocket transport implements:
 
 - `GET /v1/va`: one long-lived JSON text WebSocket per call

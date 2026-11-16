@@ -5,9 +5,10 @@ BYOVA virtual agent to Webex Contact Center (WxCC) when the call transfers to a 
 The goal is to let the receiving agent understand the caller's request without asking the
 caller to repeat it.
 
-The contract applies to any virtual-agent provider. Each connector remains responsible for
-translating its provider's terminal response into the canonical gateway fields described
-below.
+The contract applies to any virtual-agent provider and to both WxCC-facing transports:
+gRPC and WebSocket. Each connector remains responsible for translating its provider's
+terminal response into the canonical gateway fields described below. The provider connection
+can use a different transport from the WxCC connection.
 
 ## Intended Agent Experience
 
@@ -33,7 +34,7 @@ Provider connector
         v
 BYOVA gateway
         |
-        | final VoiceVAResponse with TRANSFER_TO_AGENT
+        | final transfer response over gRPC or WebSocket
         v
 WxCC Virtual Agent V2 activity
         |
@@ -72,8 +73,21 @@ They should extract only the approved fields and normalize them into this shape.
 
 ## BYOVA Transfer Response
 
-The gateway should create one final `VoiceVAResponse` containing one
-`TRANSFER_TO_AGENT` output event. The following pseudocode shows the intended wire shape:
+Both transports use the same connector `handoff.summary` and shared conversation processor.
+The gateway puts the summary in one terminal `TRANSFER_TO_AGENT` event and in
+`session_summary`; the WebSocket adapter serializes those fields into JSON.
+
+| WxCC-facing transport | Where the handoff fields are sent | Completion |
+| --- | --- | --- |
+| gRPC | A `VoiceVAResponse` on the current `ProcessCallerInput` response stream | Send the terminal `FINAL`, then complete the RPC normally |
+| WebSocket | The `payload` of a `VOICE_VA_RESPONSE` JSON envelope on the existing `/v1/va` connection | Send and flush the terminal `FINAL`, then wait for WxCC to close the socket; the gateway bounds that wait |
+
+### gRPC
+
+Use the configured [gRPC listener and datasource](../README.md#grpc).
+Return one final `VoiceVAResponse` containing one `TRANSFER_TO_AGENT` output event. The
+following JSON-style pseudocode shows the handoff fields; the gRPC wire message is protobuf,
+with no WebSocket envelope:
 
 ```json
 {
@@ -94,7 +108,49 @@ The gateway should create one final `VoiceVAResponse` containing one
 }
 ```
 
-The fields serve different purposes:
+### WebSocket
+
+Enable and register the WebSocket listener using the separate WebSocket datasource and a
+WebSocket-capable connector as described in [BYOVA WebSocket Transport](WEBSOCKET_TRANSPORT.md).
+The shared connector handoff contract above also applies when WxCC connects over WebSocket.
+
+The gateway sends a JSON text frame on the call's existing `/v1/va` connection. The handoff
+fields go inside `payload`, with the same `conversation_id`, the next gateway-owned `seq`,
+and an RFC 3339 `ts`. For example, this event-only terminal response carries a summary:
+
+```json
+{
+  "type": "VOICE_VA_RESPONSE",
+  "seq": 27,
+  "ts": "2026-11-16T15:00:00Z",
+  "conversation_id": "example-call-123",
+  "payload": {
+    "response_type": "FINAL",
+    "session_summary": {
+      "text": "Caller wants to change the delivery address. The virtual agent did not modify the order. Verify the caller and update the address."
+    },
+    "output_events": [
+      {
+        "event_type": "TRANSFER_TO_AGENT",
+        "name": "transfer_requested",
+        "metadata": {
+          "summary": "Caller wants to change the delivery address. The virtual agent did not modify the order. Verify the caller and update the address."
+        }
+      }
+    ]
+  }
+}
+```
+
+The sequence number and timestamp are illustrative; the gateway assigns them at runtime.
+When the connector streams a spoken transfer announcement, send its audio `CHUNK` responses
+before the terminal `FINAL` containing the transfer event and summary. Keep the summary on
+that terminal response. After flushing it, the gateway waits for WxCC to close the socket
+instead of closing immediately and risking loss of the handoff.
+
+### Summary fields in both transports
+
+The fields serve different purposes. For WebSocket, both are inside `payload`:
 
 | Field | Purpose | Requirement |
 | --- | --- | --- |
@@ -109,8 +165,12 @@ The relevant protocol definitions are:
 
 - [`VoiceVAResponse.session_summary`](../proto/voicevirtualagent.proto)
 - [`OutputEvent.TRANSFER_TO_AGENT` and `metadata`](../proto/byova_common.proto)
+- [WebSocket envelope and response schemas](../schemas/websocket/README.md)
 
 ## WxCC Flow Mapping
+
+Use the same Flow Designer configuration for gRPC and WebSocket. The WebSocket JSON
+`payload` wrapper is a transport detail; do not add it to the Flow Designer expression.
 
 In Flow Designer, the Virtual Agent V2 activity exposes transfer-event metadata through its
 `MetaData` output. Map the normalized `summary` key to a custom String flow variable:
@@ -202,6 +262,13 @@ The synthetic marker in these screenshots was added by a development-only termin
 probe. A production implementation must replace that probe with provider-neutral handoff
 normalization and pass-through.
 
+### WebSocket validation status
+
+The shared mapping is implemented for WebSocket. The [WebSocket live-testing notes](WEBSOCKET_LIVE_TESTING.md)
+record a transfer with forwarded summary metadata, but leave the Flow Designer variable
+read-back and staffed-agent Desktop check outstanding. The screenshots above establish the
+existing Desktop mapping; they do not establish a separate WebSocket end-to-end pass.
+
 ## Gateway Requirements
 
 The production gateway implementation should:
@@ -245,10 +312,11 @@ Automated coverage should verify:
 - Summary text does not appear in logs.
 - Provider-specific fields do not escape the connector boundary.
 
-End-to-end acceptance should verify:
+Run these end-to-end acceptance checks separately for each WxCC-facing transport you enable:
 
 1. The provider or test connector produces a synthetic handoff summary.
-2. The gateway emits a final response with one `TRANSFER_TO_AGENT` event.
+2. The gateway emits a final response with one `TRANSFER_TO_AGENT` event: a protobuf
+   `VoiceVAResponse` for gRPC or a `VOICE_VA_RESPONSE` JSON envelope for WebSocket.
 3. The WxCC flow assigns `MetaData.summary` to the agent-viewable variable.
 4. The incoming offer shows the summary before answer.
 5. The active interaction shows the full summary after answer.
