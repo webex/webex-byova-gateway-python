@@ -551,7 +551,6 @@ class ConversationProcessor:
             self.logger.debug(
                 f"Start Conversation Connector response converted to gRPC format for {self.conversation_id}"
             )
-            self.logger.debug(f"Connector gRPC response created: {grpc_response}")
             if grpc_response and hasattr(grpc_response, "prompts"):
                 self.logger.debug(
                     f"gRPC response has {len(grpc_response.prompts)} prompts"

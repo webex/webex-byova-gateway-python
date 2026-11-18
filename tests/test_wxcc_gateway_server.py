@@ -1129,6 +1129,26 @@ class TestConversationProcessor:
         assert "private_routing_classification" not in caplog.text
         assert "private-queue-id-12345" not in caplog.text
 
+    def test_startup_transfer_does_not_log_handoff_values(
+        self, processor, mock_router, caplog
+    ):
+        handoff = {
+            "summary": "Private startup handoff details.",
+            "routing_hint": "private_startup_classification",
+        }
+        mock_router.route_request.return_value = {
+            "message_type": "transfer",
+            "handoff": handoff,
+        }
+
+        with caplog.at_level(logging.DEBUG):
+            responses = list(processor._start_conversation())
+
+        assert len(responses) == 1
+        assert dict(responses[0].output_events[0].metadata) == handoff
+        for value in handoff.values():
+            assert value not in caplog.text
+
     def test_process_audio_input_with_output_events(self, processor, mock_router, mock_audio_input):
         """Test processing audio input with custom output events from connector."""
         # Mock connector returning response with output events

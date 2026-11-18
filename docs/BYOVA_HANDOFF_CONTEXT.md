@@ -272,10 +272,10 @@ activity names or other branches.
 
 Keep the human-routing path independent of the optional value:
 
-- Connect the Set Variable success path to the normal human queue path.
+- Connect the Set Variable success path to the routing-hint assignment in step 3.
 - If the flow treats a missing nested `summary` key as an **Undefined Error**, connect that
-  error path to the same human queue path, or guard the assignment with an equivalent
-  condition.
+  error path to the same routing-hint assignment, or guard the summary assignment with an
+  equivalent condition. A valid routing hint must still be evaluated when no summary was sent.
 - Do not disconnect the contact or send it to a Virtual Agent failure branch only because
   the summary is absent.
 - Do not invent a fallback summary. Leave the agent-viewable variable empty when no summary
@@ -323,7 +323,8 @@ handoff data is not a routing failure.
 ### 5. Validate before publishing
 
 Before publishing the flow, use synthetic handoff values to verify each approved Case branch,
-the Default branch for an unknown hint, and the fallback path for a missing hint. Confirm that
+including a valid hint without a summary, the Default branch for an unknown hint, and the
+fallback path for a missing hint. Confirm that
 only `BYOVAHandoffSummary` appears in the incoming popover and interaction control pane, and
 that both missing-field error paths still reach a human queue. Do not add real queue IDs,
 customer data, or provider diagnostics to the test values.
