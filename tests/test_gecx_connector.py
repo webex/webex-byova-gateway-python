@@ -1155,6 +1155,76 @@ class TestServerMessageMapping:
             "summary": "Caller needs help changing a delivery address."
         }
 
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_end_session_normalizes_summary_and_routing_hint(
+        self, connector, nested, caplog
+    ):
+        fields = UserDict(
+            summary="  Caller needs billing help.  ",
+            routing_hint="  billing_specialist  ",
+            provider_queue_id="private-queue-id",
+        )
+        metadata = {"session_escalated": True}
+        metadata.update({"params": fields} if nested else fields)
+        connector.log_handoff_summary_diagnostics = True
+
+        with caplog.at_level(logging.INFO):
+            responses = self._end_session(connector, metadata)
+
+        assert len(responses) == 1
+        assert responses[0]["message_type"] == "transfer"
+        assert responses[0]["handoff"] == {
+            "summary": "Caller needs billing help.",
+            "routing_hint": "billing_specialist",
+        }
+        for value in fields.values():
+            assert value.strip() not in caplog.text
+
+    def test_end_session_extracts_fields_independently_with_top_level_precedence(
+        self, connector
+    ):
+        responses = self._end_session(
+            connector,
+            {
+                "session_escalated": True,
+                "summary": "Legacy summary",
+                "routing_hint": None,
+                "params": {
+                    "summary": "Nested summary",
+                    "routing_hint": "billing_specialist",
+                },
+            },
+        )
+        assert responses[0]["handoff"] == {
+            "summary": "Legacy summary",
+            "routing_hint": "billing_specialist",
+        }
+
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_end_session_with_routing_hint_only_preserves_transfer(self, connector, nested):
+        fields = {"routing_hint": "billing_specialist"}
+        metadata = {"session_escalated": True}
+        metadata.update({"params": fields} if nested else fields)
+
+        responses = self._end_session(connector, metadata)
+
+        assert responses[0]["message_type"] == "transfer"
+        assert responses[0]["handoff"] == fields
+
+    @pytest.mark.parametrize("nested", [False, True])
+    @pytest.mark.parametrize("hint", [None, True, "", "billing queue", "12345"])
+    def test_invalid_routing_hint_preserves_summary_and_transfer(
+        self, connector, nested, hint
+    ):
+        fields = {"summary": "Caller needs help.", "routing_hint": hint}
+        metadata = {"session_escalated": True}
+        metadata.update({"params": fields} if nested else fields)
+
+        responses = self._end_session(connector, metadata)
+
+        assert responses[0]["message_type"] == "transfer"
+        assert responses[0]["handoff"] == {"summary": "Caller needs help."}
+
     def test_handoff_summary_diagnostic_logs_shape_without_summary_value(
         self, connector, caplog
     ):

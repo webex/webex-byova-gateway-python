@@ -286,6 +286,30 @@ class TestGECXWebSocketProtocol:
 
         assert payload == {"realtimeInput": {"audio": "Y2FsbGVyIGF1ZGlv"}}
 
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_native_end_session_extracts_allowlisted_handoff(self, connector, nested):
+        session = self._session(connector)
+        fields = {
+            "summary": "  Caller needs billing help.  ",
+            "routing_hint": "  billing_specialist  ",
+            "provider_queue_id": "private-queue-id",
+        }
+        metadata = {"session_escalated": True}
+        metadata.update({"params": fields} if nested else fields)
+        message = session._parse_server_message(
+            json.dumps({"endSession": {"metadata": metadata}})
+        )
+
+        session._handle_server_message(message)
+
+        responses = session.drain_responses()
+        assert len(responses) == 1
+        assert responses[0]["message_type"] == "transfer"
+        assert responses[0]["handoff"] == {
+            "summary": "Caller needs billing help.",
+            "routing_hint": "billing_specialist",
+        }
+
     def test_parses_forward_compatible_server_message(self, connector):
         session = self._session(connector)
 

@@ -121,6 +121,33 @@ def test_raw_chunk_mode_strips_wav_and_adds_empty_final():
     ]
 
 
+@pytest.mark.parametrize("output_mode", ["wav_final", "raw_chunk"])
+def test_terminal_handoff_metadata_survives_audio_framing(output_mode):
+    handoff = {"summary": "Caller needs billing help.", "routing_hint": "billing_specialist"}
+    response = VoiceVAResponse(
+        prompts=[Prompt(audio_content=_mulaw_wav(b"a" * 6400))],
+        output_events=[
+            OutputEvent(
+                event_type=OutputEvent.EventType.TRANSFER_TO_AGENT,
+                metadata=handoff,
+            )
+        ],
+        response_type=VoiceVAResponse.ResponseType.FINAL,
+    )
+    response.session_summary.text = handoff["summary"]
+
+    payloads = frame_response_payloads(response, output_mode=output_mode)
+
+    assert payloads[-1]["response_type"] == "FINAL"
+    assert len(payloads[-1]["output_events"]) == 1
+    assert payloads[-1]["output_events"][0]["metadata"] == handoff
+    assert payloads[-1]["session_summary"] == {"text": handoff["summary"]}
+    for payload in payloads[:-1]:
+        assert payload["response_type"] == "CHUNK"
+        assert "output_events" not in payload
+        assert "session_summary" not in payload
+
+
 def test_raw_chunk_mode_configures_dtmf_on_first_frame():
     response = VoiceVAResponse(
         prompts=[Prompt(audio_content=_wav(bytes(range(256)) * 30))],

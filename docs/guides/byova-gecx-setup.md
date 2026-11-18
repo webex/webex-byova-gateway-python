@@ -181,6 +181,9 @@ Open `http://localhost:8080` and confirm **My GECX Agent** appears in the dashbo
 2. Use schema `5397013b-7920-4ffc-807c-e8a3e0a18f43`.
 3. In your WxCC flow, add the Virtual Agent / BYOVA element.
 4. Select agent name **My GECX Agent** (must match `agents` in config).
+5. For human escalation, follow the provider-neutral [BYOVA Handoff Context guide](../BYOVA_HANDOFF_CONTEXT.md)
+   to map the optional summary and routing hint into Flow Designer. GECX `EndSession` metadata
+   is one source for those fields; the Flow Designer mapping is the same for every connector.
 
 ## Deploying to Google Cloud Run
 
@@ -404,25 +407,31 @@ Agent escalates ─► CES EndSession { metadata: {...} }
    `escalat`, `human`, `live agent`, or `handoff`. Optionally include a
    `reason` string.
 
-To give the receiving agent context, also pass an optional plain-text `summary`
-through the `end_session` system tool's `params` argument:
+To give the receiving agent context and an optional customer-controlled routing
+classification, pass `summary` and `routing_hint` through the `end_session` system tool's
+`params` argument:
 
 ```text
 end_session(
   reason="caller requested a human agent",
   session_escalated=true,
-  params={"summary": "Caller wants to change a delivery address; no change was made."}
+  params={
+    "summary": "Caller wants to change a delivery address; no change was made.",
+    "routing_hint": "delivery_address_specialist"
+  }
 )
 ```
 
-CX Agent Studio places that value in `params` in the terminal metadata
-(`EndSession.metadata.params.summary`). The connector accepts this nested shape
-and the legacy top-level `EndSession.metadata.summary` shape for compatibility.
-The gateway copies the allowlisted summary to the single BYOVA
-`TRANSFER_TO_AGENT.metadata.summary` event and `session_summary`. If `summary`
-is absent, empty, or not text, the gateway omits both summary fields and still
-transfers the call normally. Other EndSession metadata, including
-provider-specific values in `params`, is not forwarded.
+CX Agent Studio places these values in `EndSession.metadata.params.summary` and
+`EndSession.metadata.params.routing_hint`. The connector also accepts the legacy top-level
+`summary` and `routing_hint` fields. It extracts only these allowlisted fields and normalizes
+them through the shared handoff contract, for both CES provider transports.
+The gateway copies `summary` to the single BYOVA `TRANSFER_TO_AGENT.metadata.summary` event and
+`session_summary`; it copies `routing_hint` only to that event's metadata. A routing hint must
+be a stable symbolic business classification (for example, `delivery_address_specialist`), not
+a WxCC queue ID. If either value is absent, empty, malformed, or not text, the gateway omits it
+and still transfers the call normally. Other EndSession metadata, including provider-specific
+values in `params`, is not forwarded.
 
 ### 2. Discover exactly what your agent sends
 

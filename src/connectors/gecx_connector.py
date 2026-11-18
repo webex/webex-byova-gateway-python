@@ -51,6 +51,7 @@ except ImportError:
     Request = None
     client_options_lib = None
 
+from src.utils.handoff import normalize_handoff
 from src.utils.telephony_audio import G711MulawOutputConverter
 
 from .i_vendor_connector import IVendorConnector
@@ -1671,18 +1672,15 @@ class GECXStreamingSession:
     def _handoff_from_end_session_metadata(
         metadata: Dict[str, Any],
     ) -> Dict[str, str]:
-        """Normalize the allowlisted GECX handoff fields for the gateway."""
-        raw_summary = metadata.get("summary")
-        if not isinstance(raw_summary, str):
-            params = metadata.get("params")
-            if isinstance(params, Mapping):
-                raw_summary = params.get("summary")
-        if not isinstance(raw_summary, str):
-            return {}
-        summary = raw_summary.strip()
-        if not summary:
-            return {}
-        return {"summary": summary}
+        """Normalize current nested and legacy top-level CES handoff fields."""
+        handoff = {}
+        params = metadata.get("params")
+        for field in ("summary", "routing_hint"):
+            value = metadata.get(field)
+            if not isinstance(value, str) and isinstance(params, Mapping):
+                value = params.get(field)
+            handoff[field] = value
+        return normalize_handoff(handoff)
 
     @staticmethod
     def _handoff_summary_diagnostic(metadata: Dict[str, Any]) -> Dict[str, Any]:

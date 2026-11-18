@@ -44,8 +44,8 @@ A fully functional voice AI system where customers can:
 - **[Testing](TESTING.md)** - Run automated, HTTP, gRPC, and end-to-end tests
 - **[BYOVA WebSocket Transport](WEBSOCKET_TRANSPORT.md)** - Run gRPC and WebSocket from one
   gateway and configure the independent WebSocket datasource
-- **[BYOVA Handoff Summary](BYOVA_HANDOFF_CONTEXT.md)** - Pass a provider-neutral handoff
-  summary to the receiving WxCC agent
+- **[BYOVA Handoff Context](BYOVA_HANDOFF_CONTEXT.md)** - Pass provider-neutral summary and
+  routing-hint metadata to the receiving WxCC agent
 - **[Setup Guide](https://developer.webex.com/webex-contact-center/docs/byova-and-aws-lex)** - Complete step-by-step setup
 - **[AWS Test Deployment Considerations](AWS_TEST_DEPLOYMENT_CONSIDERATIONS.md)** - Sanitized dual-protocol ALB-to-EC2 test topology, Lex access, release flow, and validation boundaries
 - **[GECX Setup Guide](guides/byova-gecx-setup.md)** - Google CX Agent Studio integration walkthrough

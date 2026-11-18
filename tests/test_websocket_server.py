@@ -896,7 +896,32 @@ def test_streamed_audio_final_contains_explicit_empty_audio(
     asyncio.run(asyncio.wait_for(scenario(), timeout=20))
 
 
-def test_async_connector_transfer_enters_terminal_state():
+@pytest.mark.parametrize(
+    "handoff, expected",
+    [
+        (
+            {
+                "summary": "Caller needs billing help.",
+                "routing_hint": "billing_specialist",
+                "provider_queue_id": "private-queue-id",
+            },
+            {
+                "summary": "Caller needs billing help.",
+                "routing_hint": "billing_specialist",
+            },
+        ),
+        (
+            {"routing_hint": "billing_specialist"},
+            {"routing_hint": "billing_specialist"},
+        ),
+        (
+            {"summary": "Caller needs help.", "routing_hint": "invalid hint"},
+            {"summary": "Caller needs help."},
+        ),
+        ({}, {}),
+    ],
+)
+def test_async_connector_transfer_enters_terminal_state(handoff, expected):
     """A transfer delivered through the async sink ends the agent leg."""
 
     async def scenario():
@@ -916,6 +941,7 @@ def test_async_connector_transfer_enters_terminal_state():
                     "text": "Connecting you to an agent",
                     "audio_content": b"",
                     "response_type": "final",
+                    "handoff": handoff,
                 },
             )
             assert accepted is True
@@ -924,6 +950,11 @@ def test_async_connector_transfer_enters_terminal_state():
             assert [
                 event["event_type"] for event in transfer["payload"]["output_events"]
             ] == ["TRANSFER_TO_AGENT"]
+            assert transfer["payload"]["output_events"][0].get("metadata", {}) == expected
+            if "summary" in expected:
+                assert transfer["payload"]["session_summary"] == {"text": expected["summary"]}
+            else:
+                assert "session_summary" not in transfer["payload"]
 
             # In-flight caller media after the terminal output is ignored and
             # the gateway waits for WxCC to end and close the socket.
