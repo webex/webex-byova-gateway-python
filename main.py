@@ -8,6 +8,7 @@ creates the gRPC server, and starts listening for requests.
 
 import logging
 import os
+import signal
 import sys
 import threading
 from concurrent import futures
@@ -26,14 +27,26 @@ from grpc_health.v1 import health_pb2_grpc
 from auth.jwt_interceptor import JWTAuthInterceptor
 
 # Import JWT authentication components (required)
-from auth.jwt_validator import JWTValidator
-from core.datasource_lifecycle import create_data_source_lifecycle
+from auth.jwt_validator import JWKSCache, JWTValidator
+from core.conversation_registry import ConversationRegistry
+from core.datasource_lifecycle import (
+    DEFAULT_WEBSOCKET_SCHEMA_ID,
+    create_data_source_lifecycle,
+)
 from core.health_service import HealthCheckService
+from core.transport_profiles import (
+    enabled_transport_profiles,
+    validate_transport_profiles,
+)
 from core.virtual_agent_router import VirtualAgentRouter
 from core.wxcc_gateway_server import WxCCGatewayServer
 from monitoring.app import run_web_app
 from src.generated.voicevirtualagent_pb2_grpc import (
     add_VoiceVirtualAgentServicer_to_server,
+)
+from transports.websocket_server import (
+    WebSocketGatewayRuntime,
+    WebSocketGatewayServer,
 )
 
 
@@ -52,7 +65,15 @@ def setup_logging(config: dict) -> None:
     gateway_log_format = gateway_config.get(
         "format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    gateway_log_file = gateway_config.get("file", "logs/gateway.log")
+    stdout_only = os.environ.get("BYOVA_STDOUT_ONLY_LOGGING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    gateway_log_file = (
+        "" if stdout_only else gateway_config.get("file", "logs/gateway.log")
+    )
 
     # Create logs directory if it doesn't exist
     if gateway_log_file:
@@ -96,7 +117,7 @@ def setup_logging(config: dict) -> None:
     web_log_format = web_config.get(
         "format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    web_log_file = web_config.get("file", "logs/web.log")
+    web_log_file = "" if stdout_only else web_config.get("file", "logs/web.log")
 
     # Create web log file if specified
     if web_log_file:
@@ -187,7 +208,9 @@ def create_router_config(config: dict) -> dict:
 
 
 def create_jwt_interceptor(
-    config: dict, logger: logging.Logger
+    config: dict,
+    logger: logging.Logger,
+    shared_jwks_cache: Optional[JWKSCache] = None,
 ) -> Optional[JWTAuthInterceptor]:
     """
     Create JWT authentication interceptor if configured.
@@ -227,11 +250,14 @@ def create_jwt_interceptor(
 
     try:
         # Create JWT validator
-        validator = JWTValidator(
-            datasource_url=datasource_url,
-            datasource_schema_uuid=datasource_schema_uuid,
-            cache_duration_minutes=cache_duration_minutes,
-        )
+        validator_arguments = {
+            "datasource_url": datasource_url,
+            "datasource_schema_uuid": datasource_schema_uuid,
+            "cache_duration_minutes": cache_duration_minutes,
+        }
+        if shared_jwks_cache is not None:
+            validator_arguments["jwks_cache"] = shared_jwks_cache
+        validator = JWTValidator(**validator_arguments)
 
         # Create interceptor
         interceptor = JWTAuthInterceptor(
@@ -267,6 +293,67 @@ def create_jwt_interceptor(
             return None
 
 
+def enabled_transports(config: dict) -> tuple[bool, bool]:
+    """Return enabled listeners, preserving grpc-only legacy configuration."""
+    names = {profile.name for profile in enabled_transport_profiles(config)}
+    return "grpc" in names, "websocket" in names
+
+
+def create_websocket_jwt_validator(
+    config: dict,
+    logger: logging.Logger,
+    shared_jwks_cache: Optional[JWKSCache] = None,
+) -> Optional[JWTValidator]:
+    """Create the independently datasource-bound WebSocket JWT profile."""
+    jwt_config = config.get("websocket_jwt_validation", {})
+    if not jwt_config.get("enabled", False):
+        return None
+    datasource_url = str(jwt_config.get("datasource_url", "")).strip()
+    if not datasource_url:
+        raise ValueError(
+            "WebSocket JWT validation is enabled but datasource_url is not "
+            "configured. Set websocket_jwt_validation.datasource_url."
+        )
+    arguments = {
+        "datasource_url": datasource_url,
+        "datasource_schema_uuid": jwt_config.get(
+            "datasource_schema_uuid", DEFAULT_WEBSOCKET_SCHEMA_ID
+        ),
+        "cache_duration_minutes": jwt_config.get("cache_duration_minutes", 60),
+    }
+    if shared_jwks_cache is not None:
+        arguments["jwks_cache"] = shared_jwks_cache
+    validator = JWTValidator(**arguments)
+    logger.info("WebSocket JWT validator created for %s", datasource_url)
+    return validator
+
+
+class CombinedMonitoringGateway:
+    """Present both listener states through the existing monitoring interface."""
+
+    def __init__(self, *gateways) -> None:
+        self.gateways = [gateway for gateway in gateways if gateway is not None]
+
+    def get_active_conversations(self) -> dict:
+        active = {}
+        for gateway in self.gateways:
+            active.update(gateway.get_active_conversations())
+        return active
+
+    def get_connection_events(self) -> list:
+        events = []
+        for gateway in self.gateways:
+            events.extend(gateway.get_connection_events())
+        return events[-100:]
+
+    def get_health_status(self) -> dict:
+        for gateway in self.gateways:
+            health = getattr(gateway, "get_health_status", None)
+            if health:
+                return health()
+        return {"status": "healthy"}
+
+
 def create_streaming_executor(servicer, max_workers: int):
     """Create and attach a dedicated executor for caller streaming RPCs."""
     executor = futures.ThreadPoolExecutor(
@@ -277,170 +364,283 @@ def create_streaming_executor(servicer, max_workers: int):
     return executor
 
 
-def main():
-    """
-    Main entry point for the BYOVA Gateway.
+def install_shutdown_signal_handlers(
+    shutdown_event: threading.Event,
+) -> dict[int, object]:
+    """Make SIGINT and SIGTERM request the same orderly shutdown path."""
+    if threading.current_thread() is not threading.main_thread():
+        return {}
 
-    This function:
-    1. Loads configuration from YAML file
-    2. Sets up logging
-    3. Creates and configures the VirtualAgentRouter
-    4. Creates the WxCCGatewayServer
-    5. Starts the gRPC server
-    """
+    previous_handlers: dict[int, object] = {}
+
+    def request_shutdown(_signum, _frame) -> None:
+        shutdown_event.set()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, request_shutdown)
+    return previous_handlers
+
+
+def restore_signal_handlers(previous_handlers: dict[int, object]) -> None:
+    """Restore handlers installed by :func:`install_shutdown_signal_handlers`."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for signum, handler in previous_handlers.items():
+        signal.signal(signum, handler)
+
+
+def wait_for_shutdown(
+    shutdown_event: threading.Event,
+    grpc_server=None,
+) -> None:
+    """Wait for a process signal or an unexpected gRPC server termination."""
+    while not shutdown_event.wait(timeout=1.0):
+        if grpc_server is not None and not grpc_server.wait_for_termination(timeout=0):
+            return
+
+
+def main():
+    """Compose and run the configured gRPC and WebSocket listeners."""
     logger = None
     server = None
     grpc_server = None
-    data_source_lifecycle = None
+    websocket_server = None
+    websocket_runtime = None
+    data_source_lifecycles = []
     streaming_executor = None
+    shutdown_event = threading.Event()
+    previous_signal_handlers = install_shutdown_signal_handlers(shutdown_event)
     try:
-        # Select an environment-specific configuration when requested.
         config_path = os.environ.get("GATEWAY_CONFIG", "config/config.yaml")
         config = load_config(config_path)
-
-        # Set up logging
         setup_logging(config)
         logger = logging.getLogger(__name__)
-
         logger.info("Starting Webex Contact Center BYOVA Gateway")
 
-        # Create VirtualAgentRouter
-        router = VirtualAgentRouter()
-        logger.info("VirtualAgentRouter created")
+        transport_profiles = enabled_transport_profiles(config)
+        validate_transport_profiles(config, transport_profiles)
 
-        # Load connectors
+        router = VirtualAgentRouter()
         router_config = create_router_config(config)
         router.load_connectors(router_config)
         logger.info("Connectors loaded successfully")
 
-        # Get server configuration
-        gateway_config = config.get("gateway", {})
-
-        # Create WxCCGatewayServer
-        vad_config = config.get("voice_activity_detection", {})
-        server = WxCCGatewayServer(
-            router,
-            vad_config,
-            max_terminal_playback_seconds=float(
-                gateway_config.get("max_terminal_playback_seconds", 30.0)
-            ),
-            request_queue_maxsize=int(
-                gateway_config.get("request_queue_maxsize", 100)
-            ),
-            response_queue_maxsize=int(
-                gateway_config.get("response_queue_maxsize", 100)
-            ),
+        transport_names = {profile.name for profile in transport_profiles}
+        grpc_enabled = "grpc" in transport_names
+        websocket_enabled = "websocket" in transport_names
+        dual_transport_requested = grpc_enabled and websocket_enabled
+        transport_config = config.get("transports", {})
+        websocket_config = transport_config.get("websocket", {})
+        allow_partial = dual_transport_requested and bool(
+            transport_config.get("allow_partial_transport_startup", False)
         )
-        logger.info("WxCCGatewayServer created")
+        gateway_config = config.get("gateway", {})
+        vad_config = config.get("voice_activity_detection", {})
+        registry = ConversationRegistry()
+        shared_jwks_cache = JWKSCache()
 
-        # Create health service with router for real health monitoring
+        if grpc_enabled:
+            server = WxCCGatewayServer(
+                router,
+                vad_config,
+                max_terminal_playback_seconds=float(
+                    gateway_config.get("max_terminal_playback_seconds", 30.0)
+                ),
+                request_queue_maxsize=int(
+                    gateway_config.get("request_queue_maxsize", 100)
+                ),
+                response_queue_maxsize=int(
+                    gateway_config.get("response_queue_maxsize", 100)
+                ),
+                conversation_registry=registry,
+            )
+            logger.info("WxCCGatewayServer created")
+
         health_service = HealthCheckService(router)
-        logger.info("HealthCheckService created with real health monitoring")
-
         host = gateway_config.get("host", "0.0.0.0")
         port = int(os.environ.get("PORT", gateway_config.get("port", 50051)))
+        server_address = f"{host}:{port}"
 
-        # Create JWT interceptor if configured
-        jwt_interceptor = create_jwt_interceptor(config, logger)
+        jwt_interceptor = (
+            create_jwt_interceptor(config, logger, shared_jwks_cache)
+            if grpc_enabled
+            else None
+        )
         interceptors = []
         if jwt_interceptor:
             interceptors.append(jwt_interceptor)
 
-        # Establish the BYODS registration before accepting gRPC traffic.
-        data_source_lifecycle = create_data_source_lifecycle(config, logger)
-        if data_source_lifecycle:
-            try:
-                data_source_lifecycle.start()
-            except Exception:
-                if config.get("data_source", {}).get("fail_startup_on_error", True):
-                    raise
-                logger.exception(
-                    "BYODS data source lifecycle failed to start; "
-                    "continuing because fail_startup_on_error is false"
+        websocket_jwt_validator = None
+        if websocket_enabled:
+            websocket_jwt_validator = create_websocket_jwt_validator(
+                config, logger, shared_jwks_cache
+            )
+            websocket_server = WebSocketGatewayServer(
+                router,
+                registry=registry,
+                jwt_validator=websocket_jwt_validator,
+                allow_unauthenticated_local_dev=bool(
+                    websocket_config.get("allow_unauthenticated_local_dev", False)
+                ),
+                vad_config=vad_config,
+                first_message_timeout_seconds=float(
+                    websocket_config.get("first_message_timeout_seconds", 10.0)
+                ),
+                discovery_idle_timeout_seconds=float(
+                    websocket_config.get("discovery_idle_timeout_seconds", 5.0)
+                ),
+                terminal_flush_timeout_seconds=float(
+                    websocket_config.get("terminal_flush_timeout_seconds", 2.0)
+                ),
+                terminal_peer_close_timeout_seconds=float(
+                    websocket_config.get(
+                        "terminal_peer_close_timeout_seconds", 30.0
+                    )
+                ),
+                queue_maxsize=int(websocket_config.get("queue_maxsize", 100)),
+                queue_put_timeout_seconds=float(
+                    websocket_config.get("queue_put_timeout_seconds", 1.0)
+                ),
+                max_message_bytes=int(
+                    websocket_config.get("max_message_bytes", 128 * 1024)
+                ),
+                connector_max_workers=int(
+                    websocket_config.get("connector_max_workers", 20)
+                ),
+                connector_max_pending=int(
+                    websocket_config.get("connector_max_pending", 20)
+                ),
+                output_chunk_bytes=int(
+                    websocket_config.get("output_chunk_bytes", 3_200)
+                ),
+            )
+            websocket_runtime = WebSocketGatewayRuntime(
+                websocket_server,
+                host=websocket_config.get("host", "0.0.0.0"),
+                port=int(
+                    os.environ.get("WEBSOCKET_PORT", websocket_config.get("port", 8765))
+                ),
+            )
+
+        lifecycle_specs = []
+        for profile in transport_profiles:
+            lifecycle_arguments = {
+                "section_name": profile.datasource_section,
+                "jwt_section_name": profile.jwt_section,
+                "default_schema_id": profile.default_schema_id,
+            }
+            if profile.name == "grpc":
+                # Preserve the existing call shape for tests and integrations that
+                # patch the legacy gRPC factory invocation.
+                lifecycle_arguments = {}
+            lifecycle_specs.append(
+                (
+                    profile.name,
+                    create_data_source_lifecycle(
+                        config,
+                        logger,
+                        **lifecycle_arguments,
+                    ),
+                    config.get(profile.datasource_section, {}),
                 )
-                data_source_lifecycle.stop()
-                data_source_lifecycle = None
-
-        # Create gRPC server with interceptors
-        if interceptors:
-            grpc_server = grpc.server(
-                futures.ThreadPoolExecutor(max_workers=10),
-                interceptors=interceptors,
-                options=[
-                    ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50MB
-                    ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
-                    ("grpc.max_concurrent_streams", 100),
-                ],
             )
-            logger.info(f"gRPC server created with {len(interceptors)} interceptor(s)")
-        else:
+
+        for transport_name, lifecycle, lifecycle_config in lifecycle_specs:
+            if lifecycle is None:
+                continue
+            try:
+                lifecycle.start()
+                data_source_lifecycles.append(lifecycle)
+            except Exception:
+                lifecycle.stop()
+                if not allow_partial and (
+                    dual_transport_requested
+                    or lifecycle_config.get("fail_startup_on_error", True)
+                ):
+                    raise
+                if not allow_partial:
+                    logger.exception(
+                        "%s datasource failed; continuing because its legacy "
+                        "fail_startup_on_error setting is false",
+                        transport_name,
+                    )
+                    continue
+                logger.exception(
+                    "%s datasource failed; listener disabled by explicit "
+                    "partial-startup development override",
+                    transport_name,
+                )
+                if transport_name == "grpc":
+                    grpc_enabled = False
+                    server = None
+                else:
+                    websocket_enabled = False
+                    websocket_server = None
+                    websocket_runtime = None
+
+        if grpc_enabled:
+            grpc_options = [
+                ("grpc.max_send_message_length", 50 * 1024 * 1024),
+                ("grpc.max_receive_message_length", 50 * 1024 * 1024),
+                ("grpc.max_concurrent_streams", 100),
+            ]
+            grpc_kwargs = {"options": grpc_options}
+            if interceptors:
+                grpc_kwargs["interceptors"] = interceptors
             grpc_server = grpc.server(
-                futures.ThreadPoolExecutor(max_workers=10),
-                options=[
-                    ("grpc.max_send_message_length", 50 * 1024 * 1024),  # 50MB
-                    ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
-                    ("grpc.max_concurrent_streams", 100),
-                ],
+                futures.ThreadPoolExecutor(max_workers=10), **grpc_kwargs
             )
-            logger.info("gRPC server created without interceptors")
+            streaming_executor = create_streaming_executor(
+                server, int(gateway_config.get("streaming_max_workers", 100))
+            )
+            add_VoiceVirtualAgentServicer_to_server(server, grpc_server)
+            health_pb2_grpc.add_HealthServicer_to_server(health_service, grpc_server)
+            if grpc_server.add_insecure_port(server_address) == 0:
+                raise RuntimeError(f"gRPC listener could not bind to {server_address}")
 
-        # Keep long-lived bidirectional caller streams, including response-
-        # derived playback waits, off the shared executor used by health and
-        # unary RPCs. gRPC Python selects this method-specific pool through the
-        # handler's supported experimental_thread_pool attribute.
-        streaming_executor = create_streaming_executor(
-            server,
-            int(gateway_config.get("streaming_max_workers", 100)),
-        )
+        # All enabled datasource profiles are ready before either listener
+        # accepts traffic. Roll back the first listener if the second fails.
+        if websocket_enabled:
+            websocket_runtime.start()
+        if grpc_enabled:
+            grpc_server.start()
 
-        # Add servicer to the server
-        add_VoiceVirtualAgentServicer_to_server(server, grpc_server)
-
-        # Add health service to the server
-        health_pb2_grpc.add_HealthServicer_to_server(health_service, grpc_server)
-        logger.info("Health service registered with gRPC server")
-
-        # Bind server to address
-        server_address = f"{host}:{port}"
-        grpc_server.add_insecure_port(server_address)
-
-        # Start the server
-        grpc_server.start()
-
-        # Start Flask monitoring app in a separate thread
         monitoring_config = config.get("monitoring", {})
-        if monitoring_config.get("enabled", True):  # Enable by default
+        if monitoring_config.get("enabled", True):
             monitoring_host = monitoring_config.get("host", "0.0.0.0")
             monitoring_port = monitoring_config.get("port", 8080)
-
-            # Create and start Flask app in a separate thread
+            monitoring_gateway = CombinedMonitoringGateway(server, websocket_server)
             flask_thread = threading.Thread(
                 target=run_web_app,
-                args=(router, server),
+                args=(router, monitoring_gateway),
                 kwargs={
                     "host": monitoring_host,
                     "port": monitoring_port,
                     "debug": monitoring_config.get("debug", False),
                 },
-                daemon=True,  # Make it a daemon thread so it stops when main thread stops
+                daemon=True,
             )
             flask_thread.start()
             logger.info(
                 f"Flask monitoring app started on {monitoring_host}:{monitoring_port}"
             )
 
-        # Print startup information
         print("\n" + "=" * 60)
         print("🚀 Webex Contact Center BYOVA Gateway")
         print("=" * 60)
-        print(f"📡 gRPC Server: {server_address}")
-        print(f"🌐 Access URL: grpc://{host}:{port}")
+        if grpc_enabled:
+            print(f"📡 gRPC Server: {server_address}")
+        if websocket_enabled:
+            websocket_host = websocket_config.get("host", "0.0.0.0")
+            websocket_port = int(
+                os.environ.get("WEBSOCKET_PORT", websocket_config.get("port", 8765))
+            )
+            print(f"🔁 WebSocket Server: ws://{websocket_host}:{websocket_port}")
         print(f"📁 Configuration: {config_path}")
-        print(f"📝 Log Level: {gateway_config.get('level', 'INFO')}")
         print(f"🔧 Gateway Version: {gateway_config.get('version', '1.1.0')}")
         print()
 
-        # Print connector information
         print("🔌 Loaded Connectors:")
         router_info = router.get_connector_info()
         for connector_name in router_info["loaded_connectors"]:
@@ -462,49 +662,24 @@ def main():
             print("   • Disabled")
 
         print()
-        print("🔐 JWT Authentication:")
-        jwt_config = config.get("jwt_validation", {})
-        if jwt_config.get("enabled", False) and jwt_interceptor:
-            print("   • Status: ENABLED")
-            print(
-                f"   • Enforcement: {'ENABLED' if jwt_config.get('enforce_validation', True) else 'DISABLED (logging only)'}"
-            )
-            print(
-                f"   • Datasource URL: {jwt_config.get('datasource_url', 'Not configured')}"
-            )
-        else:
-            print("   • Status: DISABLED")
-
-        print()
-        print("🗂️  BYODS Datasource:")
-        if data_source_lifecycle:
-            current_data_source = data_source_lifecycle.current_data_source or {}
-            print("   • Management: ENABLED")
-            print(f"   • ID: {data_source_lifecycle.data_source_id}")
-            print(
-                "   • Token Expires: "
-                f"{current_data_source.get('tokenExpiryTime', 'Not provided')}"
-            )
-        else:
-            print("   • Management: DISABLED")
-
-        print()
         print("✅ Gateway is running! Press Ctrl+C to stop.")
         print("=" * 60)
 
-        # Keep the server running
         try:
-            grpc_server.wait_for_termination()
+            wait_for_shutdown(shutdown_event, grpc_server)
         except KeyboardInterrupt:
-            logger.info("Received shutdown signal")
+            shutdown_event.set()
         finally:
-            # Graceful shutdown
+            logger.info("Received shutdown signal")
             logger.info("Shutting down gateway...")
             if server:
                 server.shutdown()
-            grpc_server.stop(grace=5)
-            if data_source_lifecycle:
-                data_source_lifecycle.stop()
+            if grpc_server:
+                grpc_server.stop(grace=5)
+            if websocket_runtime:
+                websocket_runtime.stop()
+            for lifecycle in reversed(data_source_lifecycles):
+                lifecycle.stop()
             if streaming_executor:
                 streaming_executor.shutdown(wait=False, cancel_futures=True)
             logger.info("Gateway shutdown complete")
@@ -514,8 +689,10 @@ def main():
             grpc_server.stop(grace=0)
         if server:
             server.shutdown()
-        if data_source_lifecycle:
-            data_source_lifecycle.stop()
+        if websocket_runtime:
+            websocket_runtime.stop()
+        for lifecycle in reversed(data_source_lifecycles):
+            lifecycle.stop()
         if streaming_executor:
             streaming_executor.shutdown(wait=False, cancel_futures=True)
         if logger:
@@ -523,6 +700,8 @@ def main():
         else:
             print(f"Failed to start gateway: {e}")
         sys.exit(1)
+    finally:
+        restore_signal_handlers(previous_signal_handlers)
 
 
 if __name__ == "__main__":

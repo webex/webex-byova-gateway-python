@@ -10,6 +10,7 @@ import os
 import re
 import struct
 import threading
+from collections import UserDict
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1101,16 +1102,26 @@ class TestServerMessageMapping:
         responses = self._end_session(connector, {"session_escalated": True})
         assert responses[0]["message_type"] == "transfer"
 
-    def test_end_session_with_summary_and_routing_hint_normalizes_handoff(
-        self, connector
-    ):
-        responses = self._end_session(
-            connector,
+    @pytest.mark.parametrize(
+        "metadata",
+        [
             {
                 "session_escalated": True,
                 "summary": "  Caller needs help changing a delivery address.  ",
-                "routing_hint": "  delivery_address_specialist  ",
             },
+            {
+                "session_escalated": True,
+                "params": {
+                    "summary": "  Caller needs help changing a delivery address.  ",
+                    "provider_queue_id": "do-not-forward",
+                },
+            },
+        ],
+    )
+    def test_end_session_with_summary_normalizes_handoff(self, connector, metadata):
+        responses = self._end_session(
+            connector,
+            metadata,
         )
 
         assert responses == [
@@ -1124,54 +1135,149 @@ class TestServerMessageMapping:
                 "output_events": [],
                 "response_type": "final",
                 "handoff": {
-                    "summary": "Caller needs help changing a delivery address.",
-                    "routing_hint": "delivery_address_specialist",
+                    "summary": "Caller needs help changing a delivery address."
                 },
             }
         ]
 
-    def test_end_session_with_routing_hint_normalizes_handoff(self, connector):
+    def test_end_session_with_mapping_summary_normalizes_handoff(self, connector):
         responses = self._end_session(
             connector,
-            {"session_escalated": True, "routing_hint": "billing_specialist"},
+            {
+                "session_escalated": True,
+                "params": UserDict(
+                    summary="  Caller needs help changing a delivery address.  "
+                ),
+            },
         )
+
+        assert responses[0]["handoff"] == {
+            "summary": "Caller needs help changing a delivery address."
+        }
+
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_end_session_normalizes_summary_and_routing_hint(
+        self, connector, nested, caplog
+    ):
+        fields = UserDict(
+            summary="  Caller needs billing help.  ",
+            routing_hint="  billing_specialist  ",
+            provider_queue_id="private-queue-id",
+        )
+        metadata = {"session_escalated": True}
+        metadata.update({"params": fields} if nested else fields)
+        connector.log_handoff_summary_diagnostics = True
+
+        with caplog.at_level(logging.INFO):
+            responses = self._end_session(connector, metadata)
 
         assert len(responses) == 1
         assert responses[0]["message_type"] == "transfer"
-        assert responses[0]["handoff"] == {"routing_hint": "billing_specialist"}
+        assert responses[0]["handoff"] == {
+            "summary": "Caller needs billing help.",
+            "routing_hint": "billing_specialist",
+        }
+        for value in fields.values():
+            assert value.strip() not in caplog.text
 
-    @pytest.mark.parametrize("summary", [None, "", "   ", True, ["not", "text"]])
-    def test_end_session_without_valid_summary_preserves_transfer(
-        self, connector, summary
-    ):
-        responses = self._end_session(
-            connector,
-            {"session_escalated": True, "summary": summary},
-        )
-
-        assert responses[0]["message_type"] == "transfer"
-        assert "handoff" not in responses[0]
-
-    @pytest.mark.parametrize(
-        "routing_hint",
-        [None, "", "   ", True, 12345, "12345", "billing queue", "x" * 65],
-    )
-    def test_end_session_with_invalid_routing_hint_preserves_transfer(
-        self, connector, routing_hint
+    def test_end_session_extracts_fields_independently_with_top_level_precedence(
+        self, connector
     ):
         responses = self._end_session(
             connector,
             {
                 "session_escalated": True,
-                "summary": "Caller needs a human.",
-                "routing_hint": routing_hint,
-                "customer_queue_id": "raw-queue-id-98765",
+                "summary": "Legacy summary",
+                "routing_hint": None,
+                "params": {
+                    "summary": "Nested summary",
+                    "routing_hint": "billing_specialist",
+                },
             },
         )
+        assert responses[0]["handoff"] == {
+            "summary": "Legacy summary",
+            "routing_hint": "billing_specialist",
+        }
 
-        assert len(responses) == 1
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_end_session_with_routing_hint_only_preserves_transfer(self, connector, nested):
+        fields = {"routing_hint": "billing_specialist"}
+        metadata = {"session_escalated": True}
+        metadata.update({"params": fields} if nested else fields)
+
+        responses = self._end_session(connector, metadata)
+
         assert responses[0]["message_type"] == "transfer"
-        assert responses[0]["handoff"] == {"summary": "Caller needs a human."}
+        assert responses[0]["handoff"] == fields
+
+    @pytest.mark.parametrize("nested", [False, True])
+    @pytest.mark.parametrize("hint", [None, True, "", "billing queue", "12345"])
+    def test_invalid_routing_hint_preserves_summary_and_transfer(
+        self, connector, nested, hint
+    ):
+        fields = {"summary": "Caller needs help.", "routing_hint": hint}
+        metadata = {"session_escalated": True}
+        metadata.update({"params": fields} if nested else fields)
+
+        responses = self._end_session(connector, metadata)
+
+        assert responses[0]["message_type"] == "transfer"
+        assert responses[0]["handoff"] == {"summary": "Caller needs help."}
+
+    def test_handoff_summary_diagnostic_logs_shape_without_summary_value(
+        self, connector, caplog
+    ):
+        summary = "Caller needs a private account change."
+        connector.log_handoff_summary_diagnostics = True
+
+        with caplog.at_level(logging.INFO, logger="src.connectors.gecx_connector"):
+            self._end_session(
+                connector,
+                {
+                    "session_escalated": True,
+                    "params": UserDict(summary=summary),
+                },
+            )
+
+        diagnostics = [
+            record.getMessage()
+            for record in caplog.records
+            if "Handoff summary diagnostic" in record.getMessage()
+        ]
+
+        assert diagnostics == [
+            "[GECX] Handoff summary diagnostic: "
+            "top_level_present=False top_level_type=NoneType top_level_chars=0 "
+            "params_present=True params_type=UserDict params_is_mapping=True "
+            "params_summary_present=True params_summary_type=str "
+            f"params_summary_chars={len(summary)}"
+        ]
+        assert summary not in caplog.text
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"session_escalated": True, "summary": None},
+            {"session_escalated": True, "summary": ""},
+            {"session_escalated": True, "summary": "   "},
+            {"session_escalated": True, "summary": True},
+            {"session_escalated": True, "summary": ["not", "text"]},
+            {"session_escalated": True, "params": None},
+            {"session_escalated": True, "params": {"summary": None}},
+            {"session_escalated": True, "params": {"summary": ""}},
+            {"session_escalated": True, "params": {"summary": "   "}},
+            {"session_escalated": True, "params": {"summary": True}},
+            {"session_escalated": True, "params": {"summary": ["not", "text"]}},
+        ],
+    )
+    def test_end_session_without_valid_summary_preserves_transfer(
+        self, connector, metadata
+    ):
+        responses = self._end_session(connector, metadata)
+
+        assert responses[0]["message_type"] == "transfer"
+        assert "handoff" not in responses[0]
 
     def test_session_output_end_session_uses_nested_metadata(self, connector):
         session = GECXStreamingSession(
@@ -1240,8 +1346,6 @@ class TestServerMessageMapping:
                 "customer_email": "guest@example.com",
                 "reason": "private routing identifier",
                 "summary": "Caller supplied private account information.",
-                "routing_hint": "private_routing_classification",
-                "customer_queue_id": "private-queue-id-12345",
             },
         )
 
@@ -1249,8 +1353,6 @@ class TestServerMessageMapping:
         assert "guest@example.com" not in caplog.text
         assert "private routing identifier" not in caplog.text
         assert "Caller supplied private account information." not in caplog.text
-        assert "private_routing_classification" not in caplog.text
-        assert "private-queue-id-12345" not in caplog.text
 
     def test_end_session_with_escalation_key_name_emits_transfer(self, connector):
         # Key-name keyword match catches naming variants generically.
@@ -1513,6 +1615,46 @@ class TestTerminalLifecycle:
             "session_end"
         ]
         assert remaining[0]["response_type"] == "final"
+
+    def test_delayed_transfer_replaces_empty_turn_final(self, connector):
+        session = self._session(connector)
+        session._turn_completed.set()
+        real_get = session.outbound_queue.get
+        terminal_injected = False
+
+        def inject_terminal_on_blocking_wait(*args, **kwargs):
+            nonlocal terminal_injected
+            block = args[0] if args else kwargs.get("block", True)
+            if block and not terminal_injected:
+                terminal_injected = True
+                session._handle_end_session(
+                    "conv-1",
+                    SimpleNamespace(
+                        metadata={"session_escalated": True}
+                    ),
+                )
+            return real_get(*args, **kwargs)
+
+        with patch.object(
+            session.outbound_queue,
+            "get",
+            side_effect=inject_terminal_on_blocking_wait,
+        ):
+            responses = list(
+                session.iter_turn_responses(
+                    timeout=1.0,
+                    terminal_grace_seconds=1.0,
+                )
+            )
+
+        assert terminal_injected is True
+        assert [response["message_type"] for response in responses] == [
+            "transfer"
+        ]
+        assert responses[0]["response_type"] == "final"
+        assert sum(
+            response["response_type"] == "final" for response in responses
+        ) == 1
 
     @pytest.mark.parametrize(
         ("gateway_reason", "terminal_reason"),

@@ -1,0 +1,719 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "Webex BYoVA Voice Virtual Agent WebSocket API",
+    "version": "1.0.0",
+    "description": "WebSocket API for audio-audio BYoVA sessions. One WS connection per conversation_id. Messages mirror BYoVA gRPC VoiceVARequest/VoiceVAResponse structures."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "production": {
+      "protocol": "wss",
+      "description": "Secure WS endpoint"
+    }
+  },
+  "channels": {
+    "va": {
+      "address": "/v1/va",
+      "messages": {
+        "VOICE_VA_REQUEST": {
+          "$ref": "#/components/messages/VOICE_VA_REQUEST"
+        },
+        "VOICE_VA_RESPONSE": {
+          "$ref": "#/components/messages/VOICE_VA_RESPONSE"
+        },
+        "ERROR": {
+          "$ref": "#/components/messages/ERROR"
+        },
+        "PING": {
+          "$ref": "#/components/messages/PING"
+        },
+        "PONG": {
+          "$ref": "#/components/messages/PONG"
+        }
+      }
+    }
+  },
+  "operations": {
+    "clientToServer": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/va"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/va/messages/VOICE_VA_REQUEST"
+        },
+        {
+          "$ref": "#/channels/va/messages/PING"
+        }
+      ]
+    },
+    "serverToClient": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/va"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/va/messages/VOICE_VA_RESPONSE"
+        },
+        {
+          "$ref": "#/channels/va/messages/ERROR"
+        },
+        {
+          "$ref": "#/channels/va/messages/PONG"
+        }
+      ]
+    }
+  },
+  "components": {
+    "messages": {
+      "VOICE_VA_REQUEST": {
+        "name": "VOICE_VA_REQUEST",
+        "title": "Voice Virtual Agent Request",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/WsEnvelopeVoiceVARequest"
+        },
+        "examples": [
+          {
+            "name": "session_start",
+            "payload": {
+              "type": "VOICE_VA_REQUEST",
+              "seq": 1,
+              "ts": "2025-08-21T08:20:30.123Z",
+              "conversation_id": "d7e2-...",
+              "metadata": {},
+              "payload": {
+                "conversation_id": "d7e2-...",
+                "customer_org_id": "org-123",
+                "allow_partial_responses": true,
+                "voice_va_input_type": {
+                  "event_input": {
+                    "event_type": "SESSION_START",
+                    "name": "entry",
+                    "parameters": {
+                      "entry_point": "ivr_main"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "audio_chunk",
+            "payload": {
+              "type": "VOICE_VA_REQUEST",
+              "seq": 2,
+              "ts": "2025-08-21T08:20:30.223Z",
+              "conversation_id": "d7e2-...",
+              "payload": {
+                "conversation_id": "d7e2-...",
+                "customer_org_id": "org-123",
+                "voice_va_input_type": {
+                  "audio_input": {
+                    "caller_audio_b64": "UklGRiQAAABXQVZF...",
+                    "encoding": "MULAW_FORMAT",
+                    "sample_rate_hertz": 8000,
+                    "audio_timestamp": "2025-08-21T08:20:29.950Z",
+                    "language_code": "en-US",
+                    "is_single_utterance": false
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "VOICE_VA_RESPONSE": {
+        "name": "VOICE_VA_RESPONSE",
+        "title": "Voice Virtual Agent Response",
+        "summary": "Mirrors BYoVA VoiceVAResponse with envelope",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/WsEnvelopeVoiceVAResponse"
+        },
+        "examples": [
+          {
+            "name": "prompt_and_event",
+            "payload": {
+              "type": "VOICE_VA_RESPONSE",
+              "seq": 27,
+              "ts": "2025-08-21T08:20:30.780Z",
+              "conversation_id": "d7e2-...",
+              "payload": {
+                "prompts": [
+                  {
+                    "text": "Hello, how can I help?",
+                    "audio_content_b64": "UklGRqIAAABX...",
+                    "is_barge_in_enabled": true
+                  }
+                ],
+                "output_events": [
+                  {
+                    "event_type": "END_OF_INPUT"
+                  }
+                ],
+                "response_type": "FINAL"
+              }
+            }
+          }
+        ]
+      },
+      "ERROR": {
+        "name": "ERROR",
+        "summary": "Protocol or upstream error",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/WsEnvelopeError"
+        },
+        "examples": [
+          {
+            "payload": {
+              "type": "ERROR",
+              "seq": 3,
+              "ts": "2025-08-21T08:20:31.500Z",
+              "conversation_id": "d7e2-...",
+              "code": "unauthorized",
+              "status": 401,
+              "detail": "Invalid or expired access token"
+            }
+          }
+        ]
+      },
+      "PING": {
+        "name": "PING",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/WsEnvelopePing"
+        }
+      },
+      "PONG": {
+        "name": "PONG",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/WsEnvelopePong"
+        }
+      }
+    },
+    "schemas": {
+      "WsEnvelopeBase": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "VOICE_VA_REQUEST",
+              "VOICE_VA_RESPONSE",
+              "ERROR",
+              "PING",
+              "PONG"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Monotonic per-sender"
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "conversation_id": {
+            "type": "string",
+            "description": "BYoVA conversation/call id"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "ts",
+          "conversation_id"
+        ]
+      },
+      "WsEnvelopeVoiceVARequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WsEnvelopeBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "payload": {
+                "$ref": "#/components/schemas/VoiceVARequest"
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          }
+        ]
+      },
+      "WsEnvelopeVoiceVAResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WsEnvelopeBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "payload": {
+                "$ref": "#/components/schemas/VoiceVAResponse"
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          }
+        ]
+      },
+      "WsEnvelopeError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WsEnvelopeBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "unauthorized",
+                  "bad_request",
+                  "unsupported_media",
+                  "upstream_error",
+                  "rate_limit",
+                  "timeout"
+                ]
+              },
+              "status": {
+                "type": "integer"
+              },
+              "detail": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "status",
+              "detail"
+            ]
+          }
+        ]
+      },
+      "WsEnvelopePing": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WsEnvelopeBase"
+          }
+        ]
+      },
+      "WsEnvelopePong": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WsEnvelopeBase"
+          }
+        ]
+      },
+      "VoiceVARequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "customer_org_id": {
+            "type": "string"
+          },
+          "virtual_agent_id": {
+            "type": "string"
+          },
+          "allow_partial_responses": {
+            "type": "boolean",
+            "default": false
+          },
+          "vendor_specific_config": {
+            "type": "string"
+          },
+          "voice_va_input_type": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VoiceInputWrapper"
+              },
+              {
+                "$ref": "#/components/schemas/DTMFInputsWrapper"
+              },
+              {
+                "$ref": "#/components/schemas/EventInputWrapper"
+              }
+            ]
+          },
+          "additional_info": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "conversation_id",
+          "customer_org_id",
+          "voice_va_input_type"
+        ]
+      },
+      "VoiceVAResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Prompt"
+            }
+          },
+          "output_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputEvent"
+            }
+          },
+          "input_sensitive": {
+            "type": "boolean",
+            "default": false
+          },
+          "input_mode": {
+            "$ref": "#/components/schemas/VoiceVAInputMode"
+          },
+          "input_handling_config": {
+            "$ref": "#/components/schemas/InputHandlingConfig"
+          },
+          "session_transcript": {
+            "$ref": "#/components/schemas/TextContent"
+          },
+          "session_summary": {
+            "$ref": "#/components/schemas/TextContent"
+          },
+          "response_type": {
+            "$ref": "#/components/schemas/ResponseType"
+          },
+          "disable_prompt_cancellation": {
+            "type": "boolean",
+            "default": false,
+            "description": "Indicates whether the partial automated agent reply is non-interruptible when a later reply message arrives. For example, if the agent sends music as a partial response, it cannot be canceled when this is true. The default value is false."
+          }
+        },
+        "required": [
+          "response_type"
+        ]
+      },
+      "VoiceInputWrapper": {
+        "type": "object",
+        "properties": {
+          "audio_input": {
+            "$ref": "#/components/schemas/VoiceInput"
+          }
+        },
+        "required": [
+          "audio_input"
+        ],
+        "additionalProperties": false
+      },
+      "DTMFInputsWrapper": {
+        "type": "object",
+        "properties": {
+          "dtmf_input": {
+            "$ref": "#/components/schemas/DTMFInputs"
+          }
+        },
+        "required": [
+          "dtmf_input"
+        ],
+        "additionalProperties": false
+      },
+      "EventInputWrapper": {
+        "type": "object",
+        "properties": {
+          "event_input": {
+            "$ref": "#/components/schemas/EventInput"
+          }
+        },
+        "required": [
+          "event_input"
+        ],
+        "additionalProperties": false
+      },
+      "VoiceInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "caller_audio_b64": {
+            "type": "string",
+            "description": "Base64-encoded raw audio bytes (PCM16/µ-law/ALaw)"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/VoiceEncoding"
+          },
+          "sample_rate_hertz": {
+            "type": "integer"
+          },
+          "audio_timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "language_code": {
+            "type": "string"
+          },
+          "is_single_utterance": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "encoding",
+          "sample_rate_hertz"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "caller_audio_b64"
+            ]
+          },
+          {
+            "required": []
+          }
+        ]
+      },
+      "VoiceEncoding": {
+        "type": "string",
+        "enum": [
+          "UNSPECIFIED_FORMAT",
+          "LINEAR16_FORMAT",
+          "MULAW_FORMAT",
+          "ALAW_FORMAT"
+        ]
+      },
+      "Prompt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "audio_uri": {
+            "type": "string"
+          },
+          "audio_content_b64": {
+            "type": "string",
+            "description": "Base64-encoded raw audio (PCM16 16kHz unless configured otherwise)"
+          },
+          "is_barge_in_enabled": {
+            "type": "boolean"
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "required": [
+              "audio_content_b64"
+            ]
+          }
+        ],
+        "description": "Audio may be delivered inline via audio_content_b64"
+      },
+      "OutputEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_type": {
+            "$ref": "#/components/schemas/OutputEventType"
+          },
+          "name": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "event_type"
+        ]
+      },
+      "OutputEventType": {
+        "type": "string",
+        "enum": [
+          "UNSPECIFIED_EVENT",
+          "SESSION_END",
+          "TRANSFER_TO_AGENT",
+          "CUSTOM_EVENT",
+          "START_OF_INPUT",
+          "END_OF_INPUT",
+          "NO_MATCH",
+          "NO_INPUT"
+        ]
+      },
+      "InputHandlingConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dtmf_config": {
+            "$ref": "#/components/schemas/DTMFInputConfig"
+          },
+          "speech_timers": {
+            "$ref": "#/components/schemas/InputSpeechTimers"
+          }
+        }
+      },
+      "DTMFInputConfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inter_digit_timeout_msec": {
+            "type": "integer"
+          },
+          "termchar": {
+            "$ref": "#/components/schemas/DTMFDigits"
+          },
+          "dtmf_input_length": {
+            "type": "integer"
+          }
+        }
+      },
+      "InputSpeechTimers": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_speech_timeout_msec": {
+            "type": "integer"
+          },
+          "complete_timeout_msec": {
+            "type": "integer"
+          },
+          "incomplete_timeout_msec": {
+            "type": "integer"
+          }
+        }
+      },
+      "TextContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "ssml": {
+            "type": "string"
+          },
+          "language_code": {
+            "type": "string"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "required": [
+              "ssml"
+            ]
+          }
+        ]
+      },
+      "ResponseType": {
+        "type": "string",
+        "enum": [
+          "FINAL",
+          "PARTIAL",
+          "CHUNK"
+        ]
+      },
+      "VoiceVAInputMode": {
+        "type": "string",
+        "enum": [
+          "INPUT_VOICE_MODE_UNSPECIFIED",
+          "INPUT_VOICE",
+          "INPUT_EVENT_DTMF",
+          "INPUT_VOICE_DTMF"
+        ]
+      },
+      "DTMFDigits": {
+        "type": "string",
+        "enum": [
+          "DTMF_EVENT_UNSPECIFIED",
+          "DTMF_DIGIT_ONE",
+          "DTMF_DIGIT_TWO",
+          "DTMF_DIGIT_THREE",
+          "DTMF_DIGIT_FOUR",
+          "DTMF_DIGIT_FIVE",
+          "DTMF_DIGIT_SIX",
+          "DTMF_DIGIT_SEVEN",
+          "DTMF_DIGIT_EIGHT",
+          "DTMF_DIGIT_NINE",
+          "DTMF_DIGIT_ZERO",
+          "DTMF_DIGIT_A",
+          "DTMF_DIGIT_B",
+          "DTMF_DIGIT_C",
+          "DTMF_DIGIT_D",
+          "DTMF_DIGIT_STAR",
+          "DTMF_DIGIT_POUND"
+        ]
+      },
+      "DTMFInputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dtmf_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DTMFDigits"
+            }
+          }
+        },
+        "required": [
+          "dtmf_events"
+        ]
+      },
+      "EventInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_type": {
+            "$ref": "#/components/schemas/EventInputType"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "event_type"
+        ]
+      },
+      "EventInputType": {
+        "type": "string",
+        "enum": [
+          "UNSPECIFIED_INPUT",
+          "SESSION_START",
+          "SESSION_END",
+          "NO_INPUT",
+          "START_OF_DTMF",
+          "CUSTOM_EVENT"
+        ]
+      }
+    }
+  }
+}

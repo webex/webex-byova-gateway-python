@@ -19,14 +19,18 @@ class AWSLexSessionManager:
     state tracking to keep the main connector focused on business logic.
     """
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(
+        self, logger: logging.Logger, agent_id_prefix: str = "aws_lex_connector"
+    ) -> None:
         """
         Initialize the session manager.
 
         Args:
             logger: Logger instance for the connector
+            agent_id_prefix: Stable adapter namespace for discovered bot IDs
         """
         self.logger = logger
+        self.agent_id_prefix = agent_id_prefix
         
         # Cache for available bots
         self._available_bots = None
@@ -77,7 +81,7 @@ class AWSLexSessionManager:
                     
                     # Only include bots that have at least one alias
                     if alias_id:
-                        display_name = f"aws_lex_connector: {bot_name}"
+                        display_name = f"{self.agent_id_prefix}: {bot_name}"
                         
                         # Store the mappings
                         self._bot_name_to_id_map[display_name] = bot_id

@@ -26,6 +26,12 @@ the gateway service.
 
 ## Configuration
 
+The exact unary `grpc.health.v1.Health/Check` method is the only gRPC method exempt from JWT
+validation. This permits a private AWS ALB target-group health check, which cannot attach
+authorization metadata. The health `List` and `Watch` methods and every BYOVA RPC still pass
+through the JWT interceptor. Restrict the application gRPC port to the load balancer or an
+equivalent trusted network boundary.
+
 Configure `jwt_validation` in `config/config.yaml`:
 
 ```yaml

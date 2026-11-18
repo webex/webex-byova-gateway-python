@@ -8,7 +8,7 @@ recognition, or text-to-speech services.
 This is a good first connector when you already have a Webex Contact Center
 sandbox and want to prove that the gateway, BYODS registration, virtual-agent
 discovery, Flow Designer configuration, audio playback, DTMF handling, and agent
-transfer path work together.
+transfer path work together over gRPC or WebSocket.
 
 > **Functional example only:** The local audio connector is a deterministic test
 > fixture, not a conversational voice agent or a production implementation.
@@ -43,8 +43,8 @@ For an end-to-end sandbox call, you also need:
 - A Webex Service App authorized by the sandbox organization
 - Service App credentials with `spark-admin:datasource_read` and
   `spark-admin:datasource_write` when using automatic datasource registration
-- A publicly reachable HTTPS endpoint that supports HTTP/2 gRPC and routes to
-  gateway port `50051`
+- A publicly reachable endpoint for the selected protocol: HTTP/2 gRPC routed
+  to port `50051`, or secure WebSocket paths routed to port `8765`
 - A test entry point and a published flow containing a Virtual Agent V2 activity
 
 The Webex-side prerequisites are the same for any vendor connector. The local
@@ -81,6 +81,7 @@ connectors:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
+    supported_transports: ["grpc", "websocket"]
     config:
       agent_id: "Local Playback"
       audio_base_path: "audio"
@@ -99,6 +100,8 @@ the example but are not played during its normal DTMF-driven flow.
 
 You can remove other connector entries while evaluating the local connector.
 This avoids unrelated vendor credential or discovery errors in the startup logs.
+Local Audio declares both gateway protocols by default. Use an explicit
+single-value `supported_transports` list when demonstrating only one protocol.
 
 ## Audio Files
 

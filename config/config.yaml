@@ -15,6 +15,30 @@ gateway:
   # streaming preserves order without this playback delay.
   max_terminal_playback_seconds: 30
 
+# Listener selection. Existing configurations without this section remain
+# gRPC-only. Use "both" for the local dual-protocol demo.
+transports:
+  mode: "grpc"  # grpc | websocket | both
+  # Atomic startup is the default. This development-only escape hatch lets a
+  # healthy listener start if the other listener's datasource cannot start.
+  allow_partial_transport_startup: false
+  websocket:
+    host: "0.0.0.0"
+    port: 8765
+    first_message_timeout_seconds: 10
+    discovery_idle_timeout_seconds: 5
+    terminal_flush_timeout_seconds: 2
+    terminal_peer_close_timeout_seconds: 30
+    queue_maxsize: 100
+    queue_put_timeout_seconds: 1
+    max_message_bytes: 131072
+    connector_max_workers: 20
+    connector_max_pending: 20
+    output_chunk_bytes: 3200
+    # Never enable on a shared or remotely reachable listener. The bypass is
+    # also restricted in code to loopback clients.
+    allow_unauthenticated_local_dev: false
+
 # Voice activity detection controls. The configured detector implementation is internal.
 voice_activity_detection:
   threshold: 0.5
@@ -42,6 +66,9 @@ connectors:
     type: "local_audio_connector"
     class: "LocalAudioConnector"
     module: "connectors.local_audio_connector"
+    # Local Audio is a deterministic test connector validated for both
+    # transport contracts. Restrict this list for single-protocol demos.
+    supported_transports: ["grpc", "websocket"]
     config:
       agent_id: "Local Playback"
       audio_base_path: "audio"
@@ -82,11 +109,26 @@ connectors:
         encoding: "ulaw"
       agents: []
 
+  # Separate WxCC WebSocket adapter for the same Lex bots. AWSLexConnector
+  # remains gRPC-only; distinct catalog IDs prevent collisions in combined mode.
+  # aws_lex_websocket_connector:
+  #   type: "aws_lex_websocket_connector"
+  #   class: "AWSLexWebSocketConnector"
+  #   module: "connectors.aws_lex_websocket_connector"
+  #   supported_transports: ["websocket"]
+  #   config:
+  #     region_name: "us-east-1"
+  #     initial_trigger_text: "hello"
+  #     barge_in_enabled: false
+  #     audio_logging:
+  #       enabled: false
+
   # Google CX Agent Studio (GECX / CES BidiRunSession)
   # gecx_connector:
   #   type: "gecx_connector"
   #   class: "GECXConnector"
   #   module: "connectors.gecx_connector"
+  #   supported_transports: ["grpc"]
   #   config:
   #     project_id: "YOUR_PROJECT_ID"
   #     location: "us"
@@ -128,6 +170,34 @@ connectors:
   #     # service_account_key: "/path/to/service-account.json"
   #     agents:
   #       - "My GECX Agent"
+
+  # Native CES WebSocket provider connection. Keep a distinct agent ID so the
+  # WxCC WebSocket datasource cannot select the gRPC-backed provider connector.
+  # gecx_websocket_connector:
+  #   type: "gecx_websocket_connector"
+  #   class: "GECXWebSocketConnector"
+  #   module: "connectors.gecx_websocket_connector"
+  #   supported_transports: ["websocket"]
+  #   config:
+  #     project_id: "YOUR_PROJECT_ID"
+  #     location: "us"
+  #     application_id: "YOUR_APPLICATION_ID"
+  #     deployment_id: "YOUR_DEPLOYMENT_ID"
+  #     language_code: "en-US"
+  #     input_sample_rate_hertz: 8000
+  #     input_audio_encoding: "MULAW"
+  #     output_sample_rate_hertz: 24000
+  #     output_audio_encoding: "LINEAR16"
+  #     initial_message: "Hello"
+  #     input_stream_chunk_ms: 100
+  #     input_queue_max_chunks: 20
+  #     websocket_connect_timeout_seconds: 15
+  #     websocket_receive_timeout_seconds: 1
+  #     websocket_max_response_bytes: 4194304
+  #     # Omit websocket_endpoint to use the documented ces.googleapis.com WSS
+  #     # endpoint. Omit auth settings to use Application Default Credentials.
+  #     agents:
+  #       - "GECX WebSocket Agent"
 
 # Monitoring interface
 monitoring:
@@ -176,6 +246,17 @@ jwt_validation:
   # Public keys are fetched from Webex identity broker and cached to improve performance
   cache_duration_minutes: 60
 
+# Independent JWT profile for the WebSocket datasource. JWKS keys are cached
+# jointly with gRPC, but datasource URL and schema claims remain independent.
+websocket_jwt_validation:
+  enabled: false
+  # Register the WebSocket datasource with its secure WebSocket origin. The
+  # inbound HTTP upgrade still terminates on /v1/va at the configured gateway.
+  # Example: "wss://your-gateway-domain.com"
+  datasource_url: ""
+  datasource_schema_uuid: "a38a10b7-43e4-4676-a076-a7d6dce9387d"
+  cache_duration_minutes: 60
+
 # BYODS datasource registration and token lifecycle
 data_source:
   # Enable to discover/register this gateway with Webex at startup and renew
@@ -211,6 +292,35 @@ data_source:
     client_id_env: "WEBEX_BYODS_CLIENT_ID"
     client_secret_env: "WEBEX_BYODS_CLIENT_SECRET"
     refresh_token_env: "WEBEX_BYODS_REFRESH_TOKEN"
+
+# Separate BYODS lifecycle for the WebSocket schema and endpoint. A combined
+# deployment requires a WebSocket-only Service App and a distinct datasource.
+websocket_data_source:
+  enabled: false
+  fail_startup_on_error: true
+  id: ""
+  id_env: "WEBEX_BYODS_WEBSOCKET_DATA_SOURCE_ID"
+  # Empty reuses websocket_jwt_validation.datasource_url.
+  url: ""
+  schema_id: "a38a10b7-43e4-4676-a076-a7d6dce9387d"
+  audience: "BYOVAGateway"
+  subject: "callAudioData"
+  token_lifetime_minutes: 1440
+  renewal_lead_time_minutes: 60
+  retry_interval_seconds: 60
+  auth:
+    type: "service_app"
+    app_id_env: "WEBEX_BYODS_WEBSOCKET_APP_ID"
+    client_id_env: "WEBEX_BYODS_WEBSOCKET_SERVICE_APP_CLIENT_ID"
+    client_secret_env: "WEBEX_BYODS_WEBSOCKET_SERVICE_APP_CLIENT_SECRET"
+    target_org_id_env: "WEBEX_BYODS_TARGET_ORG_ID"
+    # The organization administrator's OAuth bootstrap identity may be shared;
+    # the Service App identity above may not be shared with gRPC.
+    personal_auth:
+      type: "oauth_refresh"
+      client_id_env: "WEBEX_BYODS_PERSONAL_CLIENT_ID"
+      client_secret_env: "WEBEX_BYODS_PERSONAL_CLIENT_SECRET"
+      refresh_token_env: "WEBEX_BYODS_PERSONAL_REFRESH_TOKEN"
 
 # Logging configuration
 logging:

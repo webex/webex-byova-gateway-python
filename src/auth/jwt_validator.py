@@ -8,7 +8,7 @@ verifying tokens against Webex identity broker public keys.
 import logging
 import threading
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import jwt
 import requests
@@ -24,6 +24,14 @@ class AccessTokenException(Exception):
     """Exception raised when token validation fails."""
 
     pass
+
+
+class JWKSCache:
+    """Thread-safe issuer-key cache shared by transport-specific validators."""
+
+    def __init__(self) -> None:
+        self.values: Dict[str, Dict[str, Any]] = {}
+        self.lock = threading.RLock()
 
 
 class JWTValidator:
@@ -62,6 +70,7 @@ class JWTValidator:
         datasource_url: str,
         datasource_schema_uuid: str = None,
         cache_duration_minutes: int = 60,
+        jwks_cache: Optional[JWKSCache] = None,
     ):
         """
         Initialize JWT validator.
@@ -76,9 +85,11 @@ class JWTValidator:
         self.datasource_schema_uuid = datasource_schema_uuid or self.DEFAULT_SCHEMA_UUID
         self.cache_duration_seconds = cache_duration_minutes * 60
 
-        # Cache for public keys by issuer
-        self._public_keys_cache: Dict[str, Dict[str, Any]] = {}
-        self._cache_lock = threading.RLock()
+        # The cache may be shared across independently datasource-bound gRPC
+        # and WebSocket validators. Claim validation remains profile-specific.
+        shared_cache = jwks_cache or JWKSCache()
+        self._public_keys_cache = shared_cache.values
+        self._cache_lock = shared_cache.lock
 
         self.logger = logging.getLogger(__name__)
         self.logger.info(

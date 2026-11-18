@@ -13,6 +13,9 @@ import grpc
 from .jwt_validator import AccessTokenException, JWTValidator
 
 
+_UNAUTHENTICATED_HEALTH_METHODS = frozenset({"/grpc.health.v1.Health/Check"})
+
+
 class JWTAuthInterceptor(grpc.ServerInterceptor):
     """
     gRPC server interceptor that validates JWT tokens from metadata.
@@ -67,6 +70,12 @@ class JWTAuthInterceptor(grpc.ServerInterceptor):
         Returns:
             RPC method handler
         """
+        # ALB gRPC health checks cannot attach application metadata. Exempt only
+        # the standard unary Check method; BYOVA RPCs and the broader health API
+        # remain behind the datasource-bound JWT interceptor.
+        if handler_call_details.method in _UNAUTHENTICATED_HEALTH_METHODS:
+            return continuation(handler_call_details)
+
         # If validation is disabled, proceed without checking
         if not self.enabled:
             return continuation(handler_call_details)

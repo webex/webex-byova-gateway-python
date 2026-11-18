@@ -5,8 +5,7 @@ from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
 # Routing hints are stable symbolic classifications, not customer-owned WxCC
-# queue identifiers. Keep the wire value simple so the Flow Designer mapping
-# remains explicit and the gateway never carries a raw provider queue ID.
+# queue identifiers. Flow Designer maps approved hints to customer-owned queues.
 _ROUTING_HINT_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 

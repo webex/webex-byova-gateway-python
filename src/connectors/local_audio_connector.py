@@ -7,12 +7,12 @@ It's useful for testing and development purposes.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
-from ..utils.audio_utils import AudioConverter
 from ..utils.audio_buffer import AudioBuffer
 from ..utils.audio_recorder import AudioRecorder
-from .i_vendor_connector import IVendorConnector, EventTypes
+from ..utils.audio_utils import AudioConverter
+from .i_vendor_connector import EventTypes, IVendorConnector
 
 
 class LocalAudioConnector(IVendorConnector):
@@ -83,6 +83,29 @@ class LocalAudioConnector(IVendorConnector):
         """
         return [f"Local Audio: {self.agent_id}"]
 
+    def get_supported_transports(self) -> frozenset[str]:
+        """Expose the deterministic test connector over both gateway protocols."""
+        return frozenset({"grpc", "websocket"})
+
+    def get_websocket_output_mode(self) -> str:
+        """Stream prompts as headerless chunks with config on the first frame."""
+        return "raw_chunk"
+
+    def get_input_mode(self, transport: str) -> str:
+        """Accept voice and DTMF on both gateway transports."""
+        del transport
+        return "INPUT_VOICE_DTMF"
+
+    def get_dtmf_input_config(self, transport: str) -> Dict[str, Any]:
+        """Collect the connector's single-digit menu actions immediately."""
+        if transport == "websocket":
+            return {
+                "dtmf_input_length": 1,
+                "inter_digit_timeout_msec": 5000,
+                "termchar": "DTMF_DIGIT_POUND",
+            }
+        return super().get_dtmf_input_config(transport)
+
     def start_conversation(
         self, conversation_id: str, request_data: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -119,7 +142,10 @@ class LocalAudioConnector(IVendorConnector):
             "conversation_id": conversation_id,
             "agent_id": self.agent_id,
             "message_type": "welcome",
-            "barge_in_enabled": False,  # Disable barge-in for welcome message
+            # WxCC activates caller input collection from the response prompt.
+            # Keep the welcome interruptible so voice and DTMF are accepted on
+            # the first input turn, matching the official simulator contract.
+            "barge_in_enabled": True,
         }
 
     def send_message(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Optional[Dict[str, Any]]]:
@@ -189,11 +215,10 @@ class LocalAudioConnector(IVendorConnector):
         dtmf_events = dtmf_data.get("dtmf_events", [])
         if dtmf_events:
             self.logger.info(
-                f"Received DTMF input for conversation {conversation_id}: {dtmf_events}"
+                "Received %d DTMF control digit(s) for conversation %s",
+                len(dtmf_events),
+                conversation_id,
             )
-            # Convert DTMF events to a string for easier processing
-            dtmf_string = "".join([str(digit) for digit in dtmf_events])
-            self.logger.info(f"DTMF digits entered: {dtmf_string}")
 
             # Check if user entered '5' for transfer
             if len(dtmf_events) == 1 and dtmf_events[0] == 5:  # DTMF_DIGIT_FIVE = 5
@@ -256,7 +281,11 @@ class LocalAudioConnector(IVendorConnector):
                 )
 
         # Return None for unrecognized DTMF inputs (no response needed)
-        self.logger.debug(f"Unrecognized DTMF input for conversation {conversation_id}: {dtmf_events} - returning None")
+        self.logger.debug(
+            "Unrecognized DTMF input for conversation %s (%d digit(s)); returning None",
+            conversation_id,
+            len(dtmf_events),
+        )
         return None
 
     def _handle_audio_input(self, conversation_id: str, message_data: Dict[str, Any]) -> Iterator[Optional[Dict[str, Any]]]:

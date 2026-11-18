@@ -1,11 +1,12 @@
 """Tests for BYODS datasource startup registration and token renewal."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 import pytest
 
 from src.core.datasource_lifecycle import (
+    DEFAULT_WEBSOCKET_SCHEMA_ID,
     DataSourceLifecycle,
     DataSourceLifecycleError,
     create_data_source_lifecycle,
@@ -80,6 +81,84 @@ def test_factory_reuses_jwt_url_and_schema(monkeypatch):
     assert lifecycle is not None
     assert lifecycle.url == URL
     assert lifecycle.schema_id == SCHEMA_ID
+
+
+def test_factory_uses_injected_token_provider(monkeypatch):
+    monkeypatch.setenv("BYODS_TOKEN", "secret-token")
+    supplied_provider = Mock()
+    config = {
+        "jwt_validation": {
+            "datasource_url": URL,
+            "datasource_schema_uuid": SCHEMA_ID,
+        },
+        "data_source": {
+            "enabled": True,
+            "auth": {
+                "type": "static",
+                "access_token_env": "BYODS_TOKEN",
+            },
+        },
+    }
+
+    with patch(
+        "src.core.datasource_lifecycle.WebexDataSourceClient"
+    ) as client_class, patch(
+        "src.core.datasource_lifecycle.create_token_provider"
+    ) as create_provider:
+        lifecycle = create_data_source_lifecycle(
+            config, token_provider=supplied_provider
+        )
+
+    assert lifecycle is not None
+    client_class.assert_called_once_with(token_provider=supplied_provider)
+    create_provider.assert_not_called()
+
+
+def test_dual_factories_create_independent_token_providers():
+    grpc_auth = {"type": "static", "access_token_env": "GRPC_TOKEN"}
+    websocket_auth = {
+        "type": "static",
+        "access_token_env": "WEBSOCKET_TOKEN",
+    }
+    config = {
+        "jwt_validation": {
+            "datasource_url": URL,
+            "datasource_schema_uuid": SCHEMA_ID,
+        },
+        "data_source": {"enabled": True, "auth": grpc_auth},
+        "websocket_jwt_validation": {
+            "datasource_url": "wss://gateway.example.com",
+            "datasource_schema_uuid": DEFAULT_WEBSOCKET_SCHEMA_ID,
+        },
+        "websocket_data_source": {
+            "enabled": True,
+            "auth": websocket_auth,
+        },
+    }
+    grpc_provider = Mock(name="grpc_provider")
+    websocket_provider = Mock(name="websocket_provider")
+
+    with patch(
+        "src.core.datasource_lifecycle.WebexDataSourceClient"
+    ) as client_class, patch(
+        "src.core.datasource_lifecycle.create_token_provider",
+        side_effect=[grpc_provider, websocket_provider],
+    ) as create_provider:
+        grpc_lifecycle = create_data_source_lifecycle(config)
+        websocket_lifecycle = create_data_source_lifecycle(
+            config,
+            section_name="websocket_data_source",
+            jwt_section_name="websocket_jwt_validation",
+            default_schema_id=DEFAULT_WEBSOCKET_SCHEMA_ID,
+        )
+
+    assert grpc_lifecycle is not None
+    assert websocket_lifecycle is not None
+    assert create_provider.call_args_list == [call(grpc_auth), call(websocket_auth)]
+    assert client_class.call_args_list == [
+        call(token_provider=grpc_provider),
+        call(token_provider=websocket_provider),
+    ]
 
 
 def test_factory_rejects_url_that_differs_from_jwt_validation(monkeypatch):

@@ -160,7 +160,7 @@ done
 
 (
   cd "$staging_root"
-  COPYFILE_DISABLE=1 tar -cf - "${archive_paths[@]}"
+  COPYFILE_DISABLE=1 tar --no-xattrs -cf - "${archive_paths[@]}"
 ) | gzip -n > "$temporary_archive"
 
 archive_listing="$(tar -tzf "$temporary_archive")"

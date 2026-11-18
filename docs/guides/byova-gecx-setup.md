@@ -1,11 +1,13 @@
 # BYOVA + Google CX Agent Studio (GECX) Setup Guide
 
-This guide explains how to connect Webex Contact Center (WxCC) BYOVA to an agent built in **CX Agent Studio** (Gemini Enterprise for Customer Experience) using the `GECXConnector` and the CES **BidiRunSession** API.
+This guide explains how to connect Webex Contact Center (WxCC) BYOVA to an agent built in **CX Agent Studio** (Gemini Enterprise for Customer Experience) using the CES **BidiRunSession** API. The gateway provides separate provider connectors for CES gRPC and native CES WebSocket.
 
 ## Architecture
 
 ```
-Caller -> WxCC -> BYOVA Gateway (gRPC) -> GECXConnector -> CES BidiRunSession -> CX Agent Studio
+Caller -> WxCC -> BYOVA Gateway (gRPC or WebSocket)
+                        -> GECXConnector (gRPC) -> CES BidiRunSession
+                        -> GECXWebSocketConnector (WebSocket) -> CES BidiRunSession
 ```
 
 The connector sends WxCC caller audio to Google as it arrives and forwards CES
@@ -59,6 +61,16 @@ https://ces.cloud.google.com/projects/PROJECT_ID/locations/REGION/apps/APPLICATI
 > (e.g. `ces.us.rep.googleapis.com`), not the global `ces.googleapis.com`. The
 > connector derives this automatically from `location`; override with
 > `api_endpoint` if required.
+
+The native WebSocket connector instead derives the documented endpoint:
+
+```text
+wss://ces.googleapis.com/ws/google.cloud.ces.v1.SessionService/BidiRunSession/locations/<location>
+```
+
+It uses the same Application Default Credentials and CES IAM permission. The
+public host, WSS scheme, port, and location path are allow-listed; redirects are
+not followed.
 
 ## 2. Gateway configuration
 
@@ -117,6 +129,39 @@ gecx_connector:
 ```
 
 The `agents` list entry is the name WxCC uses when selecting a virtual agent in `ListVirtualAgents`.
+
+### Native CES WebSocket provider connector
+
+To use WebSocket on the gateway-to-CES hop, configure the separate connector
+from [`config/gecx_websocket_example.yaml`](../../config/gecx_websocket_example.yaml):
+
+```yaml
+gecx_websocket_connector:
+  type: "gecx_websocket_connector"
+  class: "GECXWebSocketConnector"
+  module: "connectors.gecx_websocket_connector"
+  supported_transports: ["websocket"]
+  config:
+    project_id: "YOUR_PROJECT_ID"
+    location: "us"
+    application_id: "YOUR_APPLICATION_ID"
+    deployment_id: "YOUR_DEPLOYMENT_ID"
+    input_sample_rate_hertz: 8000
+    input_audio_encoding: "MULAW"
+    output_sample_rate_hertz: 24000
+    output_audio_encoding: "LINEAR16"
+    input_stream_chunk_ms: 100
+    websocket_connect_timeout_seconds: 15
+    websocket_receive_timeout_seconds: 1
+    websocket_max_response_bytes: 4194304
+    agents:
+      - "My GECX WebSocket Agent"
+```
+
+When both provider variants are loaded, give them different agent IDs and use
+explicit `supported_transports` restrictions. This makes the WebSocket WxCC
+datasource advertise only the native WebSocket-backed agent while the gRPC
+datasource advertises the existing gRPC-backed agent.
 
 For local-only testing, either configure `jwt_validation.datasource_url` for
 your registered datasource or temporarily set `jwt_validation.enabled: false`.
@@ -191,8 +236,10 @@ are worth understanding if you fork this connector.
 
 ### Real-time streaming bridge
 
-`GECXStreamingSession` runs a background thread per conversation that holds one
-CES `BidiRunSession` open. Before speech, it retains only bounded pre-roll. At
+`GECXStreamingSession` or `GECXWebSocketStreamingSession` runs a background
+thread per conversation that holds one CES `BidiRunSession` open. The WebSocket
+variant uses an ordered sender thread while the session owner reads and maps
+provider responses. Before speech, it retains only bounded pre-roll. At
 `START_OF_INPUT`, it queues that pre-roll immediately; while speech is active,
 it forwards normalized caller audio as frames arrive while retaining only a
 small `input_holdback_ms` tail. `END_OF_INPUT` never requeues the complete
@@ -375,13 +422,16 @@ end_session(
 )
 ```
 
-CX Agent Studio returns these values as `EndSession.metadata.summary` and
-`EndSession.metadata.routing_hint`. The connector normalizes only these allowlisted fields.
+CX Agent Studio places these values in `EndSession.metadata.params.summary` and
+`EndSession.metadata.params.routing_hint`. The connector also accepts the legacy top-level
+`summary` and `routing_hint` fields. It extracts only these allowlisted fields and normalizes
+them through the shared handoff contract, for both CES provider transports.
 The gateway copies `summary` to the single BYOVA `TRANSFER_TO_AGENT.metadata.summary` event and
 `session_summary`; it copies `routing_hint` only to that event's metadata. A routing hint must
 be a stable symbolic business classification (for example, `delivery_address_specialist`), not
 a WxCC queue ID. If either value is absent, empty, malformed, or not text, the gateway omits it
-and still transfers the call normally. Other EndSession metadata is not forwarded.
+and still transfers the call normally. Other EndSession metadata, including provider-specific
+values in `params`, is not forwarded.
 
 ### 2. Discover exactly what your agent sends
 
@@ -406,6 +456,12 @@ no code change needed:
 For short-lived debugging only, `log_raw_terminal_metadata_debug: true` exposes
 the full metadata at DEBUG level. Leave it disabled when metadata may contain
 customer data or sensitive identifiers.
+
+To diagnose handoff summaries without logging their text, temporarily set
+`log_handoff_summary_diagnostics: true`. The connector logs only whether the
+top-level and nested `params.summary` fields are present, their runtime types,
+and string lengths. It never logs the summary value; disable the setting after
+the test call.
 
 When detected, you'll see:
 
@@ -434,8 +490,10 @@ it, and the output turn closes with one `FINAL`.
 Caller audio is buffered from a bounded pre-roll through the gateway's Silero
 speech-end boundary, then sent to CES as one contiguous turn. This prevents a
 natural pause inside an utterance from becoming an unintended CES barge-in.
-After a terminal-sounding response, the connector also allows a short grace
-window for an `EndSession` that follows the final TTS frames.
+After a terminal-sounding response or a completed turn with no audio or text,
+the connector also allows a short grace window for an `EndSession` that follows
+the turn-complete signal. This prevents the gateway from sending a normal
+`FINAL` immediately before a terminal transfer `FINAL`.
 
 ## Configuration reference
 
@@ -471,11 +529,12 @@ window for an `EndSession` that follows the final TTS frames.
 | `input_stream_chunk_ms` | No | Maximum duration of each queued CES caller-audio item (default: `100`, range: `20`-`100`) |
 | `input_queue_max_chunks` | No | Maximum pending CES input items before explicit backpressure failure (default: `20`, range: `1`-`200`) |
 | `input_queue_put_timeout_ms` | No | Maximum wait for CES input queue capacity before terminating the session (default: `50`, maximum: `1000`) |
-| `terminal_response_grace_seconds` | No | Wait for delayed `EndSession` after a terminal-sounding TTS turn (default: `3`) |
+| `terminal_response_grace_seconds` | No | Wait for delayed `EndSession` after a terminal-sounding TTS turn or an empty completed turn (default: `3`) |
 | `transfer_metadata_keys` | No | EndSession metadata keys that, when truthy, trigger a human transfer (see [Escalation](#escalation-to-a-human-agent)) |
 | `transfer_reason_keywords` | No | Substrings that, if found in a reason/type metadata value, trigger a transfer |
 | `transfer_reason_metadata_keys` | No | Which metadata keys are scanned for `transfer_reason_keywords` |
 | `log_raw_terminal_metadata_debug` | No | Log raw EndSession metadata at DEBUG level; defaults to `false` because values may be sensitive |
+| `log_handoff_summary_diagnostics` | No | Log only summary field presence, type, and length; defaults to `false` and never logs summary text |
 
 ## Authentication options
 

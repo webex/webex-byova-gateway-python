@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -832,12 +833,22 @@ class GECXStreamingSession:
                 if self.is_terminal:
                     return
 
-                buffered_text = self._active_text()
-                may_have_terminal = self.connector.may_have_delayed_terminal(
-                    buffered_text
+                with self._lock:
+                    buffered_text = "".join(self._text_buffer)
+                    empty_completed_turn = (
+                        not buffered_text and not self._turn_audio_emitted
+                    )
+                terminal_grace_reason = (
+                    "empty_completed_turn"
+                    if empty_completed_turn
+                    else (
+                        "terminal_cue"
+                        if self.connector.may_have_delayed_terminal(buffered_text)
+                        else ""
+                    )
                 )
                 if (
-                    may_have_terminal
+                    terminal_grace_reason
                     and terminal_grace_seconds > 0
                     and terminal_grace_deadline is None
                 ):
@@ -846,9 +857,10 @@ class GECXStreamingSession:
                     )
                     self.logger.info(
                         "[%s] [GECX] Waiting up to %.1fs for a terminal event "
-                        "after streamed announcement audio",
+                        "after turn completion reason=%s",
                         self.conversation_id,
                         terminal_grace_seconds,
+                        terminal_grace_reason,
                     )
 
                 if (
@@ -1254,7 +1266,7 @@ class GECXStreamingSession:
             awaiting_input_ack = self._awaiting_input_ack
             self._handle_server_message_locked(message)
             if (
-                getattr(message, "recognition_result", None)
+                self._has_message_field(message, "recognition_result")
                 and awaiting_input_ack
                 and not self._awaiting_input_ack
             ):
@@ -1271,6 +1283,17 @@ class GECXStreamingSession:
                             "conversation_id=%s source=recognition_result",
                             self.conversation_id,
                         )
+
+    @staticmethod
+    def _has_message_field(message: Any, field_name: str) -> bool:
+        """Check protobuf presence while retaining test-double compatibility."""
+        protobuf_message = getattr(message, "_pb", None)
+        if protobuf_message is not None:
+            try:
+                return protobuf_message.HasField(field_name)
+            except (ValueError, AttributeError):
+                pass
+        return bool(getattr(message, field_name, None))
 
     def _handle_server_message_locked(self, message: Any) -> None:
         """Map a CES server message while holding the lifecycle lock."""
@@ -1289,7 +1312,7 @@ class GECXStreamingSession:
             )
             return
 
-        if message.recognition_result:
+        if self._has_message_field(message, "recognition_result"):
             self._acknowledge_caller_input_locked("recognition_result")
             transcript = message.recognition_result.transcript.strip()
             with self._input_lock:
@@ -1305,7 +1328,7 @@ class GECXStreamingSession:
                 time.monotonic() - input_turn_started_at,
             )
 
-        if message.interruption_signal:
+        if self._has_message_field(message, "interruption_signal"):
             self.logger.info(f"[{conversation_id}] [GECX] Barge-in interruption signal")
             # Keep lifecycle -> audio locking consistent with terminate() so a
             # concurrent interruption cannot erase the winning terminal response.
@@ -1323,9 +1346,9 @@ class GECXStreamingSession:
                         except queue.Empty:
                             break
 
-        if message.session_output:
+        if self._has_message_field(message, "session_output"):
             output = message.session_output
-            has_terminal_output = bool(output.end_session)
+            has_terminal_output = self._has_message_field(output, "end_session")
 
             provider_audio_bytes = self._decode_output_audio(output.audio)
             audio_bytes = self._output_audio_converter.process(provider_audio_bytes)
@@ -1371,11 +1394,11 @@ class GECXStreamingSession:
                 )
                 turn_completed = True
 
-        if message.end_session:
+        if self._has_message_field(message, "end_session"):
             self._handle_end_session(conversation_id, message.end_session)
             turn_completed = True
 
-        if message.go_away:
+        if self._has_message_field(message, "go_away"):
             self.terminate(
                 reason=GECXTerminalReason.GO_AWAY,
                 outcome=GECXTerminalOutcome.SESSION_END,
@@ -1649,8 +1672,42 @@ class GECXStreamingSession:
     def _handoff_from_end_session_metadata(
         metadata: Dict[str, Any],
     ) -> Dict[str, str]:
-        """Map GECX terminal metadata through the shared handoff contract."""
-        return normalize_handoff(metadata)
+        """Normalize current nested and legacy top-level CES handoff fields."""
+        handoff = {}
+        params = metadata.get("params")
+        for field in ("summary", "routing_hint"):
+            value = metadata.get(field)
+            if not isinstance(value, str) and isinstance(params, Mapping):
+                value = params.get(field)
+            handoff[field] = value
+        return normalize_handoff(handoff)
+
+    @staticmethod
+    def _handoff_summary_diagnostic(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Describe summary-field shapes without retaining or logging their values."""
+        top_level_present = "summary" in metadata
+        top_level_summary = metadata.get("summary")
+        params_present = "params" in metadata
+        params = metadata.get("params")
+        params_is_mapping = isinstance(params, Mapping)
+        params_summary_present = params_is_mapping and "summary" in params
+        params_summary = params.get("summary") if params_is_mapping else None
+
+        return {
+            "top_level_present": top_level_present,
+            "top_level_type": type(top_level_summary).__name__,
+            "top_level_chars": len(top_level_summary)
+            if isinstance(top_level_summary, str)
+            else 0,
+            "params_present": params_present,
+            "params_type": type(params).__name__,
+            "params_is_mapping": params_is_mapping,
+            "params_summary_present": params_summary_present,
+            "params_summary_type": type(params_summary).__name__,
+            "params_summary_chars": len(params_summary)
+            if isinstance(params_summary, str)
+            else 0,
+        }
 
     def _detect_transfer(self, metadata: Dict[str, Any]) -> Tuple[bool, str]:
         """Decide whether an EndSession represents a human handoff.
@@ -1729,6 +1786,24 @@ class GECXStreamingSession:
             conversation_id,
             sorted(metadata),
         )
+        if self.connector.log_handoff_summary_diagnostics:
+            diagnostic = self._handoff_summary_diagnostic(metadata)
+            self.logger.info(
+                "[GECX] Handoff summary diagnostic: "
+                "top_level_present=%s top_level_type=%s top_level_chars=%d "
+                "params_present=%s params_type=%s params_is_mapping=%s "
+                "params_summary_present=%s params_summary_type=%s "
+                "params_summary_chars=%d",
+                diagnostic["top_level_present"],
+                diagnostic["top_level_type"],
+                diagnostic["top_level_chars"],
+                diagnostic["params_present"],
+                diagnostic["params_type"],
+                diagnostic["params_is_mapping"],
+                diagnostic["params_summary_present"],
+                diagnostic["params_summary_type"],
+                diagnostic["params_summary_chars"],
+            )
         if self.connector.log_raw_terminal_metadata_debug:
             self.logger.debug(
                 "[%s] [GECX] Raw EndSession metadata: %s",
@@ -1950,6 +2025,9 @@ class GECXConnector(IVendorConnector):
         self.log_raw_terminal_metadata_debug = bool(
             config.get("log_raw_terminal_metadata_debug", False)
         )
+        self.log_handoff_summary_diagnostics = bool(
+            config.get("log_handoff_summary_diagnostics", False)
+        )
         self.agents = config.get("agents", ["GECX Agent"])
 
         # --- Escalation / human handoff detection ---------------------------
@@ -2023,6 +2101,24 @@ class GECXConnector(IVendorConnector):
             else None
         )
 
+        self._initialize_provider_transport(credentials, client_options)
+
+        self.app_path = (
+            f"projects/{self.project_id}/locations/{self.location}/"
+            f"apps/{self.application_id}"
+        )
+        self.logger.info(
+            "GECX connector initialized provider_transport=%s deployment=%s",
+            self.get_provider_transport(),
+            self.deployment_path,
+        )
+
+    def _initialize_provider_transport(
+        self,
+        credentials: Any | None,
+        client_options: Any | None,
+    ) -> None:
+        """Create the CES gRPC client used by this connector variant."""
         if credentials:
             self.session_client = ces_v1.SessionServiceClient(
                 credentials=credentials,
@@ -2033,12 +2129,27 @@ class GECXConnector(IVendorConnector):
                 client_options=client_options
             )
 
-        self.app_path = (
-            f"projects/{self.project_id}/locations/{self.location}/"
-            f"apps/{self.application_id}"
-        )
-        self.logger.info(
-            f"GECXConnector initialized for deployment: {self.deployment_path}"
+    def _create_streaming_session(
+        self,
+        *,
+        conversation_id: str,
+        session_path: str,
+        async_response_sink: Callable[[dict[str, Any]], bool] | None,
+        input_acknowledgement_sink: Callable[[str], None] | None,
+    ) -> GECXStreamingSession:
+        """Create one gRPC-backed CES streaming session.
+
+        Provider transport variants override this factory while retaining the
+        connector's shared audio, turn, terminal, and response-mapping logic.
+        """
+        return GECXStreamingSession(
+            connector=self,
+            conversation_id=conversation_id,
+            session_path=session_path,
+            deployment_path=self.deployment_path,
+            initial_message=self.initial_message,
+            async_response_sink=async_response_sink,
+            input_acknowledgement_sink=input_acknowledgement_sink,
         )
 
     def _load_credentials(self, config: Dict[str, Any]) -> Optional[Any]:
@@ -2153,6 +2264,18 @@ class GECXConnector(IVendorConnector):
     def get_audio_delivery_mode(self) -> str:
         """GECX receives caller audio frames as they arrive from WxCC."""
         return "streaming"
+
+    def get_supported_transports(self) -> frozenset[str]:
+        """GECX supports both turn-based gRPC and full-duplex WebSocket."""
+        return frozenset({"grpc", "websocket"})
+
+    def get_websocket_output_mode(self) -> str:
+        """GECX streams raw audio chunks as they arrive from CES."""
+        return "raw_chunk"
+
+    def get_provider_transport(self) -> str:
+        """Return the protocol this connector uses from the gateway to CES."""
+        return "grpc"
 
     def should_cleanup_on_client_stream_end(self) -> bool:
         """Close CES after WxCC cancellation or request-stream failure."""
@@ -2316,12 +2439,9 @@ class GECXConnector(IVendorConnector):
                     conversation_id
                 )
 
-            stream_session = GECXStreamingSession(
-                connector=self,
+            stream_session = self._create_streaming_session(
                 conversation_id=conversation_id,
                 session_path=session_path,
-                deployment_path=self.deployment_path,
-                initial_message=self.initial_message,
                 async_response_sink=async_response_sink,
                 input_acknowledgement_sink=input_acknowledgement_sink,
             )

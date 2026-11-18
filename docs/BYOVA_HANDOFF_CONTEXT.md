@@ -6,9 +6,10 @@ to a human agent. The summary helps the receiving agent understand the caller's 
 asking the caller to repeat it. The routing hint lets the customer's flow select an approved
 human queue without exposing queue identifiers to the virtual-agent provider.
 
-The contract applies to any virtual-agent provider. Each connector remains responsible for
-translating its provider's terminal response into the canonical gateway fields described
-below.
+The contract applies to any virtual-agent provider and to both WxCC-facing transports:
+gRPC and WebSocket. Each connector remains responsible for translating its provider's
+terminal response into the canonical gateway fields described below. The provider connection
+can use a different transport from the WxCC connection.
 
 ## Intended Agent Experience
 
@@ -19,7 +20,7 @@ summary:
 - In the Interaction Control pane after answering
 - Without depending on a provider-specific Agent Desktop widget
 
-This document covers the handoff behavior verified by this implementation.
+This guide covers handoff summaries and optional routing hints.
 
 ## Data Flow
 
@@ -34,16 +35,16 @@ Provider connector
         v
 BYOVA gateway
         |
-        | final VoiceVAResponse with TRANSFER_TO_AGENT
+        | final transfer response over gRPC or WebSocket
         v
 WxCC Virtual Agent V2 activity
         |
         | output-event metadata.summary and metadata.routing_hint
         v
-Agent-viewable flow variable
+Flow Designer
         |
-        +--> incoming-interaction popover
-        +--> Interaction Control pane
+        +--> summary --> agent-viewable variable --> Agent Desktop
+        +--> routing_hint --> Case --> approved human queue or fallback queue
 ```
 
 The provider may generate the summary itself or return structured facts from which the
@@ -98,14 +99,28 @@ return self.create_response(
 ```
 
 `normalize_handoff()` is the shared gateway allowlist. It discards provider-specific fields,
-invalid values, and raw queue IDs; connectors must never pass the full provider terminal
-payload. GECX uses this helper for `EndSession.metadata`, but no GECX dependency exists in the
-gateway contract.
+invalid values, and unsupported fields such as `provider_queue_id`; connectors must never
+pass the full provider terminal payload. GECX uses this helper for `EndSession.metadata`,
+but no GECX dependency exists in the gateway contract.
 
 ## BYOVA Transfer Response
 
-The gateway should create one final `VoiceVAResponse` containing one
-`TRANSFER_TO_AGENT` output event. The following pseudocode shows the intended wire shape:
+Both transports use the same connector `handoff` data and shared conversation processor.
+The gateway puts the summary and optional routing hint in one terminal `TRANSFER_TO_AGENT`
+event and the summary in `session_summary`; the WebSocket adapter serializes those fields
+into JSON.
+
+| WxCC-facing transport | Where the handoff fields are sent | Completion |
+| --- | --- | --- |
+| gRPC | A `VoiceVAResponse` on the current `ProcessCallerInput` response stream | Send the terminal `FINAL`, then complete the RPC normally |
+| WebSocket | The `payload` of a `VOICE_VA_RESPONSE` JSON envelope on the existing `/v1/va` connection | Send and flush the terminal `FINAL`, then wait for WxCC to close the socket; the gateway bounds that wait |
+
+### gRPC
+
+Use the configured [gRPC listener and datasource](../README.md#grpc).
+Return one final `VoiceVAResponse` containing one `TRANSFER_TO_AGENT` output event. The
+following JSON-style pseudocode shows the handoff fields; the gRPC wire message is protobuf,
+with no WebSocket envelope:
 
 ```json
 {
@@ -127,7 +142,50 @@ The gateway should create one final `VoiceVAResponse` containing one
 }
 ```
 
-The fields serve different purposes:
+### WebSocket
+
+Enable and register the WebSocket listener using the separate WebSocket datasource and a
+WebSocket-capable connector as described in [BYOVA WebSocket Transport](WEBSOCKET_TRANSPORT.md).
+The shared connector handoff contract above also applies when WxCC connects over WebSocket.
+
+The gateway sends a JSON text frame on the call's existing `/v1/va` connection. The handoff
+fields go inside `payload`, with the same `conversation_id`, the next gateway-owned `seq`,
+and an RFC 3339 `ts`. For example, this event-only terminal response carries a summary and routing hint:
+
+```json
+{
+  "type": "VOICE_VA_RESPONSE",
+  "seq": 27,
+  "ts": "2026-11-16T15:00:00Z",
+  "conversation_id": "example-call-123",
+  "payload": {
+    "response_type": "FINAL",
+    "session_summary": {
+      "text": "Caller wants to change the delivery address. The virtual agent did not modify the order. Verify the caller and update the address."
+    },
+    "output_events": [
+      {
+        "event_type": "TRANSFER_TO_AGENT",
+        "name": "transfer_requested",
+        "metadata": {
+          "summary": "Caller wants to change the delivery address. The virtual agent did not modify the order. Verify the caller and update the address.",
+          "routing_hint": "delivery_address_specialist"
+        }
+      }
+    ]
+  }
+}
+```
+
+The sequence number and timestamp are illustrative; the gateway assigns them at runtime.
+When the connector streams a spoken transfer announcement, send its audio `CHUNK` responses
+before the terminal `FINAL` containing the transfer event and summary. Keep the summary on
+that terminal response. After flushing it, the gateway waits for WxCC to close the socket
+instead of closing immediately and risking loss of the handoff.
+
+### Summary fields in both transports
+
+The fields serve different purposes. For WebSocket, both are inside `payload`:
 
 | Field | Purpose | Requirement |
 | --- | --- | --- |
@@ -144,8 +202,12 @@ The relevant protocol definitions are:
 
 - [`VoiceVAResponse.session_summary`](../proto/voicevirtualagent.proto)
 - [`OutputEvent.TRANSFER_TO_AGENT` and `metadata`](../proto/byova_common.proto)
+- [WebSocket envelope and response schemas](../schemas/websocket/README.md)
 
 ## WxCC Flow Mapping
+
+Use the same Flow Designer configuration for gRPC and WebSocket. The WebSocket JSON
+`payload` wrapper is a transport detail; do not add it to the Flow Designer expression.
 
 In Flow Designer, the Virtual Agent V2 activity exposes transfer-event metadata through its
 `MetaData` output. Map the normalized `summary` key to a custom String flow variable:
@@ -291,6 +353,13 @@ The synthetic marker in these screenshots was added by a development-only termin
 probe. A production implementation must replace that probe with provider-neutral handoff
 normalization and pass-through.
 
+### WebSocket validation status
+
+The shared mapping is implemented for WebSocket. The [WebSocket live-testing notes](WEBSOCKET_LIVE_TESTING.md)
+record a transfer with forwarded summary metadata, but leave the Flow Designer variable
+read-back and staffed-agent Desktop check outstanding. The screenshots above establish the
+existing Desktop mapping; they do not establish a separate WebSocket end-to-end pass.
+
 ## Gateway Requirements
 
 The production gateway implementation should:
@@ -335,14 +404,15 @@ Automated coverage should verify:
 - The summary, but never the routing hint, appears in `session_summary`.
 - A transfer without valid handoff data still succeeds.
 - Non-transfer responses do not receive handoff fields.
-- Invalid routing hints and provider queue IDs are omitted.
+- Invalid routing hints and unsupported fields such as `provider_queue_id` are omitted.
 - Handoff values do not appear in logs.
 - Provider-specific fields do not escape the connector boundary.
 
-End-to-end acceptance should verify:
+Run these end-to-end acceptance checks separately for each WxCC-facing transport you enable:
 
 1. The provider or test connector produces synthetic summary and symbolic routing-hint values.
-2. The gateway emits a final response with one `TRANSFER_TO_AGENT` event.
+2. The gateway emits a final response with one `TRANSFER_TO_AGENT` event: a protobuf
+   `VoiceVAResponse` for gRPC or a `VOICE_VA_RESPONSE` JSON envelope for WebSocket.
 3. The WxCC flow assigns `MetaData.summary` to the agent-viewable variable and
    `MetaData.routing_hint` to `BYOVARoutingHint`.
 4. The Case activity maps an approved hint to its approved queue and sends missing or unknown
